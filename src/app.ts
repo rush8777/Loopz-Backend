@@ -6,6 +6,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { registerOrgRoutes } from "./routes/orgs.js";
 import { registerPatternRoutes } from "./routes/patterns.js";
 import { registerAnalysisRoutes } from "./routes/analysis.js";
+import { registerPatternObserverRoutes } from "./routes/pattern-observer.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerPublicConfigRoutes } from "./routes/public-config.js";
 import { registerPublicEventsRoutes } from "./routes/public-events.js";
@@ -30,6 +31,7 @@ export async function buildApp(db: Db) {
   registerOrgRoutes(app, db);
   registerPatternRoutes(app, db);
   registerAnalysisRoutes(app, db);
+  registerPatternObserverRoutes(app, db);
   registerSessionRoutes(app, db);
 
   await app.register(async (publicScope) => {

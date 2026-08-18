@@ -36,8 +36,12 @@ export const incomingEventSchema = z.object({
   element: z.object({ selector: z.string().min(1).max(500) }).optional(),
   durationMs: z.number().int().nonnegative().optional(),
   scrollPercent: z.number().min(0).max(100).optional(),
+  // Document-relative coordinates (scroll offset already added by the
+  // SDK), not viewport-relative - see the schema.ts comment on
+  // sessionEvents.x/y. The generous y bound is because pages can be
+  // tall, not because screens are.
   x: z.number().int().min(0).max(20000).optional(),
-  y: z.number().int().min(0).max(200000).optional(), // pages can be tall - generous bound, not a real screen limit
+  y: z.number().int().min(0).max(200000).optional(),
   viewportWidth: z.number().int().positive().max(20000).optional(),
   viewportHeight: z.number().int().positive().max(200000).optional(),
 });

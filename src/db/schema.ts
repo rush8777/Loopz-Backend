@@ -133,13 +133,64 @@ export const patterns = sqliteTable("patterns", {
 });
 
 /**
- * In-progress match attempts, one row per (pattern, session). This is
- * what makes matching "live" across incremental event batches without
- * holding a session's full event history in memory or in the DB -
- * only this small state needs to survive between calls to the public
- * events endpoint. Terminal rows (matched/expired) are left in place as
- * a natural log rather than deleted; a cleanup job can prune old
- * expired/matched rows later if table size becomes a concern.
+ * Discovered recurring behavioral pattern candidates - see
+ * `src/lib/analysis/patternObserver.ts`.
+ */
+export const patternCandidates = sqliteTable("pattern_candidates", {
+  id: text("id").primaryKey().$defaultFn(() => cuid("pcd")),
+  siteId: text("site_id")
+    .notNull()
+    .references(() => sites.id, { onDelete: "cascade" }),
+  representativeSequence: text("representative_sequence", { mode: "json" }).notNull(),
+  occurrenceCount: integer("occurrence_count").notNull(),
+  uniqueSessionCount: integer("unique_session_count").notNull(),
+  firstSeenAt: integer("first_seen_at", { mode: "timestamp_ms" }).notNull(),
+  lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }).notNull(),
+  similarity: text("similarity", { mode: "json" }).notNull(),
+  quality: text("quality", { mode: "json" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch('now') * 1000)`),
+});
+
+/**
+ * Derived/rebuildable behavioral episode segmentation - see
+ * `src/lib/behavior/episodeSegmentation.ts`.
+ */
+export const episodes = sqliteTable("episodes", {
+  id: text("id").primaryKey().$defaultFn(() => cuid("epi")),
+  siteId: text("site_id")
+    .notNull()
+    .references(() => sites.id, { onDelete: "cascade" }),
+  sessionId: text("session_id").notNull(),
+  startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+  endedAt: integer("ended_at", { mode: "timestamp_ms" }).notNull(),
+  startReason: text("start_reason").notNull(), // page_enter | idle_gap | session_start
+  endReason: text("end_reason").notNull(), // page_enter | idle_gap | session_end
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch('now') * 1000)`),
+});
+
+/**
+ * Evidence join table: which episodes were observed as members of
+ * which pattern candidate.
+ */
+export const patternEpisodes = sqliteTable("pattern_episodes", {
+  id: text("id").primaryKey().$defaultFn(() => cuid("pep")),
+  patternCandidateId: text("pattern_candidate_id")
+    .notNull()
+    .references(() => patternCandidates.id, { onDelete: "cascade" }),
+  episodeId: text("episode_id")
+    .notNull()
+    .references(() => episodes.id, { onDelete: "cascade" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch('now') * 1000)`),
+});
+
+/**
+ * In-progress match attempts, one row per (pattern, session).
  */
 export const patternMatchStates = sqliteTable("pattern_match_states", {
   id: text("id").primaryKey().$defaultFn(() => cuid("pms")),
@@ -173,17 +224,31 @@ export const patternMatches = sqliteTable("pattern_matches", {
 });
 
 /**
- * Durable raw event log, keyed by site + session. This is what the live
- * matcher tables deliberately do NOT provide (pattern_match_states only
- * keeps enough state to advance an FSM, not the full history) - batch
- * analysis (clustering, feature extraction, fuzzy sequence similarity)
- * needs the actual event history per session, so it gets its own table.
- *
- * Scaling note: this grows without bound as-is. A real deployment would
- * need a retention window (e.g. drop raw events after N days once
- * derived features/clusters are computed) or a move to a
- * columnar/time-series store - noted here rather than solved, since
- * it's not required to prove the analysis pipeline out.
+ * Derived/rebuildable normalized behavioral events - see
+ * `src/lib/behavior/behaviorCompiler.ts`.
+ */
+export const behavioralEvents = sqliteTable("behavioral_events", {
+  id: text("id").primaryKey().$defaultFn(() => cuid("bev")),
+  siteId: text("site_id")
+    .notNull()
+    .references(() => sites.id, { onDelete: "cascade" }),
+  sessionId: text("session_id").notNull(),
+  episodeId: text("episode_id").references(() => episodes.id, { onDelete: "set null" }),
+  kind: text("kind").notNull(),
+  category: text("category").notNull(),
+  timestamp: integer("timestamp", { mode: "timestamp_ms" }).notNull(),
+  element: text("element", { mode: "json" }),
+  durationMs: integer("duration_ms"),
+  count: integer("count"),
+  evidence: text("evidence", { mode: "json" }),
+  sourceEventIds: text("source_event_ids", { mode: "json" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch('now') * 1000)`),
+});
+
+/**
+ * Durable raw event log, keyed by site + session.
  */
 export const sessionEvents = sqliteTable("session_events", {
   id: text("id").primaryKey().$defaultFn(() => cuid("evt")),
@@ -193,13 +258,9 @@ export const sessionEvents = sqliteTable("session_events", {
   sessionId: text("session_id").notNull(),
   type: text("type").notNull(), // page_view | hover | click | scroll | cursor
   timestamp: integer("timestamp", { mode: "timestamp_ms" }).notNull(),
-  selector: text("selector"), // ElementDescriptor.selector, if the event has a target
-  durationMs: integer("duration_ms"), // hover events
-  scrollPercent: integer("scroll_percent"), // scroll events
-  // Coordinates for spatial analysis (heatmaps) - click/hover/cursor
-  // events only. Stored alongside the viewport size active at capture
-  // time so the dashboard can normalize to relative page position
-  // across visitors on different screen sizes.
+  selector: text("selector"),
+  durationMs: integer("duration_ms"),
+  scrollPercent: integer("scroll_percent"),
   x: integer("x"),
   y: integer("y"),
   viewportWidth: integer("viewport_width"),
@@ -210,18 +271,7 @@ export const sessionEvents = sqliteTable("session_events", {
 });
 
 /**
- * Raw rrweb events for session replay, one row per event, ordered by
- * `seq`. Stored exactly as the SDK's RRWebRecorder emits them (see
- * SessionReplayEvent in the SDK) - this backend never interprets rrweb
- * semantics, it's purely a durable log for playback and for the
- * dashboard to pull a FullSnapshot (rrweb event type 2) out of to
- * render a static screenshot for heatmap overlays.
- *
- * Simplification worth flagging: keyed by the SDK's regular
- * `sessionId`, not rrweb's own `replaySessionId` - the dashboard's unit
- * of "a session" is the analytics session, so replay data is filed
- * under that for easy correlation with the rest of a session's events,
- * even though the SDK generates a separate replaySessionId internally.
+ * Raw rrweb events for session replay, one row per event, ordered by `seq`.
  */
 export const sessionReplayEvents = sqliteTable("session_replay_events", {
   id: text("id").primaryKey().$defaultFn(() => cuid("rrw")),
@@ -230,9 +280,9 @@ export const sessionReplayEvents = sqliteTable("session_replay_events", {
     .references(() => sites.id, { onDelete: "cascade" }),
   sessionId: text("session_id").notNull(),
   seq: integer("seq").notNull(),
-  rrwebType: integer("rrweb_type").notNull(), // rrweb's own numeric event type (2 = FullSnapshot, etc.)
+  rrwebType: integer("rrweb_type").notNull(),
   timestamp: integer("timestamp", { mode: "timestamp_ms" }).notNull(),
-  data: text("data", { mode: "json" }).notNull(), // the raw rrweb event, unmodified
+  data: text("data", { mode: "json" }).notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .default(sql`(unixepoch('now') * 1000)`),
@@ -247,7 +297,7 @@ export const auditLogs = sqliteTable("audit_logs", {
     .notNull()
     .references(() => organizations.id, { onDelete: "cascade" }),
   userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
-  action: text("action").notNull(), // e.g. "site.created", "member.invited"
+  action: text("action").notNull(),
   detail: text("detail", { mode: "json" }).notNull().default("{}"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
