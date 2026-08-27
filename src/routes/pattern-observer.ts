@@ -60,6 +60,12 @@ function tokenForBehavioralEventRow(row: typeof behavioralEvents.$inferSelect): 
   return row.kind;
 }
 
+/** The SDK-computed display label for a behavioral_events row's element, when one was captured - display only, never part of token/grouping identity (see elementIdentity.ts). */
+function labelForBehavioralEventRow(row: typeof behavioralEvents.$inferSelect): string | undefined {
+  const element = (row.element as ElementIdentity | null) ?? undefined;
+  return element?.label;
+}
+
 export function registerPatternObserverRoutes(app: FastifyInstance, db: Db) {
   /**
    * Runs the Pattern Observer pipeline (telemetry aggregation -> behavior
@@ -152,7 +158,8 @@ export function registerPatternObserverRoutes(app: FastifyInstance, db: Db) {
         endedAt: string;
         startReason: string;
         endReason: string;
-        tokens: string[];
+        /** `token` is the canonical grouping/identity string (selector-based, unchanged format) - `label` is the SDK-computed display name for the same step, when captured, purely for a friendlier UI (see elementIdentity.ts's identity-vs-display note). */
+        steps: { token: string; label?: string }[];
       }[] = [];
 
       for (const link of links) {
@@ -172,7 +179,10 @@ export function registerPatternObserverRoutes(app: FastifyInstance, db: Db) {
           endedAt: episode.endedAt.toISOString(),
           startReason: episode.startReason,
           endReason: episode.endReason,
-          tokens: behavioralRows.map(tokenForBehavioralEventRow),
+          steps: behavioralRows.map((row) => ({
+            token: tokenForBehavioralEventRow(row),
+            ...(labelForBehavioralEventRow(row) && { label: labelForBehavioralEventRow(row) }),
+          })),
         });
       }
 

@@ -58,7 +58,9 @@ function groupBySessionWithIds(rows: (typeof sessionEvents.$inferSelect)[]): Map
       id: row.id,
       type: row.type as IncomingEvent["type"],
       timestamp: row.timestamp.getTime(),
-      element: row.selector ? { selector: row.selector } : undefined,
+      element: row.selector
+        ? { selector: row.selector, ...(row.elementLabel && { label: row.elementLabel }), ...(row.elementRole && { role: row.elementRole }) }
+        : undefined,
       durationMs: row.durationMs ?? undefined,
       scrollPercent: row.scrollPercent ?? undefined,
       x: row.x ?? undefined,

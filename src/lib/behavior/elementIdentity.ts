@@ -10,12 +10,21 @@
  * unrelated targets to anything matching on selector alone.
  *
  * `ElementIdentity` is intentionally wider than what the SDK sends
- * today. Every field except `source` is optional, and only `selector`
- * is ever populated by the constructors in this file - `role`,
- * `label`, `region`, and `fingerprint` are reserved for later SDK
- * versions (richer event payloads) or a later server-side pass
- * (structural fingerprinting) to fill in. Nothing downstream should
- * assume any field other than `source` is present.
+ * today. Every field except `source` is optional. As of the SDK's
+ * ElementLabeler work, `label`/`role` ARE now sent (see
+ * `elementIdentityFromRaw` below) - `region` and `fingerprint` remain
+ * reserved for later SDK versions / a later server-side pass. Nothing
+ * downstream should assume any field other than `source` is present.
+ *
+ * IDENTITY VS. DISPLAY: `selector` (and eventually `fingerprint`)
+ * remain the only fields used for identity/matching/grouping
+ * throughout the behavioral pipeline (see `describeElementIdentity`,
+ * used by `behavioralSequence.ts`'s tokenization) - `label`/`role` are
+ * carried through purely for display. This matters because a label
+ * computed from visible text can legitimately vary in ways a selector
+ * shouldn't (e.g. a badge whose text is a live count); if label ever
+ * became part of grouping identity, that variance would fragment
+ * patterns that selector-based identity already handles correctly.
  */
 
 /** How an ElementIdentity was constructed - lets downstream matching decide how much to trust it. */
@@ -53,6 +62,27 @@ export const UNKNOWN_ELEMENT_IDENTITY: ElementIdentity = { source: "unknown" };
 export function elementIdentityFromSelector(selector: string | null | undefined): ElementIdentity | undefined {
   if (!selector) return undefined;
   return { selector, source: "selector" };
+}
+
+/**
+ * Builds an ElementIdentity from a raw incoming event's full element
+ * object, including the SDK's optional `label`/`role` when present -
+ * the richer counterpart to `elementIdentityFromSelector` above (kept
+ * separate rather than replacing it, since some callers only ever have
+ * a bare selector string to work with). Safe to call with
+ * `undefined`/`null`, or an element with no selector - returns
+ * `undefined` in both cases, same contract as `elementIdentityFromSelector`.
+ */
+export function elementIdentityFromRaw(
+  element: { selector?: string; label?: string; role?: string } | null | undefined
+): ElementIdentity | undefined {
+  if (!element?.selector) return undefined;
+  return {
+    selector: element.selector,
+    source: "selector",
+    ...(element.label && { label: element.label }),
+    ...(element.role && { role: element.role }),
+  };
 }
 
 /** True when an identity carries at least one field precise enough to re-identify the same element across sessions (a selector or a fingerprint). */

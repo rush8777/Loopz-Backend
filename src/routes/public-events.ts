@@ -5,6 +5,9 @@ import { sites, patterns, patternMatchStates, patternMatches, sessionEvents } fr
 import { trackEventsBodySchema } from "../lib/patterns/validation.js";
 import { advanceMatch, createInitialMatchState, type MatchState } from "../lib/patterns/matcher.js";
 import type { PatternDefinition } from "../lib/patterns/types.js";
+import type { IncomingEvent } from "../lib/patterns/event.js";
+import { resolveIdentity } from "../lib/identity/resolveIdentity.js";
+import { recordSessionStart } from "../lib/identity/environmentContext.js";
 
 /**
  * Public, unauthenticated (same trust model as /public/config - see the
@@ -19,6 +22,13 @@ import type { PatternDefinition } from "../lib/patterns/types.js";
  * as a queryable event log. That's a distinct, larger piece of
  * infrastructure (heatmaps/funnels/replay) covered elsewhere; this
  * endpoint exists solely to serve the live-feedback trigger loop.
+ *
+ * Idempotent per event: each incoming event's SDK-generated `eventId`
+ * (when present - see validation.ts) is persisted alongside it in
+ * `session_events` under a (siteId, eventId) unique index, so a retried
+ * event or a retried whole batch (Transport's at-least-once delivery)
+ * inserts zero duplicate rows on replay - see the onConflictDoNothing
+ * below.
  */
 export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
   app.post("/public/sites/:siteId/events", async (request, reply) => {
@@ -36,26 +46,92 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
     }
     const { sessionId, events } = parsed.data;
 
+    // identify() calls are identity/property data, and session_start is
+    // one-per-session environment context - neither is interaction
+    // telemetry, so neither is written to session_events (which stays a
+    // pure behavioral/interaction log). identify() resolves into the
+    // tracked-user layer (see resolveIdentity.ts); session_start
+    // upserts a session_contexts row (see environmentContext.ts).
+    // Everything else keeps flowing through the existing pipeline
+    // unchanged, now just carrying anonymousId + page path along with
+    // it so the identity layer and profile activity feed have
+    // something to resolve/display.
+    const identifyEvents = events.filter((e) => e.type === "identify");
+    const sessionStartEvents = events.filter((e) => e.type === "session_start");
+    const behavioralEvents = events.filter(
+      (e): e is IncomingEvent & { anonymousId?: string; path?: string; eventId?: string; pageViewId?: string } =>
+        e.type !== "identify" && e.type !== "session_start"
+    );
+
     // Durable log first - this is what feeds clustering/feature-extraction
     // later. Independent of whether any pattern is active on the site;
     // analysis shouldn't depend on the site owner having authored a
     // pattern first.
-    if (events.length > 0) {
-      await db.insert(sessionEvents).values(
-        events.map((e) => ({
-          siteId: site.id,
-          sessionId,
-          type: e.type,
-          timestamp: new Date(e.timestamp),
-          selector: e.element?.selector ?? null,
-          durationMs: e.durationMs ?? null,
-          scrollPercent: e.scrollPercent ?? null,
-          x: e.x ?? null,
-          y: e.y ?? null,
-          viewportWidth: e.viewportWidth ?? null,
-          viewportHeight: e.viewportHeight ?? null,
-        }))
-      );
+    //
+    // onConflictDoNothing targets session_events_site_event_unique
+    // (siteId, eventId) - this is what makes ingestion idempotent: the
+    // Transport's at-least-once delivery (or any client-side retry) can
+    // resend a batch whose events were already durably inserted, and the
+    // repeat insert is a silent no-op per row instead of a duplicate
+    // behavioral event. Events without an eventId (older SDK builds) are
+    // never deduped against anything, per SQLite's default unique-index
+    // NULL handling - same tradeoff already accepted for anonymousId.
+    if (behavioralEvents.length > 0) {
+      await db
+        .insert(sessionEvents)
+        .values(
+          behavioralEvents.map((e) => ({
+            siteId: site.id,
+            sessionId,
+            anonymousId: e.anonymousId ?? null,
+            eventId: e.eventId ?? null,
+            pageViewId: e.pageViewId ?? null,
+            type: e.type,
+            timestamp: new Date(e.timestamp),
+            pagePath: e.type === "page_view" ? (e.path ?? null) : null,
+            selector: e.element?.selector ?? null,
+            elementLabel: e.element?.label ?? null,
+            elementRole: e.element?.role ?? null,
+            durationMs: e.durationMs ?? null,
+            scrollPercent: e.scrollPercent ?? null,
+            x: e.x ?? null,
+            y: e.y ?? null,
+            viewportWidth: e.viewportWidth ?? null,
+            viewportHeight: e.viewportHeight ?? null,
+          }))
+        )
+        .onConflictDoNothing({ target: [sessionEvents.siteId, sessionEvents.eventId] });
+    }
+
+    for (const identifyEvent of identifyEvents) {
+      if (!identifyEvent.externalUserId) continue; // malformed - identify() with no userId, nothing to resolve
+      await resolveIdentity(db, {
+        siteId: site.id,
+        anonymousId: identifyEvent.anonymousId,
+        externalUserId: identifyEvent.externalUserId,
+        traits: identifyEvent.traits,
+        timestamp: identifyEvent.timestamp,
+      });
+    }
+
+    for (const sessionStartEvent of sessionStartEvents) {
+      if (!sessionStartEvent.anonymousId) continue; // malformed - can't attribute this session's environment to anyone
+      await recordSessionStart(db, {
+        siteId: site.id,
+        sessionId,
+        anonymousId: sessionStartEvent.anonymousId,
+        timestamp: sessionStartEvent.timestamp,
+        browserName: sessionStartEvent.browserName,
+        browserVersion: sessionStartEvent.browserVersion,
+        osName: sessionStartEvent.osName,
+        osVersion: sessionStartEvent.osVersion,
+        deviceType: sessionStartEvent.deviceType,
+        language: sessionStartEvent.language,
+        timezone: sessionStartEvent.timezone,
+        screenWidth: sessionStartEvent.screenWidth,
+        screenHeight: sessionStartEvent.screenHeight,
+        referrer: sessionStartEvent.referrer,
+      });
     }
 
     const activePatterns = await db
@@ -106,7 +182,7 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
           }
         : createInitialMatchState(patternRow.id, sessionId);
 
-      const nextState = advanceMatch(definition, priorState, events);
+      const nextState = advanceMatch(definition, priorState, behavioralEvents);
 
       const nextStateValues = {
         cursor: nextState.cursor,

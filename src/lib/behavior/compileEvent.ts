@@ -1,5 +1,5 @@
 import type { IncomingEvent } from "../patterns/event.js";
-import { elementIdentityFromSelector } from "./elementIdentity.js";
+import { elementIdentityFromRaw } from "./elementIdentity.js";
 import { isRawTelemetryEvent } from "./rawTelemetry.js";
 import { createClickEvent, createHoverIntentEvent, createPageEnterEvent, createScrollEvent, type BehavioralEvent } from "./behavioralEvent.js";
 
@@ -40,9 +40,9 @@ export function compileToBehavioralEvent(event: IncomingEvent): BehavioralEvent 
     case "page_view":
       return createPageEnterEvent(event.timestamp);
     case "click":
-      return createClickEvent(event.timestamp, elementIdentityFromSelector(event.element?.selector));
+      return createClickEvent(event.timestamp, elementIdentityFromRaw(event.element));
     case "hover":
-      return createHoverIntentEvent(event.timestamp, elementIdentityFromSelector(event.element?.selector), event.durationMs ?? 0);
+      return createHoverIntentEvent(event.timestamp, elementIdentityFromRaw(event.element), event.durationMs ?? 0);
     case "scroll":
       return createScrollEvent(event.timestamp, event.scrollPercent ?? 0);
     default:

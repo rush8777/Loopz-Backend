@@ -7,20 +7,27 @@ import { registerOrgRoutes } from "./routes/orgs.js";
 import { registerPatternRoutes } from "./routes/patterns.js";
 import { registerAnalysisRoutes } from "./routes/analysis.js";
 import { registerPatternObserverRoutes } from "./routes/pattern-observer.js";
+import { registerElementRoutes } from "./routes/elements.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
+import { registerPageRoutes } from "./routes/pages.js";
+import { registerTrackedUserRoutes } from "./routes/tracked-users.js";
+import { registerAnonymousUserRoutes } from "./routes/anonymous-users.js";
 import { registerPublicConfigRoutes } from "./routes/public-config.js";
 import { registerPublicEventsRoutes } from "./routes/public-events.js";
 import { registerPublicReplayRoutes } from "./routes/public-replay.js";
+import { registerPublicElementsRoutes } from "./routes/public-elements.js";
 
 export async function buildApp(db: Db) {
   const app = Fastify({ logger: false });
 
   await app.register(cors, {
-    origin: ["http://localhost:5173", "http://localhost:3001"],
-    methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
-  });
+  // Configures Access-Control-Allow-Origin dynamically based on the request header
+  origin: true, 
+  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+});
+
 
   // Global default is generous (dashboard traffic, authenticated); the
   // public routes below get their own tighter, per-route limits since
@@ -32,7 +39,11 @@ export async function buildApp(db: Db) {
   registerPatternRoutes(app, db);
   registerAnalysisRoutes(app, db);
   registerPatternObserverRoutes(app, db);
+  registerElementRoutes(app, db);
   registerSessionRoutes(app, db);
+  registerPageRoutes(app, db);
+  registerTrackedUserRoutes(app, db);
+  registerAnonymousUserRoutes(app, db);
 
   await app.register(async (publicScope) => {
     await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
@@ -53,6 +64,15 @@ export async function buildApp(db: Db) {
     // a session's incremental-snapshot cadence.
     await publicReplayScope.register(rateLimit, { global: true, max: 120, timeWindow: "1 minute" });
     registerPublicReplayRoutes(publicReplayScope, db);
+  });
+
+  await app.register(async (publicElementsScope) => {
+    // Crawls fire on page load + SPA route change (ElementCrawler.ts) -
+    // far less frequent than the events batch cadence, but an app with
+    // heavy client-side navigation could still exceed /public/config's
+    // once-per-load ceiling, so this gets its own, slightly higher limit.
+    await publicElementsScope.register(rateLimit, { global: true, max: 120, timeWindow: "1 minute" });
+    registerPublicElementsRoutes(publicElementsScope, db);
   });
 
   app.get("/health", async () => ({ ok: true }));

@@ -114,9 +114,39 @@ describe("pattern observer routes", () => {
     expect(body.evidence.length).toBeGreaterThanOrEqual(3);
     for (const ev of body.evidence) {
       expect(ev.sessionId).toBeTruthy();
-      expect(ev.tokens.every((t: string) => !t.startsWith("cursor"))).toBe(true);
-      expect(ev.tokens).toContain("click:#cta");
+      expect(ev.steps.every((s: { token: string }) => !s.token.startsWith("cursor"))).toBe(true);
+      expect(ev.steps.map((s: { token: string }) => s.token)).toContain("click:#cta");
     }
+  });
+
+  it("carries the SDK-computed display label through to evidence steps, alongside the unchanged grouping token", async () => {
+    const { owner, site } = await setupSite(ctx.app);
+
+    for (let i = 0; i < 3; i++) {
+      const base = i * 100_000;
+      await sendEvents(ctx.app, site.siteId, `sess_label_${i}`, [
+        { type: "page_view", timestamp: base },
+        { type: "click", timestamp: base + 1000, element: { selector: "#cta", label: "Save changes", role: "button" } },
+      ]);
+    }
+
+    const observe = await ctx.app.inject({
+      method: "POST",
+      url: `/orgs/${owner.org.id}/sites/${site.id}/analysis/patterns/observe`,
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+      payload: {},
+    });
+    const candidateId = observe.json().candidates[0].id;
+
+    const detail = await ctx.app.inject({
+      method: "GET",
+      url: `/orgs/${owner.org.id}/sites/${site.id}/analysis/patterns/candidates/${candidateId}`,
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+    });
+    const body = detail.json();
+    const clickStep = body.evidence[0].steps.find((s: { token: string }) => s.token === "click:#cta");
+    expect(clickStep).toBeDefined();
+    expect(clickStep.label).toBe("Save changes");
   });
 
   it("returns 404 for a candidate belonging to a different site", async () => {

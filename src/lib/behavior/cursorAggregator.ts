@@ -1,5 +1,5 @@
 import type { IncomingEvent } from "../patterns/event.js";
-import { elementIdentityFromSelector } from "./elementIdentity.js";
+import { elementIdentityFromRaw } from "./elementIdentity.js";
 import {
   createClickEvent,
   createDwellEvent,
@@ -201,6 +201,9 @@ function round(value: number): number {
 
 interface TargetContext {
   selector?: string;
+  /** Display label/role carried from the raw hover/click event that identified this target - see elementIdentity.ts's elementIdentityFromRaw. Purely for display; grouping stays selector-based. */
+  label?: string;
+  role?: string;
   position: Point | null;
 }
 
@@ -225,7 +228,7 @@ function classifyApproachRun(
   if (stats.totalDistance < config.minMovementDistancePx) return []; // noise gate
 
   const events: BehavioralEvent[] = [];
-  const element = target.selector ? elementIdentityFromSelector(target.selector) : undefined;
+  const element = elementIdentityFromRaw(target);
 
   if (stats.directionChanges >= config.directionReversalThreshold) {
     events.push(
@@ -262,6 +265,9 @@ function classifyApproachRun(
 
 interface AnchorContext {
   selector?: string;
+  /** Display label/role carried from the raw hover/click event that established this anchor - see elementIdentity.ts's elementIdentityFromRaw. Purely for display; grouping stays selector-based. */
+  label?: string;
+  role?: string;
   position: Point | null;
   /** Timestamp of the hover/click event that established this anchor - the start of the "attention window" being evaluated. */
   since: number;
@@ -290,7 +296,7 @@ function classifyAfterAnchorRun(
   const durationMs = boundaryTimestamp - anchor.since;
   const withinRadiusCount = distances.filter((d) => d <= config.approachRadiusPx).length;
   const allWithinRadius = withinRadiusCount === distances.length;
-  const element = elementIdentityFromSelector(anchor.selector);
+  const element = elementIdentityFromRaw(anchor);
 
   const evidenceBase: BehavioralEventEvidence = {
     distanceMoved: round(stats.totalDistance),
@@ -350,6 +356,7 @@ function resolvePosition(event: IncomingEvent, lastKnownPosition: ReadonlyMap<st
 
 function computeRepeatedAttentionEvents(
   visitsBySelector: ReadonlyMap<string, number[]>,
+  labelBySelector: ReadonlyMap<string, { label?: string; role?: string }>,
   config: CursorAggregationConfig
 ): BehavioralEvent[] {
   const events: BehavioralEvent[] = [];
@@ -364,8 +371,9 @@ function computeRepeatedAttentionEvents(
 
       const cluster = timestamps.slice(clusterStart, i);
       if (cluster.length >= 2) {
+        const element = elementIdentityFromRaw({ selector, ...labelBySelector.get(selector) });
         events.push(
-          createRepeatedAttentionEvent(cluster[cluster.length - 1], elementIdentityFromSelector(selector), cluster.length, {
+          createRepeatedAttentionEvent(cluster[cluster.length - 1], element, cluster.length, {
             windowMs: config.repeatedAttentionWindowMs,
             sampleCount: cluster.length,
             durationMs: cluster[cluster.length - 1] - cluster[0],
@@ -412,6 +420,7 @@ export function aggregateBehavioralEvents(
 
   const output: BehavioralEvent[] = [];
   const lastKnownPosition = new Map<string, Point>();
+  const labelBySelector = new Map<string, { label?: string; role?: string }>();
   const visitsBySelector = new Map<string, number[]>();
   let pendingRun: CursorSample[] = [];
   let currentAnchor: AnchorContext | null = null;
@@ -433,6 +442,8 @@ export function aggregateBehavioralEvents(
 
   function handleAnchorEvent(event: IncomingEvent & { type: "hover" | "click" }): void {
     const newSelector = event.element?.selector;
+    const newLabel = event.element?.label;
+    const newRole = event.element?.role;
     const newPosition = resolvePosition(event, lastKnownPosition);
 
     if (currentAnchor) {
@@ -440,18 +451,31 @@ export function aggregateBehavioralEvents(
 
       if (newSelector && newSelector !== currentAnchor.selector) {
         output.push(
-          ...classifyApproachRun(pendingRun, { selector: newSelector, position: newPosition }, event.timestamp, config, clickableSelectors)
+          ...classifyApproachRun(
+            pendingRun,
+            { selector: newSelector, label: newLabel, role: newRole, position: newPosition },
+            event.timestamp,
+            config,
+            clickableSelectors
+          )
         );
       }
     } else if (pendingRun.length > 0) {
       output.push(
-        ...classifyApproachRun(pendingRun, { selector: newSelector, position: newPosition }, event.timestamp, config, clickableSelectors)
+        ...classifyApproachRun(
+          pendingRun,
+          { selector: newSelector, label: newLabel, role: newRole, position: newPosition },
+          event.timestamp,
+          config,
+          clickableSelectors
+        )
       );
     }
 
     pendingRun = [];
 
     if (newSelector && newPosition) lastKnownPosition.set(newSelector, newPosition);
+    if (newSelector && (newLabel || newRole)) labelBySelector.set(newSelector, { label: newLabel, role: newRole });
 
     const isContinuationOfCurrentAnchor =
       currentAnchor !== null &&
@@ -459,17 +483,24 @@ export function aggregateBehavioralEvents(
       event.timestamp - currentAnchor.since < VISIT_CONTINUATION_WINDOW_MS;
     if (!isContinuationOfCurrentAnchor) recordVisit(newSelector, event.timestamp);
 
+    const newElement = elementIdentityFromRaw(event.element);
     if (event.type === "hover") {
       const durationMs = event.durationMs ?? 0;
       if (durationMs >= config.minHoverIntentDurationMs) {
-        output.push(createHoverIntentEvent(event.timestamp, elementIdentityFromSelector(newSelector), durationMs));
+        output.push(createHoverIntentEvent(event.timestamp, newElement, durationMs));
       }
     } else {
-      output.push(createClickEvent(event.timestamp, elementIdentityFromSelector(newSelector)));
+      output.push(createClickEvent(event.timestamp, newElement));
     }
 
     currentAnchor = newSelector
-      ? { selector: newSelector, position: newPosition ?? lastKnownPosition.get(newSelector) ?? null, since: event.timestamp }
+      ? {
+          selector: newSelector,
+          label: newLabel,
+          role: newRole,
+          position: newPosition ?? lastKnownPosition.get(newSelector) ?? null,
+          since: event.timestamp,
+        }
       : null;
   }
 
@@ -509,7 +540,7 @@ export function aggregateBehavioralEvents(
   // Otherwise (no anchor context, or nothing pending): discard - there is no
   // element to attribute leftover movement to, so no signal is fabricated.
 
-  output.push(...computeRepeatedAttentionEvents(visitsBySelector, config));
+  output.push(...computeRepeatedAttentionEvents(visitsBySelector, labelBySelector, config));
 
   // repeated_attention events were computed out-of-band above; a final
   // stable sort brings the whole stream back into chronological order.
