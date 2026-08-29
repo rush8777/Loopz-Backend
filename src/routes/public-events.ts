@@ -23,6 +23,14 @@ import { recordSessionStart } from "../lib/identity/environmentContext.js";
  * infrastructure (heatmaps/funnels/replay) covered elsewhere; this
  * endpoint exists solely to serve the live-feedback trigger loop.
  *
+ * `custom` events (analytics.event(name, properties?) on the SDK) are a
+ * first-class event type here, alongside page_view/click/hover/scroll/
+ * cursor - not a parallel pipeline. They flow through the exact same
+ * validation -> session_events persistence -> pattern-matching path as
+ * every other behavioral event; the only difference is which columns
+ * get populated (eventName/eventProperties instead of
+ * selector/durationMs/etc.) - see the insert below.
+ *
  * Idempotent per event: each incoming event's SDK-generated `eventId`
  * (when present - see validation.ts) is persisted alongside it in
  * `session_events` under a (siteId, eventId) unique index, so a retried
@@ -59,7 +67,9 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
     const identifyEvents = events.filter((e) => e.type === "identify");
     const sessionStartEvents = events.filter((e) => e.type === "session_start");
     const behavioralEvents = events.filter(
-      (e): e is IncomingEvent & { anonymousId?: string; path?: string; eventId?: string; pageViewId?: string } =>
+      (
+        e
+      ): e is IncomingEvent & { anonymousId?: string; path?: string; eventId?: string; pageViewId?: string } =>
         e.type !== "identify" && e.type !== "session_start"
     );
 
@@ -98,6 +108,12 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
             y: e.y ?? null,
             viewportWidth: e.viewportWidth ?? null,
             viewportHeight: e.viewportHeight ?? null,
+            // custom events only (validation.ts guarantees `name` is
+            // present whenever type === "custom"). `properties` stays
+            // whatever JSON-serializable shape the caller sent -
+            // `mode: "json"` on the column round-trips it verbatim.
+            eventName: e.type === "custom" ? (e.name ?? null) : null,
+            eventProperties: e.type === "custom" ? (e.properties ?? null) : null,
           }))
         )
         .onConflictDoNothing({ target: [sessionEvents.siteId, sessionEvents.eventId] });

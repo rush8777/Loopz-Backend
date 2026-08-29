@@ -13,13 +13,16 @@ import {
   createHesitationEvent,
   createRepeatedActionEvent,
   createPossibleFailedActionEvent,
+  createCustomEvent,
   isBehavioralEvent,
   isDiscreteAction,
   isIntentSignal,
   isDerivedSignal,
+  isApplicationEvent,
   isClickEvent,
   isHoverIntentEvent,
   isHesitationEvent,
+  isCustomEvent,
   type BehavioralEventKind,
 } from "../src/lib/behavior/behavioralEvent.js";
 import {
@@ -33,7 +36,7 @@ import { compileToBehavioralEvent, compileBatch } from "../src/lib/behavior/comp
 import type { IncomingEvent } from "../src/lib/patterns/event.js";
 
 describe("behavioral event types are valid", () => {
-  it("every declared kind maps to exactly one of the three BehavioralEvent categories", () => {
+  it("every declared kind maps to exactly one of the four BehavioralEvent categories", () => {
     const kinds = Object.keys(BEHAVIORAL_EVENT_CATEGORY) as BehavioralEventKind[];
     expect(kinds.sort()).toEqual(
       [
@@ -51,10 +54,13 @@ describe("behavioral event types are valid", () => {
         "repeated_action",
         "repeated_attention",
         "possible_failed_action",
+        "custom",
       ].sort()
     );
     for (const kind of kinds) {
-      expect(["discrete_action", "intent_signal", "derived_signal"]).toContain(BEHAVIORAL_EVENT_CATEGORY[kind]);
+      expect(["discrete_action", "intent_signal", "derived_signal", "application_event"]).toContain(
+        BEHAVIORAL_EVENT_CATEGORY[kind]
+      );
     }
   });
 
@@ -124,6 +130,80 @@ describe("behavioral event types are valid", () => {
     expect(isBehavioralEvent({ kind: "click" })).toBe(false); // missing timestamp/category
     expect(isBehavioralEvent({ kind: "not_a_real_kind", timestamp: 0, category: "discrete_action" })).toBe(false);
     expect(isBehavioralEvent({ kind: "click", timestamp: 0, category: "intent_signal" })).toBe(false); // category/kind mismatch
+  });
+});
+
+describe("custom (application/business) events", () => {
+  it("createCustomEvent produces an event tagged application_event, never one of the observed-behavior categories", () => {
+    const event = createCustomEvent(1000, "checkout_completed", { plan: "pro", amount: 49 });
+    expect(event.category).toBe("application_event");
+    expect(isApplicationEvent(event)).toBe(true);
+    expect(isDiscreteAction(event)).toBe(false);
+    expect(isIntentSignal(event)).toBe(false);
+    expect(isDerivedSignal(event)).toBe(false);
+    expect(isBehavioralEvent(event)).toBe(true);
+  });
+
+  it("preserves name and properties verbatim, and has no element field", () => {
+    const properties = { plan: "pro", amount: 49, currency: "USD" };
+    const event = createCustomEvent(1000, "checkout_completed", properties);
+    expect(event.name).toBe("checkout_completed");
+    expect(event.properties).toEqual(properties);
+    expect(event).not.toHaveProperty("element");
+  });
+
+  it("supports no properties", () => {
+    const event = createCustomEvent(1000, "video_played");
+    expect(event.name).toBe("video_played");
+    expect(event.properties).toBeUndefined();
+  });
+
+  it("isCustomEvent narrows correctly and rejects other kinds", () => {
+    const custom = createCustomEvent(0, "signed_up");
+    const click = createClickEvent(0, elementIdentityFromSelector("#cta"));
+    expect(isCustomEvent(custom)).toBe(true);
+    expect(isCustomEvent(click)).toBe(false);
+  });
+
+  it("compileToBehavioralEvent maps a raw custom IncomingEvent 1:1, name and properties intact", () => {
+    const raw: IncomingEvent = {
+      type: "custom",
+      timestamp: 5000,
+      name: "checkout_completed",
+      properties: { plan: "pro", amount: 49 },
+    };
+    const compiled = compileToBehavioralEvent(raw);
+    expect(compiled).not.toBeNull();
+    expect(compiled).toMatchObject({
+      kind: "custom",
+      category: "application_event",
+      timestamp: 5000,
+      name: "checkout_completed",
+      properties: { plan: "pro", amount: 49 },
+    });
+  });
+
+  it("compileToBehavioralEvent never produces a click/hover-shaped event for a custom event", () => {
+    const raw: IncomingEvent = { type: "custom", timestamp: 0, name: "signed_up" };
+    const compiled = compileToBehavioralEvent(raw);
+    expect(compiled?.kind).not.toBe("click");
+    expect(compiled?.kind).not.toBe("hover_intent");
+    expect(compiled).not.toHaveProperty("element");
+  });
+
+  it("compileBatch preserves custom events alongside DOM-interaction events, in order", () => {
+    const events: IncomingEvent[] = [
+      { type: "page_view", timestamp: 0 },
+      { type: "click", timestamp: 100, element: { selector: "#pricing-cta" } },
+      { type: "custom", timestamp: 200, name: "checkout_started" },
+      { type: "hover", timestamp: 300, element: { selector: "#payment-field" }, durationMs: 500 },
+      { type: "custom", timestamp: 400, name: "payment_submitted" },
+      { type: "custom", timestamp: 500, name: "checkout_completed", properties: { plan: "pro" } },
+    ];
+    const compiled = compileBatch(events);
+    expect(compiled.map((e) => e.kind)).toEqual(["page_enter", "click", "custom", "hover_intent", "custom", "custom"]);
+    const customs = compiled.filter(isCustomEvent);
+    expect(customs.map((e) => e.name)).toEqual(["checkout_started", "payment_submitted", "checkout_completed"]);
   });
 });
 

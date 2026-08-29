@@ -173,6 +173,9 @@ export async function listActivity(
         pagePath: r.pagePath,
         durationMs: r.durationMs,
         scrollPercent: r.scrollPercent,
+        // custom events only - see session_events.eventName/eventProperties.
+        eventName: r.eventName,
+        eventProperties: r.eventProperties,
       },
     })),
     total,
@@ -190,6 +193,14 @@ function activityTitle(r: typeof sessionEvents.$inferSelect): string {
       return r.durationMs != null ? `Hovered ${target} for ${(r.durationMs / 1000).toFixed(1)}s` : `Hovered ${target}`;
     case "scroll":
       return r.scrollPercent != null ? `Scrolled to ${r.scrollPercent}%` : "Scrolled";
+    case "custom":
+      // Deliberately just the developer's own event name, not "Clicked
+      // .../Viewed ..." phrasing - a business event's title IS its
+      // name; inventing English around it would blur the exact
+      // "application semantics vs observed behavior" distinction this
+      // whole feature exists to preserve. Falls back to the raw type
+      // only if a malformed/pre-validation row somehow has no name.
+      return r.eventName ?? "custom";
     default:
       return r.type;
   }

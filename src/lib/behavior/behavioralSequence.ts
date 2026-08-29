@@ -28,8 +28,20 @@ import type { Episode } from "./episodeSegmentation.js";
  * (`elementIdentity.ts`), so a plain selector is enough to produce a
  * qualified token - no fingerprint required, matching what the current
  * SDK can actually provide.
+ *
+ * `"custom"` events have no element (see behavioralEvent.ts's
+ * `CustomEvent` - deliberately never DOM-selector-scoped) but do have
+ * a developer-chosen `name`, which is the qualifier that actually
+ * distinguishes them from one another: `"custom:checkout_completed"`,
+ * `"custom:checkout_started"`. Without this, every distinct business
+ * event would collapse to the same bare `"custom"` token and become
+ * indistinguishable in a sequence - exactly the ambiguity element-
+ * qualification exists to avoid for DOM events.
  */
 export function tokenForBehavioralEvent(event: BehavioralEvent): string {
+  if (event.kind === "custom") {
+    return `custom:${event.name}`;
+  }
   const element = "element" in event ? event.element : undefined;
   if (element && hasStableIdentity(element)) {
     return `${event.kind}:${describeElementIdentity(element)}`;

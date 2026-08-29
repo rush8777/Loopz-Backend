@@ -40,6 +40,8 @@ function verbToEventType(verb: PatternStepVerb): IncomingEvent["type"] {
       return "click";
     case "scroll_past":
       return "scroll";
+    case "custom":
+      return "custom";
   }
 }
 
@@ -52,6 +54,11 @@ function stepIsSatisfiedBy(step: PatternStep, event: IncomingEvent): boolean {
   if (step.verb === "scroll_past" && step.minScrollPercent != null) {
     if ((event.scrollPercent ?? 0) < step.minScrollPercent) return false;
   }
+  // A "custom" step matches by application event name, not by DOM
+  // target - a pattern referencing analytics.event("checkout_completed")
+  // is asking "did this business event happen", never "was this
+  // selector clicked". See PatternStep.eventName's doc comment.
+  if (step.verb === "custom" && step.eventName != null && event.name !== step.eventName) return false;
   return true;
 }
 

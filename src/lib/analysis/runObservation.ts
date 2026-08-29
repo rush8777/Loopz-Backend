@@ -67,6 +67,9 @@ function groupBySessionWithIds(rows: (typeof sessionEvents.$inferSelect)[]): Map
       y: row.y ?? undefined,
       viewportWidth: row.viewportWidth ?? undefined,
       viewportHeight: row.viewportHeight ?? undefined,
+      // custom events only - see session_events.eventName/eventProperties.
+      name: row.eventName ?? undefined,
+      properties: (row.eventProperties as CompilableRawEvent["properties"]) ?? undefined,
     };
     list.push(event);
     bySession.set(row.sessionId, list);

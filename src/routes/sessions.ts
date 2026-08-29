@@ -107,15 +107,27 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
         sessionId,
         hasReplay: Boolean(hasReplayRow),
         events: rows.map((r) => ({
+          id: r.id,
           type: r.type,
           timestamp: r.timestamp.toISOString(),
+          eventId: r.eventId,
+          pageViewId: r.pageViewId,
+          pagePath: r.pagePath,
           selector: r.selector,
+          elementLabel: r.elementLabel,
+          elementRole: r.elementRole,
           durationMs: r.durationMs,
           scrollPercent: r.scrollPercent,
           x: r.x,
           y: r.y,
           viewportWidth: r.viewportWidth,
           viewportHeight: r.viewportHeight,
+          // custom events only (type === "custom") - the developer-defined
+          // event's name and JSON-serializable properties, carried
+          // through from session_events.eventName/eventProperties
+          // unchanged. null for every other event type.
+          name: r.eventName,
+          properties: r.eventProperties,
         })),
       });
     }

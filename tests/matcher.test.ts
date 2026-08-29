@@ -157,3 +157,78 @@ describe("advanceMatch", () => {
     expect(afterMore).toEqual(state);
   });
 });
+
+describe("advanceMatch - custom (application/business) event steps", () => {
+  const funnelPattern: PatternDefinition = {
+    id: "pat_funnel",
+    siteId: "site_1",
+    name: "Checkout funnel",
+    matchWindowMs: 10 * 60 * 1000,
+    origin: "AUTHORED",
+    status: "ACTIVE",
+    feedback: { message: "Nice work completing checkout!", targetSelector: "#cta" },
+    steps: [
+      { id: "f1", verb: "click", target: { selector: "#pricing-cta" }, required: true, maxGapMs: 60_000 },
+      { id: "f2", verb: "custom", eventName: "checkout_started", required: true, maxGapMs: 60_000 },
+      { id: "f3", verb: "custom", eventName: "checkout_completed", required: true, maxGapMs: 120_000 },
+    ],
+  };
+
+  it("matches a sequence of DOM interactions and application events together", () => {
+    const events: IncomingEvent[] = [
+      { type: "click", timestamp: 0, element: { selector: "#pricing-cta" } },
+      { type: "custom", timestamp: 5_000, name: "checkout_started" },
+      { type: "custom", timestamp: 30_000, name: "checkout_completed", properties: { plan: "pro", amount: 49 } },
+    ];
+
+    let state = createInitialMatchState(funnelPattern.id, "sess_funnel_1");
+    state = advanceMatch(funnelPattern, state, events);
+
+    expect(state.status).toBe("matched");
+    expect(state.matchedSteps.map((m) => m.stepId)).toEqual(["f1", "f2", "f3"]);
+  });
+
+  it("does not match a differently-named custom event", () => {
+    const events: IncomingEvent[] = [
+      { type: "click", timestamp: 0, element: { selector: "#pricing-cta" } },
+      { type: "custom", timestamp: 5_000, name: "newsletter_signup" }, // wrong name
+    ];
+
+    let state = createInitialMatchState(funnelPattern.id, "sess_funnel_2");
+    state = advanceMatch(funnelPattern, state, events);
+
+    expect(state.status).toBe("in_progress");
+    expect(state.cursor).toBe(1); // stuck waiting for f2, never satisfied by a wrongly-named custom event
+  });
+
+  it("never lets a click/hover event satisfy a custom step, or vice versa", () => {
+    const events: IncomingEvent[] = [
+      { type: "click", timestamp: 0, element: { selector: "#pricing-cta" } },
+      // A click on some element named the same as the event, and a
+      // custom event, arrive in the wrong order/shape - only the
+      // correctly-typed, correctly-named custom event may satisfy f2.
+      { type: "click", timestamp: 1_000, element: { selector: "checkout_started" } },
+      { type: "custom", timestamp: 5_000, name: "checkout_started" },
+      { type: "custom", timestamp: 10_000, name: "checkout_completed" },
+    ];
+
+    let state = createInitialMatchState(funnelPattern.id, "sess_funnel_3");
+    state = advanceMatch(funnelPattern, state, events);
+
+    expect(state.status).toBe("matched");
+    expect(state.matchedSteps.map((m) => m.stepId)).toEqual(["f1", "f2", "f3"]);
+  });
+
+  it("a custom step with no eventName matches any custom event (name-agnostic)", () => {
+    const anyCustomPattern: PatternDefinition = {
+      ...funnelPattern,
+      steps: [{ id: "any1", verb: "custom", required: true }],
+    };
+    const events: IncomingEvent[] = [{ type: "custom", timestamp: 0, name: "literally_anything" }];
+
+    let state = createInitialMatchState(anyCustomPattern.id, "sess_funnel_4");
+    state = advanceMatch(anyCustomPattern, state, events);
+
+    expect(state.status).toBe("matched");
+  });
+});

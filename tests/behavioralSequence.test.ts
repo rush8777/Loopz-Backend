@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { compileBehavioralEvents, type CompilableRawEvent } from "../src/lib/behavior/behaviorCompiler.js";
 import { segmentIntoEpisodes } from "../src/lib/behavior/episodeSegmentation.js";
 import { behavioralSequenceForEpisode, behavioralSequenceForEvents, tokenForBehavioralEvent } from "../src/lib/behavior/behavioralSequence.js";
-import { createClickEvent, createDwellEvent, createPageEnterEvent, createScrollEvent } from "../src/lib/behavior/behavioralEvent.js";
+import { createClickEvent, createCustomEvent, createDwellEvent, createPageEnterEvent, createScrollEvent } from "../src/lib/behavior/behavioralEvent.js";
 import { elementIdentityFromSelector } from "../src/lib/behavior/elementIdentity.js";
 
 const BUTTON_POS = { x: 500, y: 300 };
@@ -56,6 +56,16 @@ describe("token format", () => {
   it("includes duration-bearing derived signals with their target", () => {
     const token = tokenForBehavioralEvent(createDwellEvent(0, elementIdentityFromSelector("#signup"), 900));
     expect(token).toBe("dwell:#signup");
+  });
+
+  it("produces 'custom:<name>' for a custom event, never a bare 'custom' token", () => {
+    expect(tokenForBehavioralEvent(createCustomEvent(0, "checkout_completed"))).toBe("custom:checkout_completed");
+  });
+
+  it("distinguishes different custom event names, unlike DOM-event tokens which share a kind", () => {
+    const started = tokenForBehavioralEvent(createCustomEvent(0, "checkout_started"));
+    const completed = tokenForBehavioralEvent(createCustomEvent(100, "checkout_completed"));
+    expect(started).not.toBe(completed);
   });
 });
 
@@ -125,5 +135,50 @@ describe("hundreds of cursor events collapse to a handful of tokens", () => {
     expect(tokens).toEqual(
       expect.arrayContaining(["page_enter", "element_approach:#signup", "hover_intent:#signup", "dwell:#signup", "click:#signup"])
     );
+  });
+});
+
+describe("custom events mixed into an episode sequence", () => {
+  function custom(timestamp: number, name: string, properties?: Record<string, unknown>): CompilableRawEvent {
+    return { type: "custom", timestamp, name, properties };
+  }
+
+  it("represents a mixed observed-behavior + application-event flow as one ordered sequence, per-event provenance intact", () => {
+    // The task's own example: click pricing CTA -> checkout_started ->
+    // (hover on payment field) -> payment_submitted -> checkout_completed.
+    const events: CompilableRawEvent[] = [
+      pageView(0),
+      click(100, "#pricing-cta", BUTTON_POS),
+      custom(200, "checkout_started"),
+      hover(300, "#payment-field", 400, { x: 300, y: 400 }),
+      custom(800, "payment_submitted"),
+      custom(900, "checkout_completed", { plan: "pro", amount: 49 }),
+    ];
+
+    const compiled = compileBehavioralEvents(events);
+    const episodes = segmentIntoEpisodes("sess_funnel", compiled);
+    expect(episodes).toHaveLength(1);
+
+    const tokens = behavioralSequenceForEpisode(episodes[0]);
+    expect(tokens).toEqual([
+      "page_enter",
+      "click:#pricing-cta",
+      "custom:checkout_started",
+      "hover_intent:#payment-field",
+      "custom:payment_submitted",
+      "custom:checkout_completed",
+    ]);
+  });
+
+  it("custom events never overwhelm or replace low-level behavioral tokens - both provenances coexist", () => {
+    const events: CompilableRawEvent[] = [pageView(0), click(100, "#a", BUTTON_POS), custom(200, "signed_up")];
+    const compiled = compileBehavioralEvents(events);
+    const episodes = segmentIntoEpisodes("sess_1", compiled);
+    const tokens = behavioralSequenceForEpisode(episodes[0]);
+
+    expect(tokens).toContain("click:#a");
+    expect(tokens).toContain("custom:signed_up");
+    expect(compiled.find((e) => e.kind === "click")?.category).toBe("discrete_action");
+    expect(compiled.find((e) => e.kind === "custom")?.category).toBe("application_event");
   });
 });

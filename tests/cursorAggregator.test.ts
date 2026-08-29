@@ -3,6 +3,7 @@ import { aggregateBehavioralEvents, DEFAULT_CURSOR_AGGREGATION_CONFIG } from "..
 import {
   isBehavioralEvent,
   isClickEvent,
+  isCustomEvent,
   isDwellEvent,
   isElementApproachEvent,
   isElementLeaveEvent,
@@ -494,5 +495,70 @@ describe("raw telemetry is never rewritten or deleted by the aggregator", () => 
     aggregateBehavioralEvents(events);
 
     expect(events).toEqual(snapshot);
+  });
+});
+
+describe("custom (application/business) events pass through the real production pipeline", () => {
+  function custom(timestamp: number, name: string, properties?: Record<string, unknown>): IncomingEvent {
+    return { type: "custom", timestamp, name, properties };
+  }
+
+  it("appears in the output as a custom BehavioralEvent with name/properties intact", () => {
+    const events: IncomingEvent[] = [pageView(0), custom(100, "checkout_completed", { plan: "pro", amount: 49 })];
+    const result = aggregateBehavioralEvents(events);
+
+    const customs = result.filter(isCustomEvent);
+    expect(customs).toHaveLength(1);
+    expect(customs[0]).toMatchObject({ name: "checkout_completed", properties: { plan: "pro", amount: 49 } });
+  });
+
+  it("does not reset or flush an in-progress hover/cursor anchor run", () => {
+    // A custom event fired mid-hover must not truncate the hover's
+    // dwell/hesitation read - see cursorAggregator.ts's "custom" case
+    // doc comment.
+    const events: IncomingEvent[] = [
+      pageView(0),
+      hover(100, "#signup", 50, BUTTON_POS),
+      ...backAndForth({ startTimestamp: 150, stepMs: 40, center: BUTTON_POS, amplitudePx: 30, cycles: 4 }),
+      custom(300, "form_started"),
+      ...backAndForth({ startTimestamp: 350, stepMs: 40, center: BUTTON_POS, amplitudePx: 30, cycles: 4 }),
+      hover(700, "#signup", 250, BUTTON_POS),
+    ];
+
+    const withCustom = aggregateBehavioralEvents(events);
+    const withoutCustom = aggregateBehavioralEvents(events.filter((e) => e.type !== "custom"));
+
+    // Same derived-signal kinds fire whether or not the custom event is
+    // interleaved - its presence must be strictly additive, not
+    // disruptive to the anchor state machine.
+    const kindsOf = (evts: typeof withCustom) => evts.filter((e) => e.kind !== "custom").map((e) => e.kind);
+    expect(kindsOf(withCustom)).toEqual(kindsOf(withoutCustom));
+    expect(withCustom.some(isCustomEvent)).toBe(true);
+  });
+
+  it("never produces a click/hover-shaped event and carries no element", () => {
+    const events: IncomingEvent[] = [pageView(0), custom(100, "signed_up")];
+    const result = aggregateBehavioralEvents(events);
+    const signedUp = result.find(isCustomEvent);
+    expect(signedUp).toBeDefined();
+    expect(signedUp).not.toHaveProperty("element");
+  });
+
+  it("preserves multiple distinct custom events in timestamp order alongside DOM events", () => {
+    const events: IncomingEvent[] = [
+      pageView(0),
+      click(100, "#pricing-cta", BUTTON_POS),
+      custom(200, "checkout_started"),
+      custom(300, "payment_submitted"),
+      custom(400, "checkout_completed", { plan: "pro" }),
+    ];
+    const result = aggregateBehavioralEvents(events);
+    const kinds = result.map((e) => e.kind);
+    expect(kinds).toEqual(["page_enter", "click", "custom", "custom", "custom"]);
+    expect(result.filter(isCustomEvent).map((e) => e.name)).toEqual([
+      "checkout_started",
+      "payment_submitted",
+      "checkout_completed",
+    ]);
   });
 });

@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, uniqueIndex, index } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 /**
@@ -440,7 +440,7 @@ export const sessionEvents = sqliteTable(
     // whatever value it's sent, never generates or mutates one. Nullable
     // for the same backward-compatibility reason as eventId/anonymousId.
     pageViewId: text("page_view_id"),
-    type: text("type").notNull(), // page_view | hover | click | scroll | cursor
+    type: text("type").notNull(), // page_view | hover | click | scroll | cursor | custom
     timestamp: integer("timestamp", { mode: "timestamp_ms" }).notNull(),
     // Path of the page this event occurred on (page_view events only, from
     // PageContext.path) - what lets the user-profile activity feed say
@@ -465,6 +465,18 @@ export const sessionEvents = sqliteTable(
     y: integer("y"),
     viewportWidth: integer("viewport_width"),
     viewportHeight: integer("viewport_height"),
+    // Developer-defined custom events (analytics.event(name, properties?),
+    // type === "custom" only). `eventName` is the caller's chosen event
+    // name ("checkout_completed") - kept as its own indexable-by-value
+    // column, distinct from `type`, so "which custom events happened"
+    // stays queryable without parsing JSON. `eventProperties` is the
+    // caller's arbitrary JSON-serializable properties object, stored
+    // opaquely: this is deliberately NOT flattened into dedicated
+    // columns (property names/shapes are per-customer and unbounded, the
+    // same reasoning as identify()'s traits - see resolveIdentity.ts).
+    // Both null for every non-custom event type.
+    eventName: text("event_name"),
+    eventProperties: text("event_properties", { mode: "json" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .notNull()
       .default(sql`(unixepoch('now') * 1000)`),
@@ -477,6 +489,17 @@ export const sessionEvents = sqliteTable(
     // other under SQLite's default unique-index semantics, which is the
     // desired behavior - see the eventId column comment above.
     uniqueIndex("session_events_site_event_unique").on(table.siteId, table.eventId),
+    // Covers the Event Explorer's query shape end to end: the catalog
+    // query (WHERE site_id=? AND type='custom' GROUP BY event_name),
+    // and the detail/occurrences/timeseries queries (WHERE site_id=?
+    // AND type='custom' AND event_name=? [AND timestamp BETWEEN ...]
+    // ORDER BY timestamp) both match this index's column order as a
+    // prefix, including satisfying the ORDER BY without a separate
+    // sort. Not scoped to type='custom' only (SQLite doesn't support
+    // partial indexes via Drizzle's sqliteTable API used elsewhere in
+    // this file) - the leading (site_id, type) columns already keep it
+    // useful for any other type-scoped query, not just custom events.
+    index("session_events_site_type_name_ts_idx").on(table.siteId, table.type, table.eventName, table.timestamp),
   ]
 );
 

@@ -52,7 +52,7 @@ import type { ElementIdentity } from "./elementIdentity.js";
  * nothing yet synthesizes them from raw events.
  */
 
-export type BehavioralEventCategory = "discrete_action" | "intent_signal" | "derived_signal";
+export type BehavioralEventCategory = "discrete_action" | "intent_signal" | "derived_signal" | "application_event";
 
 export type BehavioralEventKind =
   | "page_enter"
@@ -68,7 +68,25 @@ export type BehavioralEventKind =
   | "reversal"
   | "repeated_action"
   | "repeated_attention"
-  | "possible_failed_action";
+  | "possible_failed_action"
+  | "custom";
+
+/**
+ * A fifth bucket sits alongside the three above, deliberately NOT
+ * folded into any of them: `"application_event"` - a developer-defined
+ * business event (`analytics.event(name, properties?)` on the SDK,
+ * `type === "custom"` on the wire). This is NOT observed behavior the
+ * way discrete_action/intent_signal/derived_signal are - it's the
+ * application telling this system something happened
+ * ("checkout_completed"), with whatever meaning the developer assigned
+ * it. Application events are never DOM-target-shaped (no `element`),
+ * never inferred from cursor/click geometry, and never reclassified as
+ * one of the observed-behavior categories - see `kind: "custom"`
+ * below. Keeping this a separate category is what lets a later insight
+ * layer ask "what did the user do" and "what did the application
+ * report" as two different, combinable questions instead of one
+ * blended one.
+ */
 
 /** Single source of truth for which bucket each kind belongs to - constructors below read from this so an event's `category` can never drift from its `kind`. */
 export const BEHAVIORAL_EVENT_CATEGORY: Record<BehavioralEventKind, BehavioralEventCategory> = {
@@ -89,6 +107,8 @@ export const BEHAVIORAL_EVENT_CATEGORY: Record<BehavioralEventKind, BehavioralEv
   repeated_action: "derived_signal",
   repeated_attention: "derived_signal",
   possible_failed_action: "derived_signal",
+  // 4 (5th bucket). Application/business events - see the comment above.
+  custom: "application_event",
 };
 
 /**
@@ -291,6 +311,23 @@ export interface PossibleFailedActionEvent extends BehavioralEventCommon {
   evidence?: BehavioralEventEvidence;
 }
 
+/**
+ * Application/business event bucket: a developer-defined event
+ * (`analytics.event(name, properties?)` on the SDK) reported as-is,
+ * not derived from any DOM interaction or cursor evidence. Directly
+ * 1:1 from a raw `custom` `IncomingEvent` - see `compileEvent.ts` and
+ * `cursorAggregator.ts`'s `"custom"` cases, both of which just carry
+ * `name`/`properties` through unchanged. `element` is deliberately
+ * absent from this interface: custom events are never DOM-selector-
+ * scoped, by construction (task constraint: "do not make custom events
+ * dependent on DOM selectors").
+ */
+export interface CustomEvent extends BehavioralEventCommon {
+  kind: "custom";
+  name: string;
+  properties?: Record<string, unknown>;
+}
+
 export type BehavioralEvent =
   | PageEnterEvent
   | ClickEvent
@@ -305,7 +342,8 @@ export type BehavioralEvent =
   | ReversalEvent
   | RepeatedActionEvent
   | RepeatedAttentionEvent
-  | PossibleFailedActionEvent;
+  | PossibleFailedActionEvent
+  | CustomEvent;
 
 // ---------------------------------------------------------------------------
 // Constructors. Each one is the only place that sets `category`, so category
@@ -420,6 +458,10 @@ export function createPossibleFailedActionEvent(
   return { kind: "possible_failed_action", category: BEHAVIORAL_EVENT_CATEGORY.possible_failed_action, timestamp, ...opts };
 }
 
+export function createCustomEvent(timestamp: number, name: string, properties?: Record<string, unknown>): CustomEvent {
+  return { kind: "custom", category: BEHAVIORAL_EVENT_CATEGORY.custom, timestamp, name, properties };
+}
+
 // ---------------------------------------------------------------------------
 // Type guards / helpers
 // ---------------------------------------------------------------------------
@@ -450,6 +492,11 @@ export function isDerivedSignal(event: BehavioralEvent): boolean {
   return event.category === "derived_signal";
 }
 
+/** Application/business events (see the module doc comment) - never observed behavior, never DOM-derived. */
+export function isApplicationEvent(event: BehavioralEvent): boolean {
+  return event.category === "application_event";
+}
+
 /** Builds a `kind === "..."` type guard for one specific BehavioralEvent kind, narrowing to that kind's interface. */
 function kindGuard<K extends BehavioralEventKind>(kind: K) {
   return (event: BehavioralEvent): event is Extract<BehavioralEvent, { kind: K }> => event.kind === kind;
@@ -469,3 +516,4 @@ export const isReversalEvent = kindGuard("reversal");
 export const isRepeatedActionEvent = kindGuard("repeated_action");
 export const isRepeatedAttentionEvent = kindGuard("repeated_attention");
 export const isPossibleFailedActionEvent = kindGuard("possible_failed_action");
+export const isCustomEvent = kindGuard("custom");

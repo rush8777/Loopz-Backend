@@ -2,6 +2,7 @@ import type { IncomingEvent } from "../patterns/event.js";
 import { elementIdentityFromRaw } from "./elementIdentity.js";
 import {
   createClickEvent,
+  createCustomEvent,
   createDwellEvent,
   createElementApproachEvent,
   createElementLeaveEvent,
@@ -525,6 +526,26 @@ export function aggregateBehavioralEvents(
       case "hover":
       case "click": {
         handleAnchorEvent(event as IncomingEvent & { type: "hover" | "click" });
+        break;
+      }
+      case "custom": {
+        // Application/business event - deliberately NOT routed through
+        // handleBoundaryReset/handleAnchorEvent: it carries no DOM
+        // target and isn't cursor/hover-derived evidence, so it must
+        // not flush or reset the anchor hover-run state machine above
+        // (that would make an unrelated analytics.event() call able to
+        // silently truncate an in-progress hesitation/dwell read on
+        // whatever element the user's cursor is actually near). It's
+        // simply appended at its own timestamp as an independent,
+        // orthogonal signal - see behavioralEvent.ts's
+        // "application_event" category doc comment for why this stays
+        // a separate bucket rather than being folded into discrete
+        // actions.
+        //
+        // event.name is guaranteed present by validation.ts whenever
+        // type === "custom"; the guard here only protects a caller
+        // that bypasses that validation.
+        if (event.name) output.push(createCustomEvent(event.timestamp, event.name, event.properties));
         break;
       }
       default:

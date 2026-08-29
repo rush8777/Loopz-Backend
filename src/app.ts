@@ -10,6 +10,7 @@ import { registerPatternObserverRoutes } from "./routes/pattern-observer.js";
 import { registerElementRoutes } from "./routes/elements.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerPageRoutes } from "./routes/pages.js";
+import { registerEventRoutes } from "./routes/events.js";
 import { registerTrackedUserRoutes } from "./routes/tracked-users.js";
 import { registerAnonymousUserRoutes } from "./routes/anonymous-users.js";
 import { registerPublicConfigRoutes } from "./routes/public-config.js";
@@ -42,6 +43,7 @@ export async function buildApp(db: Db) {
   registerElementRoutes(app, db);
   registerSessionRoutes(app, db);
   registerPageRoutes(app, db);
+  registerEventRoutes(app, db);
   registerTrackedUserRoutes(app, db);
   registerAnonymousUserRoutes(app, db);
 

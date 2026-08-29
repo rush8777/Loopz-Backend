@@ -1,7 +1,14 @@
 import type { IncomingEvent } from "../patterns/event.js";
 import { elementIdentityFromRaw } from "./elementIdentity.js";
 import { isRawTelemetryEvent } from "./rawTelemetry.js";
-import { createClickEvent, createHoverIntentEvent, createPageEnterEvent, createScrollEvent, type BehavioralEvent } from "./behavioralEvent.js";
+import {
+  createClickEvent,
+  createHoverIntentEvent,
+  createPageEnterEvent,
+  createScrollEvent,
+  createCustomEvent,
+  type BehavioralEvent,
+} from "./behavioralEvent.js";
 
 /**
  * Maps one raw `IncomingEvent` to one `BehavioralEvent`, for the subset
@@ -14,6 +21,10 @@ import { createClickEvent, createHoverIntentEvent, createPageEnterEvent, createS
  *                  be a direct mapping rather than requiring
  *                  aggregation)
  *   - scroll    -> scroll
+ *   - custom    -> custom (application/business event - name/properties
+ *                  carried through verbatim, never inferred or
+ *                  DOM-derived; see behavioralEvent.ts's
+ *                  "application_event" category doc comment)
  *
  * Returns `null` for anything that should NOT become a standalone
  * behavioral event at this layer:
@@ -45,6 +56,11 @@ export function compileToBehavioralEvent(event: IncomingEvent): BehavioralEvent 
       return createHoverIntentEvent(event.timestamp, elementIdentityFromRaw(event.element), event.durationMs ?? 0);
     case "scroll":
       return createScrollEvent(event.timestamp, event.scrollPercent ?? 0);
+    case "custom":
+      // event.name is guaranteed present by validation.ts whenever
+      // type === "custom"; the fallback here only guards a caller that
+      // bypasses that validation (e.g. a hand-built test fixture).
+      return event.name ? createCustomEvent(event.timestamp, event.name, event.properties) : null;
     default:
       // Exhaustive over IncomingEvent["type"] given the isRawTelemetryEvent
       // check above already handled "cursor". Anything else unrecognized

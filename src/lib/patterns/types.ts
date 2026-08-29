@@ -14,7 +14,7 @@
  * strategy later only touches `matchesTarget()` below, not the FSM.
  */
 
-export type PatternStepVerb = "enter" | "hover" | "click" | "scroll_past";
+export type PatternStepVerb = "enter" | "hover" | "click" | "scroll_past" | "custom";
 
 export interface PatternStepTarget {
   /** Matches ElementDescriptor.selector from an SDK event payload. Exact match for this pass. */
@@ -24,11 +24,23 @@ export interface PatternStepTarget {
 export interface PatternStep {
   id: string;
   verb: PatternStepVerb;
-  /** Omitted for "enter" (page-level, no target element). */
+  /** Omitted for "enter" (page-level, no target element) and "custom" (matched by eventName instead, see below). */
   target?: PatternStepTarget;
   /** verb === "hover": minimum dwell time to count. verb === "scroll_past": minimum scroll percent (0-100). */
   minDurationMs?: number;
   minScrollPercent?: number;
+  /**
+   * verb === "custom" only - the developer-defined event name this step
+   * matches against (`analytics.event(name, ...)`'s `name`), e.g.
+   * "checkout_completed". This is how a pattern references an
+   * application/business event as a step in a sequence - see
+   * matcher.ts's `stepIsSatisfiedBy`. Property values are deliberately
+   * NOT matchable in this pass (name-only, same "buildable-today
+   * substitute" reasoning as selector-based target matching above);
+   * matching on specific property values is a natural follow-up once
+   * there's a UI for authoring that condition.
+   */
+  eventName?: string;
   /**
    * If false, this step doesn't reset the match when skipped - it's
    * "nice to have but the pattern still counts without it" (per the

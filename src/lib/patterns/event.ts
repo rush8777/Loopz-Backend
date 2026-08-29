@@ -1,5 +1,5 @@
 export interface IncomingEvent {
-  type: "page_view" | "hover" | "click" | "scroll" | "cursor";
+  type: "page_view" | "hover" | "click" | "scroll" | "cursor" | "custom";
   timestamp: number; // epoch ms
   /**
    * `label`/`role` are optional, SDK-computed display metadata (see the
@@ -22,4 +22,23 @@ export interface IncomingEvent {
   /** Viewport size active when x/y was captured, for normalizing across screen sizes. */
   viewportWidth?: number;
   viewportHeight?: number;
+  /**
+   * `custom` events only - the developer-defined event contract
+   * (`analytics.event(name, properties?)` on the SDK). `name` identifies
+   * *which* application event this is; `properties` is whatever
+   * JSON-serializable data the caller passed, carried through as an
+   * opaque bag - never interpreted or flattened by this layer, the same
+   * way identify()'s `traits` are handled.
+   */
+  name?: string;
+  properties?: Record<string, JsonValue>;
 }
+
+/**
+ * A JSON-serializable value, recursively - the shape `custom` events'
+ * `properties` are validated against at the ingestion boundary (see
+ * validation.ts's structurally-identical `jsonValueSchema`) and
+ * therefore guaranteed to already have by the time an `IncomingEvent`
+ * exists.
+ */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
