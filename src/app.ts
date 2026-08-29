@@ -12,6 +12,7 @@ import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerPageRoutes } from "./routes/pages.js";
 import { registerEventRoutes } from "./routes/events.js";
 import { registerTrackedUserRoutes } from "./routes/tracked-users.js";
+import { registerSegmentRoutes } from "./routes/segments.js";
 import { registerAnonymousUserRoutes } from "./routes/anonymous-users.js";
 import { registerPublicConfigRoutes } from "./routes/public-config.js";
 import { registerPublicEventsRoutes } from "./routes/public-events.js";
@@ -46,6 +47,7 @@ export async function buildApp(db: Db) {
   registerEventRoutes(app, db);
   registerTrackedUserRoutes(app, db);
   registerAnonymousUserRoutes(app, db);
+  registerSegmentRoutes(app, db);
 
   await app.register(async (publicScope) => {
     await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });

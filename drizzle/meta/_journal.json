@@ -99,6 +99,13 @@
       "when": 1787900000000,
       "tag": "0013_event_explorer_index",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1788000000000,
+      "tag": "0014_segments",
+      "breakpoints": true
     }
   ]
 }
