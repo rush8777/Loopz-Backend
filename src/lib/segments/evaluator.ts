@@ -4,6 +4,7 @@ import { sessionEvents, trackedUserAliases, trackedUsers, trackedUserProperties,
 import { matchesRules } from "../pages/pageMatcher.js";
 import { loadPagePathStats } from "../pages/pageAggregation.js";
 import type { PageRule } from "../pages/types.js";
+import { hydrateIdentities, type IdentitySummary } from "../identity/hydrate.js";
 import { isGroup } from "./types.js";
 import type {
   EventCondition,
@@ -182,8 +183,8 @@ async function resolvePropertyCondition(db: Db, siteId: string, c: UserPropertyC
 // ---------------------------------------------------------------------------
 // Condition C: page visited
 
-/** Resolves a Page's rules (task brief section 3C: reuse the page-definition system, not a second page-tracking model) to the concrete pagePaths currently matching it - same pattern routes/pages.ts already uses for its own metrics. */
-async function resolveMatchedPaths(db: Db, siteId: string, pageId: string): Promise<string[] | null> {
+/** Resolves a Page's rules (task brief section 3C: reuse the page-definition system, not a second page-tracking model) to the concrete pagePaths currently matching it - same pattern routes/pages.ts already uses for its own metrics. Exported for lib/funnels/evaluator.ts's page steps, so both features resolve a Page reference identically. */
+export async function resolveMatchedPagePaths(db: Db, siteId: string, pageId: string): Promise<string[] | null> {
   const [page] = await db.select().from(pageDefinitions).where(eq(pageDefinitions.id, pageId)).limit(1);
   if (!page || page.siteId !== siteId) return null; // dangling/cross-site reference - treated as "matches nobody" by the caller
   const pathStats = await loadPagePathStats(db, siteId);
@@ -191,7 +192,7 @@ async function resolveMatchedPaths(db: Db, siteId: string, pageId: string): Prom
 }
 
 async function resolvePageCondition(db: Db, siteId: string, c: PageCondition, universe: UniverseFn): Promise<Set<IdentityKey>> {
-  const matchedPaths = await resolveMatchedPaths(db, siteId, c.pageId);
+  const matchedPaths = await resolveMatchedPagePaths(db, siteId, c.pageId);
   if (matchedPaths === null || matchedPaths.length === 0) {
     return c.operator === "visited" ? new Set() : await universe();
   }
@@ -276,15 +277,9 @@ export async function getSegmentAudienceCount(db: Db, siteId: string, definition
   return ids.size;
 }
 
-export interface SegmentMember {
-  identityType: "identified" | "anonymous";
-  trackedUserId: string | null;
-  externalUserId: string | null;
-  anonymousId: string | null;
-  lastSeenAt: string | null;
-}
+export type SegmentMember = IdentitySummary;
 
-/** Paginated, hydrated membership (task brief section 14) - resolves each identity key to either a tracked user (identified) or a bare anonymousId row, never loading the full unbounded set into memory for display. */
+/** Paginated, hydrated membership (task brief section 14) - resolves each identity key via the shared hydrateIdentities helper, never loading the full unbounded set into memory for display. */
 export async function getSegmentMembers(
   db: Db,
   siteId: string,
@@ -294,42 +289,6 @@ export async function getSegmentMembers(
   const allIds = [...(await evaluateSegment(db, siteId, definition))];
   const total = allIds.length;
   const page = allIds.slice(opts.offset, opts.offset + opts.limit);
-  if (page.length === 0) return { members: [], total };
-
-  const trackedRows = await db.select().from(trackedUsers).where(and(eq(trackedUsers.siteId, siteId), inArray(trackedUsers.id, page)));
-  const trackedById = new Map(trackedRows.map((r) => [r.id, r]));
-
-  const anonymousIds = page.filter((id) => !trackedById.has(id));
-  const anonymousLastSeen = new Map<string, number>();
-  if (anonymousIds.length > 0) {
-    const rows = await db
-      .select({ anonymousId: sessionEvents.anonymousId, lastSeen: sql<number>`max(${sessionEvents.timestamp})` })
-      .from(sessionEvents)
-      .where(and(eq(sessionEvents.siteId, siteId), inArray(sessionEvents.anonymousId, anonymousIds)))
-      .groupBy(sessionEvents.anonymousId);
-    for (const r of rows) if (r.anonymousId) anonymousLastSeen.set(r.anonymousId, r.lastSeen);
-  }
-
-  const members: SegmentMember[] = page.map((id) => {
-    const tu = trackedById.get(id);
-    if (tu) {
-      return {
-        identityType: "identified",
-        trackedUserId: tu.id,
-        externalUserId: tu.externalUserId,
-        anonymousId: null,
-        lastSeenAt: tu.lastSeenAt.toISOString(),
-      };
-    }
-    const lastSeen = anonymousLastSeen.get(id);
-    return {
-      identityType: "anonymous",
-      trackedUserId: null,
-      externalUserId: null,
-      anonymousId: id,
-      lastSeenAt: lastSeen != null ? new Date(lastSeen).toISOString() : null,
-    };
-  });
-
+  const members = await hydrateIdentities(db, siteId, page);
   return { members, total };
 }

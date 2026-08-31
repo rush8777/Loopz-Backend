@@ -739,6 +739,47 @@ export const segments = sqliteTable(
 );
 
 /**
+ * Funnels (task brief: Build Funnels V1). `steps` is an ordered JSON
+ * array of FunnelStep (src/lib/funnels/types.ts) - event or page
+ * steps, validated at the boundary (src/lib/funnels/validation.ts)
+ * before it reaches this column, same precedent as `segments.definition`
+ * above. `conversionWindowMinutes` is the funnel-level max time from
+ * the first step to any later step (task brief section 9) - stored as
+ * a plain integer rather than a `{value, unit}` JSON blob since it's a
+ * single scalar the evaluator needs directly in query math.
+ *
+ * No `funnel_results` table (task brief section 22): conversion
+ * numbers are always derived from current session_events/page data by
+ * the evaluator (src/lib/funnels/evaluator.ts), same "definition
+ * persists, analytics is derived" precedent as Segments.
+ *
+ * Deliberately no `segment_id` column here - task brief section 17's
+ * segment filter is an analysis-time parameter (like the date range),
+ * not a saved part of the funnel definition; see routes/funnels.ts's
+ * `/analyze` and `/steps/:stepIndex/users` endpoints.
+ */
+export const funnels = sqliteTable(
+  "funnels",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("fun")),
+    siteId: text("site_id")
+      .notNull()
+      .references(() => sites.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    steps: text("steps", { mode: "json" }).notNull(),
+    conversionWindowMinutes: integer("conversion_window_minutes").notNull().default(1440), // 24h default - task brief section 9's "sensible V1 default"
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(sql`(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(sql`(unixepoch('now') * 1000)`),
+  },
+  (table) => [index("funnels_site_name_idx").on(table.siteId, table.name)]
+);
+
+/**
  * Minimal audit trail - who did what, scoped to an org.
  */
 export const auditLogs = sqliteTable("audit_logs", {
