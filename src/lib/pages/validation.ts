@@ -23,6 +23,7 @@ export const createPageSchema = z.object({
   area: z.string().min(1).max(120).optional(),
   pageType: z.enum(PAGE_TYPES as [string, ...string[]]).optional(),
   rules: rulesArraySchema,
+  heatmapEnabled: z.boolean().optional(),
 });
 
 export const updatePageSchema = z.object({
@@ -31,6 +32,7 @@ export const updatePageSchema = z.object({
   area: z.string().min(1).max(120).optional(),
   pageType: z.enum(PAGE_TYPES as [string, ...string[]]).optional(),
   rules: rulesArraySchema.optional(),
+  heatmapEnabled: z.boolean().optional(),
 });
 
 export const previewRulesSchema = z.object({

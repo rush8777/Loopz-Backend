@@ -113,10 +113,11 @@ describe("org RBAC and tenant isolation", () => {
     expect(publicA.json()).toEqual({
       siteId: siteA.siteId,
       config: { sessionReplay: { enabled: true } },
+      heatmapStates: [],
     });
 
     const publicB = await ctx.app.inject({ method: "GET", url: `/public/config/${siteB.siteId}` });
-    expect(publicB.json()).toEqual({ siteId: siteB.siteId, config: {} });
+    expect(publicB.json()).toEqual({ siteId: siteB.siteId, config: {}, heatmapStates: [] });
 
     // Never leaks orgId, internal id, or domain - only siteId + the allowlisted config.
     expect(publicA.json()).not.toHaveProperty("orgId");

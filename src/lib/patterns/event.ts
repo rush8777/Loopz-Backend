@@ -1,5 +1,5 @@
 export interface IncomingEvent {
-  type: "page_view" | "hover" | "click" | "scroll" | "cursor" | "custom";
+  type: "page_view" | "hover" | "click" | "scroll" | "cursor" | "rage_click" | "custom";
   timestamp: number; // epoch ms
   /**
    * `label`/`role` are optional, SDK-computed display metadata (see the
@@ -22,6 +22,14 @@ export interface IncomingEvent {
   /** Viewport size active when x/y was captured, for normalizing across screen sizes. */
   viewportWidth?: number;
   viewportHeight?: number;
+  documentX?: number;
+  documentY?: number;
+  documentWidth?: number;
+  documentHeight?: number;
+  deviceClass?: "desktop" | "tablet" | "mobile";
+  heatmapStateId?: string;
+  /** Existing SDK rage-click detector's aggregate cluster size. */
+  rageClickCount?: number;
   /**
    * `custom` events only - the developer-defined event contract
    * (`analytics.event(name, properties?)` on the SDK). `name` identifies

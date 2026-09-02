@@ -19,6 +19,7 @@ import { registerPublicConfigRoutes } from "./routes/public-config.js";
 import { registerPublicEventsRoutes } from "./routes/public-events.js";
 import { registerPublicReplayRoutes } from "./routes/public-replay.js";
 import { registerPublicElementsRoutes } from "./routes/public-elements.js";
+import { registerHeatmapRoutes } from "./routes/heatmaps.js";
 
 export async function buildApp(db: Db) {
   const app = Fastify({ logger: false });
@@ -50,6 +51,7 @@ export async function buildApp(db: Db) {
   registerAnonymousUserRoutes(app, db);
   registerSegmentRoutes(app, db);
   registerFunnelRoutes(app, db);
+  registerHeatmapRoutes(app, db);
 
   await app.register(async (publicScope) => {
     await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });

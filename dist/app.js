@@ -12,11 +12,13 @@ import { registerPageRoutes } from "./routes/pages.js";
 import { registerEventRoutes } from "./routes/events.js";
 import { registerTrackedUserRoutes } from "./routes/tracked-users.js";
 import { registerSegmentRoutes } from "./routes/segments.js";
+import { registerFunnelRoutes } from "./routes/funnels.js";
 import { registerAnonymousUserRoutes } from "./routes/anonymous-users.js";
 import { registerPublicConfigRoutes } from "./routes/public-config.js";
 import { registerPublicEventsRoutes } from "./routes/public-events.js";
 import { registerPublicReplayRoutes } from "./routes/public-replay.js";
 import { registerPublicElementsRoutes } from "./routes/public-elements.js";
+import { registerHeatmapRoutes } from "./routes/heatmaps.js";
 export async function buildApp(db) {
     const app = Fastify({ logger: false });
     await app.register(cors, {
@@ -42,6 +44,8 @@ export async function buildApp(db) {
     registerTrackedUserRoutes(app, db);
     registerAnonymousUserRoutes(app, db);
     registerSegmentRoutes(app, db);
+    registerFunnelRoutes(app, db);
+    registerHeatmapRoutes(app, db);
     await app.register(async (publicScope) => {
         await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
         registerPublicConfigRoutes(publicScope, db);

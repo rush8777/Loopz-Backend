@@ -1,5 +1,5 @@
 import { eq, and } from "drizzle-orm";
-import { sites, elementCatalog } from "../db/schema.js";
+import { sites, elementCatalog, elementPageSightings } from "../db/schema.js";
 import { trackElementsBodySchema } from "../lib/patterns/validation.js";
 /**
  * Public, unauthenticated (same trust model as /public/events and
@@ -36,7 +36,9 @@ export function registerPublicElementsRoutes(app, db) {
                 .from(elementCatalog)
                 .where(and(eq(elementCatalog.siteId, site.id), eq(elementCatalog.selector, el.selector)))
                 .limit(1);
+            let elementId;
             if (existing) {
+                elementId = existing.id;
                 const preserveManualLabel = existing.source === "manual";
                 await db
                     .update(elementCatalog)
@@ -50,7 +52,7 @@ export function registerPublicElementsRoutes(app, db) {
                 updated += 1;
             }
             else {
-                await db.insert(elementCatalog).values({
+                const [inserted] = await db.insert(elementCatalog).values({
                     siteId: site.id,
                     selector: el.selector,
                     tagName: el.tagName,
@@ -60,8 +62,34 @@ export function registerPublicElementsRoutes(app, db) {
                     seenCount: 1,
                     firstSeenAt: now,
                     lastSeenAt: now,
-                });
+                }).returning({ id: elementCatalog.id });
+                elementId = inserted.id;
                 created += 1;
+            }
+            // Older SDK payloads did not include pagePath. Continue refreshing the
+            // global catalog for them, but only current payloads can create a Page sighting.
+            if (!parsed.data.pagePath)
+                continue;
+            const [existingSighting] = await db
+                .select()
+                .from(elementPageSightings)
+                .where(and(eq(elementPageSightings.siteId, site.id), eq(elementPageSightings.elementId, elementId), eq(elementPageSightings.pagePath, parsed.data.pagePath)))
+                .limit(1);
+            if (existingSighting) {
+                await db
+                    .update(elementPageSightings)
+                    .set({ seenCount: existingSighting.seenCount + 1, lastSeenAt: now })
+                    .where(eq(elementPageSightings.id, existingSighting.id));
+            }
+            else {
+                await db.insert(elementPageSightings).values({
+                    siteId: site.id,
+                    elementId,
+                    pagePath: parsed.data.pagePath,
+                    firstSeenAt: now,
+                    lastSeenAt: now,
+                    seenCount: 1,
+                });
             }
         }
         return reply.send({ created, updated });

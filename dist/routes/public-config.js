@@ -1,5 +1,5 @@
-import { eq } from "drizzle-orm";
-import { sites } from "../db/schema.js";
+import { and, eq } from "drizzle-orm";
+import { sites, pageDefinitions, pageHeatmapStates } from "../db/schema.js";
 /**
  * The one endpoint in this service with NO authentication at all -
  * called directly by the SDK from anonymous visitors' browsers on
@@ -27,9 +27,15 @@ export function registerPublicConfigRoutes(app, db) {
             return reply.code(404).send({ error: "site_not_found" });
         }
         reply.header("Cache-Control", "public, max-age=60");
+        const heatmapStates = await db
+            .select({ id: pageHeatmapStates.id, selector: pageHeatmapStates.selector })
+            .from(pageHeatmapStates)
+            .innerJoin(pageDefinitions, eq(pageHeatmapStates.pageDefinitionId, pageDefinitions.id))
+            .where(and(eq(pageHeatmapStates.siteId, site.id), eq(pageDefinitions.heatmapEnabled, true)));
         return reply.send({
             siteId: site.publicId,
             config: site.publicConfig,
+            heatmapStates,
         });
     });
 }

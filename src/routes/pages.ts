@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { sites, pageDefinitions } from "../db/schema.js";
+import { sites, pageDefinitions, elementCatalog, elementPageSightings } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createPageSchema, updatePageSchema, previewRulesSchema } from "../lib/pages/validation.js";
@@ -30,6 +30,7 @@ function serializePage(row: typeof pageDefinitions.$inferSelect, metrics: PageMe
     area: row.area,
     pageType: row.pageType,
     rules: row.rules as PageRule[],
+    heatmapEnabled: row.heatmapEnabled,
     views: metrics.views,
     uniqueVisitors: metrics.uniqueVisitors,
     uniqueSessions: metrics.uniqueSessions,
@@ -65,6 +66,7 @@ export function registerPageRoutes(app: FastifyInstance, db: Db) {
           area: parsed.data.area ?? null,
           pageType: parsed.data.pageType ?? null,
           rules: parsed.data.rules,
+          heatmapEnabled: parsed.data.heatmapEnabled ?? false,
         })
         .returning();
 
@@ -76,6 +78,74 @@ export function registerPageRoutes(app: FastifyInstance, db: Db) {
       const metrics = await computeMatchedMetrics(db, site.id, matchedPaths);
 
       return reply.code(201).send(serializePage(page, metrics));
+    }
+  );
+
+  app.get(
+    "/orgs/:orgId/sites/:siteId/pages/:pageId/elements",
+    { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] },
+    async (request, reply) => {
+      const { siteId, pageId } = request.params as { siteId: string; pageId: string };
+      const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
+      if (!site) return reply.code(404).send({ error: "site_not_found" });
+
+      const [page] = await db.select().from(pageDefinitions).where(eq(pageDefinitions.id, pageId)).limit(1);
+      if (!page || page.siteId !== site.id) return reply.code(404).send({ error: "page_not_found" });
+
+      const rows = await db
+        .select({ element: elementCatalog, sighting: elementPageSightings })
+        .from(elementPageSightings)
+        .innerJoin(elementCatalog, eq(elementPageSightings.elementId, elementCatalog.id))
+        .where(eq(elementPageSightings.siteId, site.id));
+
+      const rules = page.rules as PageRule[];
+      const aggregated = new Map<
+        string,
+        {
+          element: typeof elementCatalog.$inferSelect;
+          seenCount: number;
+          firstSeenAt: Date;
+          lastSeenAt: Date;
+          matchedPaths: Set<string>;
+        }
+      >();
+
+      for (const row of rows) {
+        if (!matchesRules(row.sighting.pagePath, rules)) continue;
+        const current = aggregated.get(row.element.id);
+        if (current) {
+          current.seenCount += row.sighting.seenCount;
+          if (row.sighting.firstSeenAt < current.firstSeenAt) current.firstSeenAt = row.sighting.firstSeenAt;
+          if (row.sighting.lastSeenAt > current.lastSeenAt) current.lastSeenAt = row.sighting.lastSeenAt;
+          current.matchedPaths.add(row.sighting.pagePath);
+        } else {
+          aggregated.set(row.element.id, {
+            element: row.element,
+            seenCount: row.sighting.seenCount,
+            firstSeenAt: row.sighting.firstSeenAt,
+            lastSeenAt: row.sighting.lastSeenAt,
+            matchedPaths: new Set([row.sighting.pagePath]),
+          });
+        }
+      }
+
+      const elements = [...aggregated.values()]
+        .map(({ element, seenCount, firstSeenAt, lastSeenAt, matchedPaths }) => ({
+          id: element.id,
+          selector: element.selector,
+          tagName: element.tagName,
+          label: element.label,
+          role: element.role,
+          source: element.source,
+          isIgnored: element.isIgnored,
+          seenCount,
+          firstSeenAt: firstSeenAt.toISOString(),
+          lastSeenAt: lastSeenAt.toISOString(),
+          matchedPaths: [...matchedPaths].sort(),
+        }))
+        .sort((a, b) => b.seenCount - a.seenCount);
+
+      return reply.send({ elements });
     }
   );
 

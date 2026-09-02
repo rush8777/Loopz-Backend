@@ -237,6 +237,27 @@ export const elementCatalog = sqliteTable("element_catalog", {
         .default(sql `(unixepoch('now') * 1000)`),
 });
 /**
+ * Raw Page-path sightings for globally identified catalog elements.
+ * PageDefinition ids are deliberately absent: current Page rules are
+ * applied at read time so historical sightings reclassify immediately.
+ */
+export const elementPageSightings = sqliteTable("element_page_sightings", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("eps")),
+    siteId: text("site_id")
+        .notNull()
+        .references(() => sites.id, { onDelete: "cascade" }),
+    elementId: text("element_id")
+        .notNull()
+        .references(() => elementCatalog.id, { onDelete: "cascade" }),
+    pagePath: text("page_path").notNull(),
+    firstSeenAt: integer("first_seen_at", { mode: "timestamp_ms" }).notNull(),
+    lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }).notNull(),
+    seenCount: integer("seen_count").notNull().default(1),
+}, (table) => [
+    uniqueIndex("element_page_sightings_site_element_path_uidx").on(table.siteId, table.elementId, table.pagePath),
+    index("element_page_sightings_site_path_idx").on(table.siteId, table.pagePath),
+]);
+/**
  * In-progress match attempts, one row per (pattern, session). This is
  * what makes matching "live" across incremental event batches without
  * holding a session's full event history in memory or in the DB -
@@ -306,12 +327,46 @@ export const pageDefinitions = sqliteTable("page_definitions", {
     // advisory metadata for the UI only, never used by the matcher.
     pageType: text("page_type"),
     rules: text("rules", { mode: "json" }).notNull(),
+    heatmapEnabled: integer("heatmap_enabled", { mode: "boolean" }).notNull().default(false),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
         .notNull()
         .default(sql `(unixepoch('now') * 1000)`),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" })
         .notNull()
         .default(sql `(unixepoch('now') * 1000)`),
+});
+export const pageHeatmapStates = sqliteTable("page_heatmap_states", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("hms")),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    pageDefinitionId: text("page_definition_id").notNull().references(() => pageDefinitions.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    selector: text("selector").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+}, (table) => [index("page_heatmap_states_site_page_idx").on(table.siteId, table.pageDefinitionId)]);
+export const heatmapReferenceSnapshots = sqliteTable("heatmap_reference_snapshots", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("hmr")),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    pageDefinitionId: text("page_definition_id").notNull().references(() => pageDefinitions.id, { onDelete: "cascade" }),
+    pageStateId: text("page_state_id").references(() => pageHeatmapStates.id, { onDelete: "cascade" }),
+    pagePath: text("page_path").notNull(),
+    deviceClass: text("device_class").notNull(),
+    viewportWidth: integer("viewport_width").notNull(),
+    viewportHeight: integer("viewport_height").notNull(),
+    documentWidth: integer("document_width").notNull(),
+    documentHeight: integer("document_height").notNull(),
+    imageDataUrl: text("image_data_url").notNull(),
+    capturedAt: integer("captured_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [index("heatmap_snapshots_page_state_device_idx").on(table.pageDefinitionId, table.pageStateId, table.deviceClass)]);
+export const heatmapCaptureRequests = sqliteTable("heatmap_capture_requests", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("hcr")),
+    token: text("token").notNull().unique().$defaultFn(() => cuid("hct")),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    pageDefinitionId: text("page_definition_id").notNull().references(() => pageDefinitions.id, { onDelete: "cascade" }),
+    pageStateId: text("page_state_id").references(() => pageHeatmapStates.id, { onDelete: "cascade" }),
+    deviceClass: text("device_class").notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    usedAt: integer("used_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
 });
 /**
  * Derived/rebuildable behavioral episode segmentation - see
@@ -423,11 +478,9 @@ export const sessionEvents = sqliteTable("session_events", {
     pageViewId: text("page_view_id"),
     type: text("type").notNull(), // page_view | hover | click | scroll | cursor | custom
     timestamp: integer("timestamp", { mode: "timestamp_ms" }).notNull(),
-    // Path of the page this event occurred on (page_view events only, from
-    // PageContext.path) - what lets the user-profile activity feed say
-    // "Viewed /pricing" instead of just "Viewed a page", and what
-    // first_page/last_page are derived from. Nullable for every other
-    // event type and for rows ingested before this column existed.
+    // Immutable raw PageContext.path. New SDKs send it for every event so
+    // PageDefinition rules can classify heatmap interactions at read time;
+    // older rows may only have it on their page_view event.
     pagePath: text("page_path"),
     selector: text("selector"), // ElementDescriptor.selector, if the event has a target
     // SDK-computed display metadata for the same element (ElementLabeler) -
@@ -438,14 +491,20 @@ export const sessionEvents = sqliteTable("session_events", {
     elementRole: text("element_role"),
     durationMs: integer("duration_ms"), // hover events
     scrollPercent: integer("scroll_percent"), // scroll events
-    // Coordinates for spatial analysis (heatmaps) - click/hover/cursor
-    // events only. Stored alongside the viewport size active at capture
-    // time so the dashboard can normalize to relative page position
-    // across visitors on different screen sizes.
+    // Legacy viewport coordinates plus document-space heatmap coordinates.
+    // Both frames and their dimensions remain available for compatibility;
+    // Page heatmaps align primarily with documentX/documentY.
     x: integer("x"),
     y: integer("y"),
     viewportWidth: integer("viewport_width"),
     viewportHeight: integer("viewport_height"),
+    documentX: integer("document_x"),
+    documentY: integer("document_y"),
+    documentWidth: integer("document_width"),
+    documentHeight: integer("document_height"),
+    deviceClass: text("device_class"),
+    heatmapStateId: text("heatmap_state_id"),
+    rageClickCount: integer("rage_click_count"),
     // Developer-defined custom events (analytics.event(name, properties?),
     // type === "custom" only). `eventName` is the caller's chosen event
     // name ("checkout_completed") - kept as its own indexable-by-value
@@ -689,6 +748,42 @@ export const segments = sqliteTable("segments", {
     // matches the query shape in routes/segments.ts's list endpoint.
     index("segments_site_name_idx").on(table.siteId, table.name),
 ]);
+/**
+ * Funnels (task brief: Build Funnels V1). `steps` is an ordered JSON
+ * array of FunnelStep (src/lib/funnels/types.ts) - event or page
+ * steps, validated at the boundary (src/lib/funnels/validation.ts)
+ * before it reaches this column, same precedent as `segments.definition`
+ * above. `conversionWindowMinutes` is the funnel-level max time from
+ * the first step to any later step (task brief section 9) - stored as
+ * a plain integer rather than a `{value, unit}` JSON blob since it's a
+ * single scalar the evaluator needs directly in query math.
+ *
+ * No `funnel_results` table (task brief section 22): conversion
+ * numbers are always derived from current session_events/page data by
+ * the evaluator (src/lib/funnels/evaluator.ts), same "definition
+ * persists, analytics is derived" precedent as Segments.
+ *
+ * Deliberately no `segment_id` column here - task brief section 17's
+ * segment filter is an analysis-time parameter (like the date range),
+ * not a saved part of the funnel definition; see routes/funnels.ts's
+ * `/analyze` and `/steps/:stepIndex/users` endpoints.
+ */
+export const funnels = sqliteTable("funnels", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("fun")),
+    siteId: text("site_id")
+        .notNull()
+        .references(() => sites.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    steps: text("steps", { mode: "json" }).notNull(),
+    conversionWindowMinutes: integer("conversion_window_minutes").notNull().default(1440), // 24h default - task brief section 9's "sensible V1 default"
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+        .notNull()
+        .default(sql `(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+        .notNull()
+        .default(sql `(unixepoch('now') * 1000)`),
+}, (table) => [index("funnels_site_name_idx").on(table.siteId, table.name)]);
 /**
  * Minimal audit trail - who did what, scoped to an org.
  */

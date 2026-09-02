@@ -1,8 +1,10 @@
 import { z } from "zod";
-import { eq, and, sql, asc, desc } from "drizzle-orm";
-import { sites, sessionEvents, sessionReplayEvents } from "../db/schema.js";
+import { eq, and, sql, asc, desc, inArray } from "drizzle-orm";
+import { sites, sessionEvents, sessionReplayEvents, sessionContexts, trackedUserAliases, trackedUsers, pageDefinitions, } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
+import { buildSessionActivityGroups } from "../lib/behavior/sessionActivity.js";
+import { matchesRules } from "../lib/pages/pageMatcher.js";
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
     if (!site || site.orgId !== orgId)
@@ -38,6 +40,11 @@ export function registerSessionRoutes(app, db) {
             eventCount: sql `count(*)`,
             firstSeen: sql `min(${sessionEvents.timestamp})`,
             lastSeen: sql `max(${sessionEvents.timestamp})`,
+            pageVisitCount: sql `sum(case when ${sessionEvents.type} = 'page_view' then 1 else 0 end)`,
+            clickCount: sql `sum(case when ${sessionEvents.type} = 'click' then 1 else 0 end)`,
+            customEventCount: sql `sum(case when ${sessionEvents.type} = 'custom' then 1 else 0 end)`,
+            anonymousId: sql `min(${sessionEvents.anonymousId})`,
+            anonymousIdCount: sql `count(distinct ${sessionEvents.anonymousId})`,
         })
             .from(sessionEvents)
             .where(eq(sessionEvents.siteId, site.id))
@@ -45,21 +52,155 @@ export function registerSessionRoutes(app, db) {
             .orderBy(desc(sql `max(${sessionEvents.timestamp})`))
             .limit(limit)
             .offset(offset);
-        const replaySessionIds = new Set((await db
-            .selectDistinct({ sessionId: sessionReplayEvents.sessionId })
-            .from(sessionReplayEvents)
-            .where(eq(sessionReplayEvents.siteId, site.id))).map((r) => r.sessionId));
+        const sessionIds = rows.map((row) => row.sessionId);
+        const anonymousIds = rows.map((row) => row.anonymousId).filter((id) => Boolean(id));
+        const [replayRows, contextRows, identityRows] = await Promise.all([
+            sessionIds.length
+                ? db
+                    .selectDistinct({ sessionId: sessionReplayEvents.sessionId })
+                    .from(sessionReplayEvents)
+                    .where(and(eq(sessionReplayEvents.siteId, site.id), inArray(sessionReplayEvents.sessionId, sessionIds)))
+                : [],
+            sessionIds.length
+                ? db
+                    .select()
+                    .from(sessionContexts)
+                    .where(and(eq(sessionContexts.siteId, site.id), inArray(sessionContexts.sessionId, sessionIds)))
+                : [],
+            anonymousIds.length
+                ? db
+                    .select({
+                    anonymousId: trackedUserAliases.anonymousId,
+                    trackedUserId: trackedUsers.id,
+                    externalUserId: trackedUsers.externalUserId,
+                })
+                    .from(trackedUserAliases)
+                    .innerJoin(trackedUsers, eq(trackedUsers.id, trackedUserAliases.trackedUserId))
+                    .where(and(eq(trackedUserAliases.siteId, site.id), inArray(trackedUserAliases.anonymousId, anonymousIds)))
+                : [],
+        ]);
+        const replaySessionIds = new Set(replayRows.map((row) => row.sessionId));
+        const contextsBySession = new Map(contextRows.map((row) => [row.sessionId, row]));
+        const identitiesByAnonymousId = new Map(identityRows.map((row) => [row.anonymousId, row]));
         return reply.send({
-            sessions: rows.map((r) => ({
-                sessionId: r.sessionId,
-                eventCount: r.eventCount,
-                firstSeen: new Date(r.firstSeen).toISOString(),
-                lastSeen: new Date(r.lastSeen).toISOString(),
-                durationMs: r.lastSeen - r.firstSeen,
-                hasReplay: replaySessionIds.has(r.sessionId),
-            })),
+            sessions: rows.map((r) => {
+                const context = contextsBySession.get(r.sessionId);
+                const unambiguousAnonymousId = r.anonymousIdCount === 1 ? r.anonymousId : null;
+                const identity = unambiguousAnonymousId ? identitiesByAnonymousId.get(unambiguousAnonymousId) : undefined;
+                return {
+                    sessionId: r.sessionId,
+                    eventCount: r.eventCount,
+                    firstSeen: new Date(r.firstSeen).toISOString(),
+                    lastSeen: new Date(r.lastSeen).toISOString(),
+                    durationMs: r.lastSeen - r.firstSeen,
+                    pageVisitCount: r.pageVisitCount,
+                    clickCount: r.clickCount,
+                    customEventCount: r.customEventCount,
+                    visitor: identity
+                        ? { type: "identified", id: identity.trackedUserId, label: identity.externalUserId }
+                        : unambiguousAnonymousId
+                            ? { type: "anonymous", id: unambiguousAnonymousId, label: unambiguousAnonymousId }
+                            : null,
+                    deviceType: context?.deviceType ?? null,
+                    browserName: context?.browserName ?? null,
+                    osName: context?.osName ?? null,
+                    hasReplay: replaySessionIds.has(r.sessionId),
+                };
+            }),
             limit,
             offset,
+        });
+    });
+    /** Compact, page-grouped session presentation. The existing raw-detail endpoint above remains unchanged. */
+    app.get("/orgs/:orgId/sites/:siteId/sessions/:sessionId/activity", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
+        const { siteId, sessionId } = request.params;
+        const site = await loadSiteInOrg(db, siteId, request.membership.orgId);
+        if (!site)
+            return reply.code(404).send({ error: "site_not_found" });
+        const rows = await db
+            .select()
+            .from(sessionEvents)
+            .where(and(eq(sessionEvents.siteId, site.id), eq(sessionEvents.sessionId, sessionId)))
+            .orderBy(asc(sessionEvents.timestamp), asc(sessionEvents.id));
+        if (rows.length === 0)
+            return reply.code(404).send({ error: "session_not_found" });
+        const definitions = await db.select().from(pageDefinitions).where(eq(pageDefinitions.siteId, site.id));
+        const resolvePageName = (path) => {
+            const matches = definitions.filter((definition) => matchesRules(path, definition.rules));
+            return matches.length === 1 ? matches[0].name : null;
+        };
+        const groups = buildSessionActivityGroups(rows, resolvePageName);
+        const anonymousIds = [...new Set(rows.map((row) => row.anonymousId).filter((id) => Boolean(id)))];
+        const [contextRows, identityRows, replayRows] = await Promise.all([
+            db
+                .select()
+                .from(sessionContexts)
+                .where(and(eq(sessionContexts.siteId, site.id), eq(sessionContexts.sessionId, sessionId)))
+                .limit(1),
+            anonymousIds.length === 1
+                ? db
+                    .select({
+                    anonymousId: trackedUserAliases.anonymousId,
+                    trackedUserId: trackedUsers.id,
+                    externalUserId: trackedUsers.externalUserId,
+                })
+                    .from(trackedUserAliases)
+                    .innerJoin(trackedUsers, eq(trackedUsers.id, trackedUserAliases.trackedUserId))
+                    .where(and(eq(trackedUserAliases.siteId, site.id), inArray(trackedUserAliases.anonymousId, anonymousIds)))
+                    .limit(1)
+                : [],
+            db
+                .select({ id: sessionReplayEvents.id })
+                .from(sessionReplayEvents)
+                .where(and(eq(sessionReplayEvents.siteId, site.id), eq(sessionReplayEvents.sessionId, sessionId)))
+                .limit(1),
+        ]);
+        const first = rows[0].timestamp;
+        const last = rows[rows.length - 1].timestamp;
+        const identity = identityRows[0];
+        const anonymousId = anonymousIds.length === 1 ? anonymousIds[0] : undefined;
+        const context = contextRows[0];
+        return reply.send({
+            sessionId,
+            hasReplay: replayRows.length > 0,
+            visitor: identity
+                ? { type: "identified", id: identity.trackedUserId, label: identity.externalUserId }
+                : anonymousId
+                    ? { type: "anonymous", id: anonymousId, label: anonymousId }
+                    : null,
+            firstObserved: first.toISOString(),
+            lastObserved: last.toISOString(),
+            observedDurationMs: last.getTime() - first.getTime(),
+            counts: {
+                pageVisits: rows.filter((row) => row.type === "page_view").length,
+                clicks: rows.filter((row) => row.type === "click").length,
+                customEvents: rows.filter((row) => row.type === "custom").length,
+            },
+            environment: context
+                ? {
+                    browserName: context.browserName,
+                    browserVersion: context.browserVersion,
+                    osName: context.osName,
+                    osVersion: context.osVersion,
+                    deviceType: context.deviceType,
+                    language: context.language,
+                    timezone: context.timezone,
+                    screenWidth: context.screenWidth,
+                    screenHeight: context.screenHeight,
+                    referrer: context.referrer,
+                }
+                : null,
+            pages: groups,
+            coverage: {
+                complete: true,
+                rawEventCount: rows.length,
+                cursorSampleCount: rows.filter((row) => row.type === "cursor").length,
+            },
+            limitations: {
+                observedDuration: "Elapsed time between the first and last recorded event; it is not active time.",
+                hover: "Hover duration is reported after pointer leave and was not visibility-verified; its start is estimated when it stays within the page boundary.",
+                pointer: "Pointer proximity uses recorded interaction coordinates as a proxy, not verified historical element bounds. No cursor trace is reconstructed.",
+            },
         });
     });
     /** Full ordered event timeline for one session - the Observe > Sessions detail view. */

@@ -83,7 +83,7 @@ export function registerPublicEventsRoutes(app, db) {
                 pageViewId: e.pageViewId ?? null,
                 type: e.type,
                 timestamp: new Date(e.timestamp),
-                pagePath: e.type === "page_view" ? (e.path ?? null) : null,
+                pagePath: e.path ?? null,
                 selector: e.element?.selector ?? null,
                 elementLabel: e.element?.label ?? null,
                 elementRole: e.element?.role ?? null,
@@ -93,6 +93,13 @@ export function registerPublicEventsRoutes(app, db) {
                 y: e.y ?? null,
                 viewportWidth: e.viewportWidth ?? null,
                 viewportHeight: e.viewportHeight ?? null,
+                documentX: e.documentX ?? null,
+                documentY: e.documentY ?? null,
+                documentWidth: e.documentWidth ?? null,
+                documentHeight: e.documentHeight ?? null,
+                deviceClass: e.deviceClass ?? null,
+                heatmapStateId: e.heatmapStateId ?? null,
+                rageClickCount: e.rageClickCount ?? null,
                 // custom events only (validation.ts guarantees `name` is
                 // present whenever type === "custom"). `properties` stays
                 // whatever JSON-serializable shape the caller sent -

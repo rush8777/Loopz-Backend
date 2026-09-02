@@ -43,7 +43,7 @@ export const identifyTraitValueSchema = z.union([z.string(), z.number(), z.boole
 const jsonValueSchema = z.lazy(() => z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(jsonValueSchema), z.record(z.string(), jsonValueSchema)]));
 export const incomingEventSchema = z
     .object({
-    type: z.enum(["page_view", "hover", "click", "scroll", "cursor", "identify", "session_start", "custom"]),
+    type: z.enum(["page_view", "hover", "click", "scroll", "cursor", "rage_click", "identify", "session_start", "custom"]),
     timestamp: z.number().int().nonnegative(),
     // The SDK's durable anonymous visitor id (SessionManager.getAnonymousId()).
     // Optional for backward compatibility with any client still on an
@@ -78,9 +78,16 @@ export const incomingEventSchema = z
     y: z.number().int().min(0).max(200000).optional(), // pages can be tall - generous bound, not a real screen limit
     viewportWidth: z.number().int().positive().max(20000).optional(),
     viewportHeight: z.number().int().positive().max(200000).optional(),
-    // page_view only - PageContext.path, e.g. "/pricing". What lets the
-    // user-profile activity feed say "Viewed /pricing" and what
-    // first_page/last_page are derived from.
+    documentX: z.number().int().min(0).max(20000).optional(),
+    documentY: z.number().int().min(0).max(200000).optional(),
+    documentWidth: z.number().int().positive().max(20000).optional(),
+    documentHeight: z.number().int().positive().max(200000).optional(),
+    deviceClass: z.enum(["desktop", "tablet", "mobile"]).optional(),
+    heatmapStateId: z.string().min(1).max(200).optional(),
+    rageClickCount: z.number().int().min(3).max(100).optional(),
+    // Immutable raw PageContext.path, e.g. "/pricing". New SDKs include it
+    // on all events so Page heatmaps can classify interactions at query
+    // time; old page_view-only payloads remain valid.
     path: z.string().min(1).max(2000).optional(),
     // identify only - the customer's own user id and (optionally)
     // whatever attributes they passed. See resolveIdentity.ts.
@@ -124,6 +131,11 @@ export const crawledElementSchema = z.object({
     role: z.string().min(1).max(100).optional(),
 });
 export const trackElementsBodySchema = z.object({
+    // SDK PageContext.path is a raw pathname (query/hash excluded), matching
+    // the established PageDefinition/session_events semantics.
+    pagePath: z.string().min(1).max(2000).refine((path) => path.startsWith("/"), {
+        message: "pagePath must be an absolute pathname",
+    }).optional(), // optional only for older SDKs; current discovery always sends it
     elements: z.array(crawledElementSchema).min(1).max(500), // matches the SDK's ElementCrawler per-crawl cap
 });
 /**
