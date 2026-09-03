@@ -27,6 +27,18 @@ describe("visual experiences", () => {
     expect(published.statusCode).toBe(200); expect(published.json().publishedVersion.versionNumber).toBe(1); expect(published.json().draftVersion.versionNumber).toBe(2);
   });
 
+  it("requires a valid DOM target for every guide step before publishing", async () => {
+    const { owner, site } = await setup(ctx.app, "guide-steps");
+    const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "guide", name: "Guide", buildUrl: "https://guide-steps.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
+    const definition = created.draftVersion.definition; definition.steps.push({ id: "step_2", content: { heading: "Second", body: "Second step" }, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } });
+    definition.steps[0].target = { primarySelector: "#first", fallbackSelectors: [], reliability: "reliable" };
+    await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
+    expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).json().error).toBe("target_required");
+    definition.steps[1].target = { primarySelector: "#second", fallbackSelectors: ["[data-step=second]"], reliability: "reliable" };
+    await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
+    expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
+  });
+
   it("hashes and exchanges an editor token once, removes access after revocation, and enforces origin", async () => {
     const { owner, site } = await setup(ctx.app, "editor");
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType: "toast", name: "Editor", buildUrl: "https://editor.example.com/home", template: "blank", useBuildPageAsTarget: false } })).json();
