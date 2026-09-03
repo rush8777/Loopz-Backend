@@ -134,6 +134,13 @@
       "when": 1788400000000,
       "tag": "0018_heatmap_rage_clicks",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1788500000000,
+      "tag": "0019_experiences",
+      "breakpoints": true
     }
   ]
 }

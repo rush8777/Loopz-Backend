@@ -784,6 +784,62 @@ export const funnels = sqliteTable("funnels", {
         .notNull()
         .default(sql `(unixepoch('now') * 1000)`),
 }, (table) => [index("funnels_site_name_idx").on(table.siteId, table.name)]);
+/** Versioned, isolated visual-experience domain. Definitions are JSON because
+ * their presentation vocabulary evolves, but every read/write crosses the
+ * Zod boundary in lib/experiences/validation.ts. */
+export const experiences = sqliteTable("experiences", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("exp")),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    widgetType: text("widget_type"),
+    name: text("name").notNull(),
+    status: text("status").notNull().default("draft"),
+    buildPageId: text("build_page_id").references(() => pageDefinitions.id, { onDelete: "set null" }),
+    buildUrl: text("build_url"),
+    publishedVersionId: text("published_version_id"),
+    createdBy: text("created_by").notNull().references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+}, (table) => [index("experiences_site_kind_status_idx").on(table.siteId, table.kind, table.status)]);
+export const experienceVersions = sqliteTable("experience_versions", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("exv")),
+    experienceId: text("experience_id").notNull().references(() => experiences.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    state: text("state").notNull().default("draft"),
+    definition: text("definition", { mode: "json" }).notNull(),
+    createdBy: text("created_by").notNull().references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+    publishedAt: integer("published_at", { mode: "timestamp_ms" }),
+}, (table) => [
+    uniqueIndex("experience_versions_experience_number_uidx").on(table.experienceId, table.versionNumber),
+    index("experience_versions_experience_state_idx").on(table.experienceId, table.state),
+]);
+export const experienceImpressions = sqliteTable("experience_impressions", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("exi")),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    experienceId: text("experience_id").notNull().references(() => experiences.id, { onDelete: "cascade" }),
+    versionId: text("version_id").notNull().references(() => experienceVersions.id, { onDelete: "cascade" }),
+    anonymousId: text("anonymous_id"),
+    trackedUserId: text("tracked_user_id").references(() => trackedUsers.id, { onDelete: "set null" }),
+    sessionId: text("session_id"),
+    pageViewId: text("page_view_id"),
+    shownAt: integer("shown_at", { mode: "timestamp_ms" }).notNull(),
+    dismissedAt: integer("dismissed_at", { mode: "timestamp_ms" }),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+    metadata: text("metadata", { mode: "json" }),
+}, (table) => [index("experience_impressions_lookup_idx").on(table.siteId, table.experienceId, table.anonymousId, table.sessionId)]);
+export const experienceEditorSessions = sqliteTable("experience_editor_sessions", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("ees")),
+    experienceId: text("experience_id").notNull().references(() => experiences.id, { onDelete: "cascade" }),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    dashboardUserId: text("dashboard_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    allowedOrigin: text("allowed_origin").notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    usedAt: integer("used_at", { mode: "timestamp_ms" }),
+    revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+}, (table) => [index("experience_editor_sessions_experience_idx").on(table.experienceId)]);
 /**
  * Minimal audit trail - who did what, scoped to an org.
  */

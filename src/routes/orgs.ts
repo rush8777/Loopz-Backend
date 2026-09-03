@@ -7,9 +7,27 @@ import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { generateSitePublicId } from "../lib/ids.js";
 
+const domainSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(300)
+  .refine((value) => {
+    try {
+      const url = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+      return (url.protocol === "http:" || url.protocol === "https:") && url.pathname === "/" && !url.search && !url.hash;
+    } catch {
+      return false;
+    }
+  }, "domain must be an http(s) origin, without a path");
+
 const createSiteSchema = z.object({
   name: z.string().min(1).max(200),
-  domain: z.string().max(300).optional(),
+  domain: domainSchema.optional(),
+});
+
+const updateSiteSchema = z.object({
+  domain: domainSchema.nullable(),
 });
 
 const addMemberSchema = z.object({
@@ -132,6 +150,27 @@ export function registerOrgRoutes(app: FastifyInstance, db: Db) {
       });
 
       return reply.code(201).send({ id: site.id, siteId: site.publicId, name: site.name, domain: site.domain });
+    }
+  );
+
+  /** Site origin is a tenant setting, used to validate visual-builder URLs. */
+  app.patch(
+    "/orgs/:orgId/sites/:siteId",
+    { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] },
+    async (request, reply) => {
+      const parsed = updateSiteSchema.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+      const { siteId } = request.params as { siteId: string };
+      const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
+      if (!site || site.orgId !== request.membership!.orgId) return reply.code(404).send({ error: "site_not_found" });
+
+      const [updated] = await db
+        .update(sites)
+        .set({ domain: parsed.data.domain, updatedAt: new Date() })
+        .where(eq(sites.id, site.id))
+        .returning();
+      await db.insert(auditLogs).values({ orgId: site.orgId, userId: request.user!.id, action: "site.domain_updated", detail: { siteId: site.publicId, domain: updated.domain } });
+      return reply.send({ id: updated.id, siteId: updated.publicId, name: updated.name, domain: updated.domain });
     }
   );
 

@@ -48,3 +48,19 @@ export function generateRefreshToken(): { token: string; hash: string; expiresAt
 export function hashRefreshToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
+
+export interface EditorAccessTokenPayload {
+  sub: string;
+  scope: "experience_editor";
+  origin: string;
+}
+
+export function signEditorAccessToken(payload: EditorAccessTokenPayload, secret: string): string {
+  return jwt.sign(payload, secret, { expiresIn: "10m" });
+}
+
+export function verifyEditorAccessToken(token: string, secret: string): EditorAccessTokenPayload {
+  const payload = jwt.verify(token, secret) as EditorAccessTokenPayload;
+  if (payload.scope !== "experience_editor") throw new Error("invalid editor scope");
+  return payload;
+}

@@ -19,6 +19,8 @@ import { registerPublicEventsRoutes } from "./routes/public-events.js";
 import { registerPublicReplayRoutes } from "./routes/public-replay.js";
 import { registerPublicElementsRoutes } from "./routes/public-elements.js";
 import { registerHeatmapRoutes } from "./routes/heatmaps.js";
+import { registerExperienceRoutes } from "./routes/experiences.js";
+import { registerPublicExperienceRoutes } from "./routes/public-experiences.js";
 export async function buildApp(db) {
     const app = Fastify({ logger: false });
     await app.register(cors, {
@@ -46,6 +48,7 @@ export async function buildApp(db) {
     registerSegmentRoutes(app, db);
     registerFunnelRoutes(app, db);
     registerHeatmapRoutes(app, db);
+    registerExperienceRoutes(app, db);
     await app.register(async (publicScope) => {
         await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
         registerPublicConfigRoutes(publicScope, db);
@@ -71,6 +74,10 @@ export async function buildApp(db) {
         // once-per-load ceiling, so this gets its own, slightly higher limit.
         await publicElementsScope.register(rateLimit, { global: true, max: 120, timeWindow: "1 minute" });
         registerPublicElementsRoutes(publicElementsScope, db);
+    });
+    await app.register(async (publicExperienceScope) => {
+        await publicExperienceScope.register(rateLimit, { global: true, max: 180, timeWindow: "1 minute" });
+        registerPublicExperienceRoutes(publicExperienceScope, db);
     });
     app.get("/health", async () => ({ ok: true }));
     return app;
