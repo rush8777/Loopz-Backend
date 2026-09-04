@@ -93,4 +93,19 @@ describe("visual experiences", () => {
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${a.owner.org.id}/sites/${a.site.id}/experiences`, headers: { authorization: `Bearer ${a.owner.accessToken}` }, payload: { kind: "widget", widgetType: "toast", name: "Private", buildUrl: "https://tenant-a.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
     const cross = await ctx.app.inject({ method: "GET", url: `/orgs/${b.owner.org.id}/sites/${a.site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${b.owner.accessToken}` } }); expect(cross.statusCode).toBe(404);
   });
+
+  it("creates the new widget defaults and requires a DOM target only for hotspots", async () => {
+    const { owner, site } = await setup(ctx.app, "adoption-widgets");
+    for (const widgetType of ["modal", "slideout", "banner"] as const) {
+      const create = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType, name: widgetType, buildUrl: "https://adoption-widgets.example.com/home", template: "blank", useBuildPageAsTarget: false } });
+      expect(create.statusCode).toBe(201); const item = create.json();
+      expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
+    }
+    const hotspotCreate = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType: "hotspot", name: "hotspot", buildUrl: "https://adoption-widgets.example.com/home", template: "blank", useBuildPageAsTarget: false } });
+    expect(hotspotCreate.statusCode).toBe(201); const hotspot = hotspotCreate.json();
+    const rejected = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } }); expect(rejected.statusCode).toBe(400); expect(rejected.json().error).toBe("target_required");
+    hotspot.draftVersion.definition.target = { primarySelector: "#new-feature", fallbackSelectors: ["[data-feature='new']"], reliability: "reliable" };
+    expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition: hotspot.draftVersion.definition } })).statusCode).toBe(200);
+    expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
+  });
 });

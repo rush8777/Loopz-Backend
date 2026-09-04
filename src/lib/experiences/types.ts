@@ -1,7 +1,7 @@
 import type { PageRule } from "../pages/types.js";
 
 export type ExperienceKind = "guide" | "widget";
-export type WidgetType = "anchored_card" | "toast" | "cursor_follow";
+export type WidgetType = "anchored_card" | "toast" | "cursor_follow" | "modal" | "slideout" | "hotspot" | "banner";
 export type ExperienceStatus = "draft" | "published" | "paused" | "archived";
 
 export interface ExperienceAction {
@@ -46,11 +46,19 @@ export interface ExperienceBehavior {
   toastPosition?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
   autoDismissMs?: number | null;
   cursorOffset?: { x: number; y: number };
+  modalLayout?: "center" | "fullscreen";
+  backdrop?: boolean;
+  backdropOpacity?: number;
+  closeOnBackdrop?: boolean;
+  slideoutPosition?: "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center-left" | "center-right";
+  bannerPosition?: "top" | "bottom";
+  hotspotStyle?: "pulse" | "dot" | "question";
+  hotspotColor?: string;
 }
 
 export interface ExperienceTargeting {
   pageRules: PageRule[];
-  audience: { type: "all" } | { type: "segment"; segmentId: string };
+  audience: { type: "all" } | { type: "segment"; segmentId: string } | { type: "segment_rules"; logic: "all" | "any"; conditions: Array<{ id: string; segmentId: string; operator: "matches" | "not_matches" }> };
   trigger: { type: "page_load" } | { type: "custom_event"; eventName: string };
   frequency: {
     mode: "once" | "once_per_session" | "every_time";
@@ -58,6 +66,8 @@ export interface ExperienceTargeting {
     maxImpressions?: number;
   };
   priority: number;
+  schedule?: { startsAt?: string; endsAt?: string };
+  allowedOrigins?: string[];
 }
 
 export interface GuideStep {
@@ -86,4 +96,3 @@ export type ExperienceDefinition = WidgetExperienceDefinition | GuideExperienceD
 export function isGuideDefinition(definition: ExperienceDefinition): definition is GuideExperienceDefinition {
   return "steps" in definition;
 }
-

@@ -67,7 +67,12 @@ function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, 
     behavior: {
       dismissible: true,
       ...(widgetType === "toast" ? { toastPosition: "bottom-right" as const, autoDismissMs: null } : {}),
-      ...(widgetType === "cursor_follow" ? { cursorOffset: { x: 16, y: 16 } } : { placement: "auto" as const, alignment: "center" as const, offset: 8 }),
+      ...(widgetType === "cursor_follow" ? { cursorOffset: { x: 16, y: 16 } } : {}),
+      ...(widgetType === "anchored_card" || widgetType === "hotspot" ? { placement: "auto" as const, alignment: "center" as const, offset: 8 } : {}),
+      ...(widgetType === "modal" ? { modalLayout: "center" as const, backdrop: true, backdropOpacity: 0.45, closeOnBackdrop: false } : {}),
+      ...(widgetType === "slideout" ? { slideoutPosition: "bottom-right" as const, backdrop: false, backdropOpacity: 0.35, closeOnBackdrop: false } : {}),
+      ...(widgetType === "banner" ? { bannerPosition: "top" as const } : {}),
+      ...(widgetType === "hotspot" ? { hotspotStyle: "pulse" as const, hotspotColor: DEFAULT_DESIGN.theme.primary } : {}),
     },
     targeting: targeting(pageRules),
   };
@@ -91,17 +96,16 @@ async function validateReferences(db: Db, siteId: string, definition: Experience
     if (!rule.value.trim()) return "invalid_page_targeting";
   }
   if (definition.targeting.pageRules.length > 0 && !definition.targeting.pageRules.some((rule) => rule.kind === "include")) return "invalid_page_targeting";
-  if (definition.targeting.audience.type === "segment") {
-    const [segment] = await db.select().from(segments).where(eq(segments.id, definition.targeting.audience.segmentId)).limit(1);
-    if (!segment || segment.siteId !== siteId) return "invalid_segment";
-  }
+  const audience = definition.targeting.audience;
+  const segmentIds = audience.type === "segment" ? [audience.segmentId] : audience.type === "segment_rules" ? audience.conditions.map(condition => condition.segmentId) : [];
+  for (const segmentId of segmentIds) { const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1); if (!segment || segment.siteId !== siteId) return "invalid_segment"; }
   return null;
 }
 
 function validatePublishRequirements(kind: ExperienceKind, widgetType: WidgetType | null, definition: ExperienceDefinition): string | null {
   if (kind === "guide") {
     if (!("steps" in definition) || definition.steps.some((step) => !step.target)) return "target_required";
-  } else if (widgetType === "anchored_card" && (!("content" in definition) || !definition.target)) {
+  } else if ((widgetType === "anchored_card" || widgetType === "hotspot") && (!("content" in definition) || !definition.target)) {
     return "target_required";
   }
   return null;

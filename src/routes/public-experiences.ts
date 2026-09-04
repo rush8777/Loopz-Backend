@@ -27,6 +27,18 @@ async function resolveTrackedUserId(db: Db, siteId: string, externalId?: string)
   return user?.id ?? null;
 }
 
+async function matchesAudience(db: Db, siteId: string, identityKey: string, audience: ExperienceTargeting["audience"]): Promise<boolean> {
+  if (audience.type === "all") return true;
+  const conditions = audience.type === "segment" ? [{ segmentId: audience.segmentId, operator: "matches" as const }] : audience.conditions;
+  const results = await Promise.all(conditions.map(async (condition) => {
+    const [segment] = await db.select().from(segments).where(eq(segments.id, condition.segmentId)).limit(1);
+    if (!segment || segment.siteId !== siteId) return false;
+    const member = (await evaluateSegment(db, siteId, segment.definition as SegmentDefinition)).has(identityKey);
+    return condition.operator === "matches" ? member : !member;
+  }));
+  return audience.type === "segment_rules" && audience.logic === "any" ? results.some(Boolean) : results.every(Boolean);
+}
+
 function withoutPrivateTargeting(definition: ExperienceDefinition) {
   const { targeting: _targeting, ...presentation } = definition;
   return presentation;
@@ -54,9 +66,9 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!query.success) return reply.code(400).send({ error: "invalid_query", details: query.error.flatten() });
     const [site] = await db.select().from(sites).where(eq(sites.publicId, siteId)).limit(1);
     if (!site) return reply.code(404).send({ error: "site_not_found" });
-    let pagePath: string;
+    let pagePath: string; let requestUrl: URL;
     try {
-      const url = new URL(query.data.url);
+      const url = new URL(query.data.url); requestUrl = url;
       if (site.domain) {
         const siteOrigin = new URL(/^https?:\/\//i.test(site.domain) ? site.domain : `https://${site.domain}`).origin;
         if (url.origin !== siteOrigin) return reply.code(400).send({ error: "url_outside_site_domain" });
@@ -79,15 +91,14 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
       if (!checked.success) continue;
       const definition = checked.data;
       const target = definition.targeting;
+      const now = new Date();
+      if (target.schedule?.startsAt && now < new Date(target.schedule.startsAt)) continue;
+      if (target.schedule?.endsAt && now >= new Date(target.schedule.endsAt)) continue;
+      if (target.allowedOrigins?.length && !target.allowedOrigins.includes(requestUrl.origin)) continue;
       if (target.pageRules.length > 0 && !matchesRules(pagePath, target.pageRules)) continue;
       if (target.trigger.type === "custom_event" && query.data.trigger !== target.trigger.eventName) continue;
       if (target.trigger.type === "page_load" && query.data.trigger) continue;
-      if (target.audience.type === "segment") {
-        const [segment] = await db.select().from(segments).where(eq(segments.id, target.audience.segmentId)).limit(1);
-        if (!segment || segment.siteId !== site.id) continue;
-        const members = await evaluateSegment(db, site.id, segment.definition as SegmentDefinition);
-        if (!members.has(identityKey)) continue;
-      }
+      if (!await matchesAudience(db, site.id, identityKey, target.audience)) continue;
       const impressions = await db.select().from(experienceImpressions).where(and(eq(experienceImpressions.siteId, site.id), eq(experienceImpressions.experienceId, experience.id)));
       const personImpressions = impressions.filter((item) => item.anonymousId === query.data.anonymousId || (trackedUserId && item.trackedUserId === trackedUserId));
       if (target.frequency.mode === "once" && personImpressions.length > 0) continue;
@@ -173,4 +184,3 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
     return reply.send({ version: { id: draft.id, versionNumber: draft.versionNumber, definition: definition.data } });
   });
 }
-

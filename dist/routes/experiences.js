@@ -61,7 +61,12 @@ function initialDefinition(kind, widgetType, pageRules) {
         behavior: {
             dismissible: true,
             ...(widgetType === "toast" ? { toastPosition: "bottom-right", autoDismissMs: null } : {}),
-            ...(widgetType === "cursor_follow" ? { cursorOffset: { x: 16, y: 16 } } : { placement: "auto", alignment: "center", offset: 8 }),
+            ...(widgetType === "cursor_follow" ? { cursorOffset: { x: 16, y: 16 } } : {}),
+            ...(widgetType === "anchored_card" || widgetType === "hotspot" ? { placement: "auto", alignment: "center", offset: 8 } : {}),
+            ...(widgetType === "modal" ? { modalLayout: "center", backdrop: true, backdropOpacity: 0.45, closeOnBackdrop: false } : {}),
+            ...(widgetType === "slideout" ? { slideoutPosition: "bottom-right", backdrop: false, backdropOpacity: 0.35, closeOnBackdrop: false } : {}),
+            ...(widgetType === "banner" ? { bannerPosition: "top" } : {}),
+            ...(widgetType === "hotspot" ? { hotspotStyle: "pulse", hotspotColor: DEFAULT_DESIGN.theme.primary } : {}),
         },
         targeting: targeting(pageRules),
     };
@@ -85,8 +90,10 @@ async function validateReferences(db, siteId, definition) {
     }
     if (definition.targeting.pageRules.length > 0 && !definition.targeting.pageRules.some((rule) => rule.kind === "include"))
         return "invalid_page_targeting";
-    if (definition.targeting.audience.type === "segment") {
-        const [segment] = await db.select().from(segments).where(eq(segments.id, definition.targeting.audience.segmentId)).limit(1);
+    const audience = definition.targeting.audience;
+    const segmentIds = audience.type === "segment" ? [audience.segmentId] : audience.type === "segment_rules" ? audience.conditions.map(condition => condition.segmentId) : [];
+    for (const segmentId of segmentIds) {
+        const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1);
         if (!segment || segment.siteId !== siteId)
             return "invalid_segment";
     }
@@ -97,7 +104,7 @@ function validatePublishRequirements(kind, widgetType, definition) {
         if (!("steps" in definition) || definition.steps.some((step) => !step.target))
             return "target_required";
     }
-    else if (widgetType === "anchored_card" && (!("content" in definition) || !definition.target)) {
+    else if ((widgetType === "anchored_card" || widgetType === "hotspot") && (!("content" in definition) || !definition.target)) {
         return "target_required";
     }
     return null;

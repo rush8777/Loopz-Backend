@@ -50,6 +50,14 @@ const behaviorSchema = z.object({
   toastPosition: z.enum(["top-left", "top-right", "bottom-left", "bottom-right"]).optional(),
   autoDismissMs: z.number().int().min(500).max(300000).nullable().optional(),
   cursorOffset: z.object({ x: z.number().int().min(-200).max(200), y: z.number().int().min(-200).max(200) }).optional(),
+  modalLayout: z.enum(["center", "fullscreen"]).optional(),
+  backdrop: z.boolean().optional(),
+  backdropOpacity: z.number().min(0).max(0.9).optional(),
+  closeOnBackdrop: z.boolean().optional(),
+  slideoutPosition: z.enum(["top-left", "top-right", "bottom-left", "bottom-right", "center-left", "center-right"]).optional(),
+  bannerPosition: z.enum(["top", "bottom"]).optional(),
+  hotspotStyle: z.enum(["pulse", "dot", "question"]).optional(),
+  hotspotColor: safeColorSchema.optional(),
 });
 
 const targetingSchema = z.object({
@@ -57,6 +65,7 @@ const targetingSchema = z.object({
   audience: z.discriminatedUnion("type", [
     z.object({ type: z.literal("all") }),
     z.object({ type: z.literal("segment"), segmentId: z.string().min(1).max(64) }),
+    z.object({ type: z.literal("segment_rules"), logic: z.enum(["all", "any"]), conditions: z.array(z.object({ id: z.string().min(1).max(64), segmentId: z.string().min(1).max(64), operator: z.enum(["matches", "not_matches"]) })).min(1).max(20) }),
   ]),
   trigger: z.discriminatedUnion("type", [
     z.object({ type: z.literal("page_load") }),
@@ -68,6 +77,8 @@ const targetingSchema = z.object({
     maxImpressions: z.number().int().min(1).max(10000).optional(),
   }),
   priority: z.number().int().min(-1000).max(1000),
+  schedule: z.object({ startsAt: z.iso.datetime().optional(), endsAt: z.iso.datetime().optional() }).optional().superRefine((value, ctx) => { if (value?.startsAt && value.endsAt && value.startsAt >= value.endsAt) ctx.addIssue({ code: "custom", message: "end must be after start" }); }),
+  allowedOrigins: z.array(z.url().transform(value => new URL(value).origin)).max(20).optional(),
 });
 
 export const widgetDefinitionSchema = z.object({
@@ -95,7 +106,7 @@ export const guideDefinitionSchema = z.object({
 
 export const createExperienceSchema = z.object({
   kind: z.enum(["guide", "widget"]),
-  widgetType: z.enum(["anchored_card", "toast", "cursor_follow"]).nullable().optional(),
+  widgetType: z.enum(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner"]).nullable().optional(),
   name: z.string().trim().min(1).max(200),
   buildPageId: z.string().min(1).max(64).nullable().optional(),
   buildUrl: z.url().max(2000).nullable().optional(),
