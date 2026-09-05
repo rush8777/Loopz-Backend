@@ -37,6 +37,13 @@ export interface ExperienceDesign {
   };
 }
 
+export interface WidgetBuilderState {
+  version: 1;
+  projectData: Record<string, unknown>;
+  html: string;
+  css: string;
+}
+
 export interface ExperienceBehavior {
   dismissible: boolean;
   zIndex?: number;
@@ -81,6 +88,7 @@ export interface WidgetExperienceDefinition {
   content: ExperienceContent;
   design: ExperienceDesign;
   behavior: ExperienceBehavior;
+  builder?: WidgetBuilderState;
   target?: ExperienceTarget;
   targeting: ExperienceTargeting;
 }

@@ -38,6 +38,34 @@ const designSchema = z.object({
         borderRadius: z.enum(["sm", "md", "lg"]),
     }),
 });
+function builderCssIsSafe(value) {
+    const css = value.replace(/\/\*[\s\S]*?\*\//g, "");
+    if (/@import|expression\s*\(|javascript\s*:|behavior\s*:|-moz-binding/i.test(css))
+        return false;
+    for (const match of css.matchAll(/([^{}]+)\{/g)) {
+        const prelude = match[1].trim();
+        if (!prelude || prelude.startsWith("@"))
+            continue;
+        if (prelude.split(",").some(selector => !selector.trim().includes(".loopz-widget")))
+            return false;
+    }
+    return true;
+}
+function builderProjectValueIsSafe(value) {
+    if (typeof value === "string")
+        return !/<\s*script\b|\son[a-z]+\s*=|javascript\s*:/i.test(value);
+    if (Array.isArray(value))
+        return value.every(builderProjectValueIsSafe);
+    if (!value || typeof value !== "object")
+        return true;
+    return Object.entries(value).every(([key, nested]) => !/^on[a-z]+$/i.test(key) && !/^script(?:-|$)/i.test(key) && builderProjectValueIsSafe(nested));
+}
+const builderSchema = z.object({
+    version: z.literal(1),
+    projectData: z.record(z.string(), z.unknown()).refine(builderProjectValueIsSafe, "unsafe builder project data"),
+    html: z.string().max(500_000).refine(value => !/<\s*(script|style|iframe|object|embed|form|input|textarea|select|video|audio)\b|\son[a-z]+\s*=|javascript\s*:/i.test(value), "unsafe builder HTML"),
+    css: z.string().max(250_000).refine(builderCssIsSafe, "builder CSS must be safe and scoped under .loopz-widget"),
+}).strict();
 const behaviorSchema = z.object({
     dismissible: z.boolean(),
     zIndex: z.number().int().min(1).max(2147483647).optional(),
@@ -81,6 +109,7 @@ export const widgetDefinitionSchema = z.object({
     content: contentSchema,
     design: designSchema,
     behavior: behaviorSchema,
+    builder: builderSchema.optional(),
     target: targetSchema.optional(),
     targeting: targetingSchema,
 }).strict().superRefine((definition, ctx) => {
