@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { z } from "zod";
 import { sites, pageDefinitions, elementCatalog, elementPageSightings } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
@@ -34,6 +35,7 @@ function serializePage(row, metrics) {
         updatedAt: row.updatedAt.toISOString(),
     };
 }
+const listQuerySchema = z.object({ since: z.coerce.date().optional(), until: z.coerce.date().optional(), area: z.string().min(1).max(100).optional(), pageType: z.string().min(1).max(50).optional(), sort: z.enum(["views", "visitors", "sessions", "lastSeen", "az", "za"]).default("views"), search: z.string().min(1).max(200).optional() });
 export function registerPageRoutes(app, db) {
     app.post("/orgs/:orgId/sites/:siteId/pages", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
         const { siteId } = request.params;
@@ -123,14 +125,19 @@ export function registerPageRoutes(app, db) {
         const site = await loadSiteInOrg(db, siteId, request.membership.orgId);
         if (!site)
             return reply.code(404).send({ error: "site_not_found" });
-        const rows = await db.select().from(pageDefinitions).where(eq(pageDefinitions.siteId, site.id));
-        const pathStats = await loadPagePathStats(db, site.id);
+        const parsed = listQuerySchema.safeParse(request.query);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
+        const { since, until, area, pageType, sort, search } = parsed.data;
+        const rows = (await db.select().from(pageDefinitions).where(eq(pageDefinitions.siteId, site.id))).filter((row) => (!area || row.area === area) && (!pageType || row.pageType === pageType) && (!search || row.name.toLowerCase().includes(search.toLowerCase())));
+        const pathStats = await loadPagePathStats(db, site.id, { since, until });
         const allPaths = pathStats.map((p) => p.pagePath);
         const pages = await Promise.all(rows.map(async (row) => {
             const matchedPaths = filterMatchingPaths(allPaths, row.rules);
-            const metrics = await computeMatchedMetrics(db, site.id, matchedPaths);
+            const metrics = await computeMatchedMetrics(db, site.id, matchedPaths, { since, until });
             return serializePage(row, metrics);
         }));
+        pages.sort((a, b) => sort === "visitors" ? b.uniqueVisitors - a.uniqueVisitors : sort === "sessions" ? b.uniqueSessions - a.uniqueSessions : sort === "lastSeen" ? (b.lastSeenAt ?? "").localeCompare(a.lastSeenAt ?? "") : sort === "az" ? a.name.localeCompare(b.name) : sort === "za" ? b.name.localeCompare(a.name) : b.views - a.views);
         return reply.send({ pages });
     });
     /**

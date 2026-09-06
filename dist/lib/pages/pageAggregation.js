@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, gte, lte, sql } from "drizzle-orm";
 import { sessionEvents } from "../../db/schema.js";
 export const EMPTY_PAGE_METRICS = { views: 0, uniqueVisitors: 0, uniqueSessions: 0, lastSeenAt: null };
 /**
@@ -6,7 +6,12 @@ export const EMPTY_PAGE_METRICS = { views: 0, uniqueVisitors: 0, uniqueSessions:
  * with a raw view count - the universe of URLs Page rules get matched
  * against. Cheap: one grouped query, no per-Page work yet.
  */
-export async function loadPagePathStats(db, siteId) {
+export async function loadPagePathStats(db, siteId, range = {}) {
+    const conditions = [eq(sessionEvents.siteId, siteId), eq(sessionEvents.type, "page_view"), isNotNull(sessionEvents.pagePath)];
+    if (range.since)
+        conditions.push(gte(sessionEvents.timestamp, range.since));
+    if (range.until)
+        conditions.push(lte(sessionEvents.timestamp, range.until));
     const rows = await db
         .select({
         pagePath: sessionEvents.pagePath,
@@ -14,7 +19,7 @@ export async function loadPagePathStats(db, siteId) {
         lastSeenAt: sql `max(${sessionEvents.timestamp})`,
     })
         .from(sessionEvents)
-        .where(and(eq(sessionEvents.siteId, siteId), eq(sessionEvents.type, "page_view"), isNotNull(sessionEvents.pagePath)))
+        .where(and(...conditions))
         .groupBy(sessionEvents.pagePath);
     return rows.map((r) => ({ pagePath: r.pagePath, views: r.views, lastSeenAt: new Date(r.lastSeenAt) }));
 }
@@ -27,9 +32,14 @@ export async function loadPagePathStats(db, siteId) {
  * them. One query per Page; fine at the Page-catalog scale this
  * targets (tens, not thousands, of tagged Pages per site).
  */
-export async function computeMatchedMetrics(db, siteId, matchedPaths) {
+export async function computeMatchedMetrics(db, siteId, matchedPaths, range = {}) {
     if (matchedPaths.length === 0)
         return EMPTY_PAGE_METRICS;
+    const conditions = [eq(sessionEvents.siteId, siteId), eq(sessionEvents.type, "page_view"), inArray(sessionEvents.pagePath, matchedPaths)];
+    if (range.since)
+        conditions.push(gte(sessionEvents.timestamp, range.since));
+    if (range.until)
+        conditions.push(lte(sessionEvents.timestamp, range.until));
     const [row] = await db
         .select({
         views: sql `count(*)`,
@@ -38,7 +48,7 @@ export async function computeMatchedMetrics(db, siteId, matchedPaths) {
         lastSeenAt: sql `max(${sessionEvents.timestamp})`,
     })
         .from(sessionEvents)
-        .where(and(eq(sessionEvents.siteId, siteId), eq(sessionEvents.type, "page_view"), inArray(sessionEvents.pagePath, matchedPaths)));
+        .where(and(...conditions));
     if (!row || row.views === 0)
         return EMPTY_PAGE_METRICS;
     return { views: row.views, uniqueVisitors: row.uniqueVisitors, uniqueSessions: row.uniqueSessions, lastSeenAt: new Date(row.lastSeenAt) };

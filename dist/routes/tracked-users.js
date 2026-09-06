@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { eq, and, or, like, sql, desc, inArray } from "drizzle-orm";
-import { sites, trackedUsers, trackedUserProperties, trackedUserAliases, sessionEvents } from "../db/schema.js";
+import { eq, and, or, like, sql, desc, asc, inArray, gte, lte } from "drizzle-orm";
+import { sites, trackedUsers, trackedUserProperties, trackedUserAliases, sessionEvents, segments } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { getAliasAnonymousIds, computeProfileStats, listActivity, listSessionsForTrackedUser } from "../lib/identity/profile.js";
 import { getLatestEnvironmentContext, getEnvironmentContextsForSessions } from "../lib/identity/environmentContext.js";
+import { evaluateSegment } from "../lib/segments/evaluator.js";
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
     if (!site || site.orgId !== orgId)
@@ -56,6 +57,9 @@ const listQuerySchema = z.object({
     limit: z.coerce.number().int().min(1).max(200).default(50),
     offset: z.coerce.number().int().min(0).default(0),
     search: z.string().min(1).max(200).optional(),
+    segmentId: z.string().min(1).max(100).optional(),
+    since: z.coerce.date().optional(), until: z.coerce.date().optional(),
+    sort: z.enum(["lastSeen", "firstSeen", "az", "za"]).default("lastSeen"),
 });
 export function registerTrackedUserRoutes(app, db) {
     /**
@@ -74,7 +78,7 @@ export function registerTrackedUserRoutes(app, db) {
         if (!parsed.success) {
             return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
         }
-        const { limit, offset, search } = parsed.data;
+        const { limit, offset, search, segmentId, since, until, sort } = parsed.data;
         let matchingIds = null;
         if (search) {
             const term = `%${search}%`;
@@ -88,15 +92,30 @@ export function registerTrackedUserRoutes(app, db) {
                 return reply.send({ users: [], total: 0, limit, offset });
             }
         }
-        const where = matchingIds
-            ? and(eq(trackedUsers.siteId, site.id), inArray(trackedUsers.id, matchingIds))
-            : eq(trackedUsers.siteId, site.id);
+        if (segmentId) {
+            const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1);
+            if (!segment || segment.siteId !== site.id)
+                return reply.code(400).send({ error: "invalid_segment" });
+            const members = [...await evaluateSegment(db, site.id, segment.definition)];
+            matchingIds = matchingIds ? matchingIds.filter((id) => members.includes(id)) : members;
+        }
+        const conditions = [eq(trackedUsers.siteId, site.id)];
+        if (matchingIds) {
+            if (matchingIds.length === 0)
+                return reply.send({ users: [], total: 0, limit, offset });
+            conditions.push(inArray(trackedUsers.id, matchingIds));
+        }
+        if (since)
+            conditions.push(gte(trackedUsers.lastSeenAt, since));
+        if (until)
+            conditions.push(lte(trackedUsers.lastSeenAt, until));
+        const where = and(...conditions);
         const [{ total }] = await db.select({ total: sql `count(*)` }).from(trackedUsers).where(where);
         const rows = await db
             .select()
             .from(trackedUsers)
             .where(where)
-            .orderBy(desc(trackedUsers.lastSeenAt))
+            .orderBy(sort === "firstSeen" ? asc(trackedUsers.firstSeenAt) : sort === "az" ? asc(trackedUsers.externalUserId) : sort === "za" ? desc(trackedUsers.externalUserId) : desc(trackedUsers.lastSeenAt))
             .limit(limit)
             .offset(offset);
         // Session counts for this page of users, computed in one grouped

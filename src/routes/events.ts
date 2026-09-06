@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { sites } from "../db/schema.js";
+import { sites, segments } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import {
@@ -18,6 +18,8 @@ import {
   getEventPatternReferences,
   eventExistsForSite,
 } from "../lib/events/eventQueries.js";
+import { evaluateSegment } from "../lib/segments/evaluator.js";
+import type { SegmentDefinition } from "../lib/segments/types.js";
 
 async function loadSiteInOrg(db: Db, siteId: string, orgId: string) {
   const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
@@ -31,6 +33,8 @@ const listQuerySchema = z.object({
   search: z.string().min(1).max(200).optional(),
   since: z.coerce.date().optional(),
   until: z.coerce.date().optional(),
+  segmentId: z.string().min(1).max(100).optional(),
+  sort: z.enum(["occurrences", "users", "sessions", "lastSeen", "firstSeen", "az", "za"]).default("occurrences"),
 });
 
 const rangeQuerySchema = z.object({
@@ -74,9 +78,15 @@ export function registerEventRoutes(app: FastifyInstance, db: Db) {
       if (!parsed.success) {
         return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
       }
-      const { limit, offset, search, since, until } = parsed.data;
+      const { limit, offset, search, since, until, segmentId, sort } = parsed.data;
+      let segmentMembers: string[] | undefined;
+      if (segmentId) {
+        const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1);
+        if (!segment || segment.siteId !== site.id) return reply.code(400).send({ error: "invalid_segment" });
+        segmentMembers = [...await evaluateSegment(db, site.id, segment.definition as SegmentDefinition)];
+      }
 
-      const { events, total } = await listEventDefinitions(db, site.id, { limit, offset, search, since, until });
+      const { events, total } = await listEventDefinitions(db, site.id, { limit, offset, search, since, until, segmentMembers, sort });
       return reply.send({ events, total, limit, offset });
     }
   );

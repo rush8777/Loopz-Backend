@@ -1,4 +1,4 @@
-import { and, eq, gte, lte, like, desc, sql } from "drizzle-orm";
+import { and, eq, gte, lte, like, desc, asc, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import { sessionEvents, trackedUserAliases, trackedUsers, patterns } from "../../db/schema.js";
 function dateRangeConditions(range) {
@@ -25,10 +25,14 @@ export async function listEventDefinitions(db, siteId, opts) {
     const conditions = [eq(sessionEvents.siteId, siteId), eq(sessionEvents.type, "custom"), ...dateRangeConditions(opts)];
     if (opts.search)
         conditions.push(like(sessionEvents.eventName, `%${opts.search}%`));
+    // An empty evaluated segment is a valid filter and must return no events.
+    if (opts.segmentMembers)
+        conditions.push(opts.segmentMembers.length ? inArray(identityExpr, opts.segmentMembers) : sql `0`);
     const where = and(...conditions);
     const [{ total }] = await db
         .select({ total: sql `count(distinct ${sessionEvents.eventName})` })
         .from(sessionEvents)
+        .leftJoin(trackedUserAliases, and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId)))
         .where(where);
     if (total === 0)
         return { events: [], total: 0 };
@@ -45,7 +49,7 @@ export async function listEventDefinitions(db, siteId, opts) {
         .leftJoin(trackedUserAliases, and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId)))
         .where(where)
         .groupBy(sessionEvents.eventName)
-        .orderBy(desc(sql `count(*)`))
+        .orderBy(opts.sort === "users" ? desc(sql `count(distinct ${identityExpr})`) : opts.sort === "sessions" ? desc(sql `count(distinct ${sessionEvents.sessionId})`) : opts.sort === "lastSeen" ? desc(sql `max(${sessionEvents.timestamp})`) : opts.sort === "firstSeen" ? desc(sql `min(${sessionEvents.timestamp})`) : opts.sort === "az" ? asc(sessionEvents.eventName) : opts.sort === "za" ? desc(sessionEvents.eventName) : desc(sql `count(*)`))
         .limit(opts.limit)
         .offset(opts.offset);
     return {

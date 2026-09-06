@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, and, sql, asc, desc, inArray } from "drizzle-orm";
+import { eq, and, sql, asc, desc, inArray, gte, lte } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import {
   sites,
@@ -10,12 +10,15 @@ import {
   trackedUserAliases,
   trackedUsers,
   pageDefinitions,
+  segments,
 } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { buildSessionActivityGroups } from "../lib/behavior/sessionActivity.js";
 import { matchesRules } from "../lib/pages/pageMatcher.js";
 import type { PageRule } from "../lib/pages/types.js";
+import { evaluateSegment, resolveMatchedPagePaths } from "../lib/segments/evaluator.js";
+import type { SegmentDefinition } from "../lib/segments/types.js";
 
 async function loadSiteInOrg(db: Db, siteId: string, orgId: string) {
   const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
@@ -26,7 +29,13 @@ async function loadSiteInOrg(db: Db, siteId: string, orgId: string) {
 const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
-});
+  search: z.string().trim().min(1).max(200).optional(),
+  since: z.coerce.date().optional(), until: z.coerce.date().optional(), segmentId: z.string().min(1).max(100).optional(),
+  visitorType: z.enum(["identified", "anonymous"]).optional(), pageId: z.string().min(1).max(100).optional(), eventName: z.string().min(1).max(200).optional(),
+  hasReplay: z.enum(["true", "false"]).optional(), deviceType: z.enum(["desktop", "mobile", "tablet"]).optional(),
+  minDurationMs: z.coerce.number().int().min(0).optional(), maxDurationMs: z.coerce.number().int().min(0).optional(),
+  sort: z.enum(["newest", "oldest", "longest", "shortest", "activity", "clicks"]).default("newest"),
+}).refine((query) => query.minDurationMs === undefined || query.maxDurationMs === undefined || query.minDurationMs <= query.maxDurationMs, { message: "minDurationMs must be less than maxDurationMs" });
 
 export function registerSessionRoutes(app: FastifyInstance, db: Db) {
   /**
@@ -49,32 +58,25 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
       if (!parsed.success) {
         return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
       }
-      const { limit, offset } = parsed.data;
-
-      const [rows, totalRows] = await Promise.all([db
-        .select({
-          sessionId: sessionEvents.sessionId,
-          eventCount: sql<number>`count(*)`,
-          firstSeen: sql<number>`min(${sessionEvents.timestamp})`,
-          lastSeen: sql<number>`max(${sessionEvents.timestamp})`,
-          pageVisitCount: sql<number>`sum(case when ${sessionEvents.type} = 'page_view' then 1 else 0 end)`,
-          clickCount: sql<number>`sum(case when ${sessionEvents.type} = 'click' then 1 else 0 end)`,
-          customEventCount: sql<number>`sum(case when ${sessionEvents.type} = 'custom' then 1 else 0 end)`,
-          anonymousId: sql<string | null>`min(${sessionEvents.anonymousId})`,
-          anonymousIdCount: sql<number>`count(distinct ${sessionEvents.anonymousId})`,
-        })
-        .from(sessionEvents)
-        .where(eq(sessionEvents.siteId, site.id))
-        .groupBy(sessionEvents.sessionId)
-        .orderBy(desc(sql`max(${sessionEvents.timestamp})`))
-        .limit(limit)
-        .offset(offset), db
-        .select({ total: sql<number>`count(distinct ${sessionEvents.sessionId})` })
-        .from(sessionEvents)
-        .where(eq(sessionEvents.siteId, site.id))]);
-
+      const { limit, offset, search, since, until, segmentId, visitorType, pageId, eventName, hasReplay, deviceType, minDurationMs, maxDurationMs, sort } = parsed.data;
+      const conditions = [eq(sessionEvents.siteId, site.id)];
+      if (since) conditions.push(gte(sessionEvents.timestamp, since));
+      if (until) conditions.push(lte(sessionEvents.timestamp, until));
+      // The list intentionally groups all matching raw events before applying any
+      // filter, sort, or slice. This is what makes server-side search and totals
+      // accurate beyond the first 25 rows.
+      const rawEvents = await db.select({ sessionId: sessionEvents.sessionId, timestamp: sessionEvents.timestamp, type: sessionEvents.type, anonymousId: sessionEvents.anonymousId, pagePath: sessionEvents.pagePath, eventName: sessionEvents.eventName }).from(sessionEvents).where(and(...conditions));
+      const grouped = new Map<string, { sessionId: string; firstSeen: Date; lastSeen: Date; eventCount: number; pageVisitCount: number; clickCount: number; customEventCount: number; anonymousIds: Set<string>; paths: Set<string>; eventNames: Set<string> }>();
+      for (const event of rawEvents) {
+        const row = grouped.get(event.sessionId) ?? { sessionId: event.sessionId, firstSeen: event.timestamp, lastSeen: event.timestamp, eventCount: 0, pageVisitCount: 0, clickCount: 0, customEventCount: 0, anonymousIds: new Set(), paths: new Set(), eventNames: new Set() };
+        row.eventCount++; if (event.timestamp < row.firstSeen) row.firstSeen = event.timestamp; if (event.timestamp > row.lastSeen) row.lastSeen = event.timestamp;
+        if (event.type === "page_view") row.pageVisitCount++; if (event.type === "click") row.clickCount++; if (event.type === "custom") row.customEventCount++;
+        if (event.anonymousId) row.anonymousIds.add(event.anonymousId); if (event.pagePath) row.paths.add(event.pagePath); if (event.eventName) row.eventNames.add(event.eventName);
+        grouped.set(event.sessionId, row);
+      }
+      const rows = [...grouped.values()];
       const sessionIds = rows.map((row) => row.sessionId);
-      const anonymousIds = rows.map((row) => row.anonymousId).filter((id): id is string => Boolean(id));
+      const anonymousIds = [...new Set(rows.flatMap((row) => [...row.anonymousIds]))];
       const [replayRows, contextRows, identityRows] = await Promise.all([
         sessionIds.length
           ? db
@@ -104,17 +106,53 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
       const contextsBySession = new Map(contextRows.map((row) => [row.sessionId, row]));
       const identitiesByAnonymousId = new Map(identityRows.map((row) => [row.anonymousId, row]));
 
+      let members: Set<string> | undefined;
+      if (segmentId) {
+        const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1);
+        if (!segment || segment.siteId !== site.id) return reply.code(400).send({ error: "invalid_segment" });
+        members = await evaluateSegment(db, site.id, segment.definition as SegmentDefinition);
+      }
+      let pagePaths: string[] | undefined;
+      if (pageId) {
+        const resolved = await resolveMatchedPagePaths(db, site.id, pageId);
+        if (resolved === null) return reply.code(400).send({ error: "invalid_page" });
+        pagePaths = resolved;
+      }
+      if (eventName) {
+        const [event] = await db.select({ id: sessionEvents.id }).from(sessionEvents).where(and(eq(sessionEvents.siteId, site.id), eq(sessionEvents.type, "custom"), eq(sessionEvents.eventName, eventName))).limit(1);
+        if (!event) return reply.code(400).send({ error: "invalid_event" });
+      }
+      const filtered = rows.filter((row) => {
+        const unambiguous = row.anonymousIds.size === 1 ? [...row.anonymousIds][0] : undefined;
+        const identity = unambiguous ? identitiesByAnonymousId.get(unambiguous) : undefined;
+        const identities = [...row.anonymousIds].map((id) => identitiesByAnonymousId.get(id)?.trackedUserId ?? id);
+        const duration = row.lastSeen.getTime() - row.firstSeen.getTime();
+        const haystack = [row.sessionId, ...row.anonymousIds, ...[...row.anonymousIds].map((id) => identitiesByAnonymousId.get(id)?.externalUserId ?? "")].join(" ").toLowerCase();
+        return (!search || haystack.includes(search.toLowerCase()))
+          && (!members || identities.some((id) => members!.has(id)))
+          && (!visitorType || (visitorType === "identified" ? Boolean(identity) : !identity))
+          && (!pagePaths || [...row.paths].some((path) => pagePaths!.includes(path)))
+          && (!eventName || row.eventNames.has(eventName))
+          && (!hasReplay || replaySessionIds.has(row.sessionId) === (hasReplay === "true"))
+          && (!deviceType || contextsBySession.get(row.sessionId)?.deviceType === deviceType)
+          && (minDurationMs === undefined || duration >= minDurationMs)
+          && (maxDurationMs === undefined || duration <= maxDurationMs);
+      });
+      filtered.sort((a, b) => { const ad = a.lastSeen.getTime() - a.firstSeen.getTime(); const bd = b.lastSeen.getTime() - b.firstSeen.getTime(); switch (sort) { case "oldest": return a.lastSeen.getTime() - b.lastSeen.getTime(); case "longest": return bd - ad; case "shortest": return ad - bd; case "activity": return b.eventCount - a.eventCount; case "clicks": return b.clickCount - a.clickCount; default: return b.lastSeen.getTime() - a.lastSeen.getTime(); } });
+      const total = filtered.length;
+      const pageRows = filtered.slice(offset, offset + limit);
+
       return reply.send({
-        sessions: rows.map((r) => {
+        sessions: pageRows.map((r) => {
           const context = contextsBySession.get(r.sessionId);
-          const unambiguousAnonymousId = r.anonymousIdCount === 1 ? r.anonymousId : null;
+          const unambiguousAnonymousId = r.anonymousIds.size === 1 ? [...r.anonymousIds][0] : null;
           const identity = unambiguousAnonymousId ? identitiesByAnonymousId.get(unambiguousAnonymousId) : undefined;
           return {
             sessionId: r.sessionId,
             eventCount: r.eventCount,
-            firstSeen: new Date(r.firstSeen).toISOString(),
-            lastSeen: new Date(r.lastSeen).toISOString(),
-            durationMs: r.lastSeen - r.firstSeen,
+            firstSeen: r.firstSeen.toISOString(),
+            lastSeen: r.lastSeen.toISOString(),
+            durationMs: r.lastSeen.getTime() - r.firstSeen.getTime(),
             pageVisitCount: r.pageVisitCount,
             clickCount: r.clickCount,
             customEventCount: r.customEventCount,
@@ -131,7 +169,7 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
         }),
         limit,
         offset,
-        total: totalRows[0]?.total ?? 0,
+        total,
       });
     }
   );

@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { eq } from "drizzle-orm";
-import { sites } from "../db/schema.js";
+import { sites, segments } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { listEventDefinitions, getEventSummary, getEventTimeseries, getEventPropertySummary, listEventOccurrences, getEventOccurrence, getEventUsers, getEventSessions, getEventPages, getEventPatternReferences, eventExistsForSite, } from "../lib/events/eventQueries.js";
+import { evaluateSegment } from "../lib/segments/evaluator.js";
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
     if (!site || site.orgId !== orgId)
@@ -16,6 +17,8 @@ const listQuerySchema = z.object({
     search: z.string().min(1).max(200).optional(),
     since: z.coerce.date().optional(),
     until: z.coerce.date().optional(),
+    segmentId: z.string().min(1).max(100).optional(),
+    sort: z.enum(["occurrences", "users", "sessions", "lastSeen", "firstSeen", "az", "za"]).default("occurrences"),
 });
 const rangeQuerySchema = z.object({
     since: z.coerce.date().optional(),
@@ -53,8 +56,15 @@ export function registerEventRoutes(app, db) {
         if (!parsed.success) {
             return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
         }
-        const { limit, offset, search, since, until } = parsed.data;
-        const { events, total } = await listEventDefinitions(db, site.id, { limit, offset, search, since, until });
+        const { limit, offset, search, since, until, segmentId, sort } = parsed.data;
+        let segmentMembers;
+        if (segmentId) {
+            const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1);
+            if (!segment || segment.siteId !== site.id)
+                return reply.code(400).send({ error: "invalid_segment" });
+            segmentMembers = [...await evaluateSegment(db, site.id, segment.definition)];
+        }
+        const { events, total } = await listEventDefinitions(db, site.id, { limit, offset, search, since, until, segmentMembers, sort });
         return reply.send({ events, total, limit, offset });
     });
     /** Overview: summary stats + existing "used in" references (task brief sections 6, 11). */
