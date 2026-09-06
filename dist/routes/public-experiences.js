@@ -4,6 +4,7 @@ import { experienceEditorSessions, experienceImpressions, experiences, experienc
 import { env } from "../config.js";
 import { signEditorAccessToken, verifyEditorAccessToken } from "../lib/auth.js";
 import { definitionSchemaFor, impressionSchema, manifestQuerySchema, updateDraftSchema } from "../lib/experiences/validation.js";
+import { widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import { matchesRules } from "../lib/pages/pageMatcher.js";
 import { evaluateSegment } from "../lib/segments/evaluator.js";
 function rawTokenHash(token) {
@@ -203,6 +204,8 @@ export function registerPublicExperienceRoutes(app, db) {
         const definition = definitionSchemaFor(experience.kind).safeParse(parsed.data.definition);
         if (!definition.success)
             return reply.code(400).send({ error: "invalid_definition", details: definition.error.flatten() });
+        if (experience.kind === "widget" && experience.widgetType && !widgetSizeIsValid(experience.widgetType, definition.data))
+            return reply.code(400).send({ error: "invalid_widget_size" });
         const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, experience.id));
         const draft = versions.find((item) => item.state === "draft");
         if (!draft)

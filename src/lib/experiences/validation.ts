@@ -31,8 +31,14 @@ export const targetSchema = z.object({
   reliability: z.enum(["reliable", "moderate", "fragile"]),
 });
 
+const sizeSchema = z.object({
+  width: z.discriminatedUnion("mode", [z.object({ mode: z.literal("auto") }).strict(), z.object({ mode: z.literal("fixed"), value: z.number().int().min(1).max(4000) }).strict(), z.object({ mode: z.literal("full") }).strict()]),
+  height: z.discriminatedUnion("mode", [z.object({ mode: z.literal("auto") }).strict(), z.object({ mode: z.literal("fixed"), value: z.number().int().min(1).max(4000) }).strict(), z.object({ mode: z.literal("viewport") }).strict()]),
+}).strict();
+
 const designSchema = z.object({
   width: z.enum(["sm", "md", "lg"]),
+  size: sizeSchema.optional(),
   theme: z.object({
     background: safeColorSchema,
     foreground: safeColorSchema,

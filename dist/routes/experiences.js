@@ -4,6 +4,7 @@ import { experienceEditorSessions, experiences, experienceVersions, pageDefiniti
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
+import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
     return site?.orgId === orgId ? site : null;
@@ -57,7 +58,7 @@ function initialDefinition(kind, widgetType, pageRules) {
     }
     return {
         content,
-        design: DEFAULT_DESIGN,
+        design: { ...DEFAULT_DESIGN, size: defaultWidgetSize(widgetType) },
         behavior: {
             dismissible: true,
             ...(widgetType === "toast" ? { toastPosition: "bottom-right", autoDismissMs: null } : {}),
@@ -186,6 +187,8 @@ export function registerExperienceRoutes(app, db) {
             const definition = definitionSchemaFor(row.kind).safeParse(parsed.data.definition);
             if (!definition.success)
                 return reply.code(400).send({ error: "invalid_definition", details: definition.error.flatten() });
+            if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType, definition.data))
+                return reply.code(400).send({ error: "invalid_widget_size" });
             const referenceError = await validateReferences(db, site.id, definition.data);
             if (referenceError)
                 return reply.code(400).send({ error: referenceError });
@@ -209,6 +212,8 @@ export function registerExperienceRoutes(app, db) {
         const checked = definitionSchemaFor(row.kind).safeParse(draft.definition);
         if (!checked.success)
             return reply.code(400).send({ error: "invalid_definition", details: checked.error.flatten() });
+        if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType, checked.data))
+            return reply.code(400).send({ error: "invalid_widget_size" });
         const requirementError = validatePublishRequirements(row.kind, row.widgetType, checked.data);
         if (requirementError)
             return reply.code(400).send({ error: requirementError });

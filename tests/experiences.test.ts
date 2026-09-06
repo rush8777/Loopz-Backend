@@ -116,9 +116,11 @@ describe("visual experiences", () => {
 
   it("creates the new widget defaults and requires a DOM target only for hotspots", async () => {
     const { owner, site } = await setup(ctx.app, "adoption-widgets");
+    const expectedSize = { modal: { width: { mode: "fixed", value: 600 }, height: { mode: "auto" } }, slideout: { width: { mode: "fixed", value: 400 }, height: { mode: "auto" } }, banner: { width: { mode: "full" }, height: { mode: "auto" } } } as const;
     for (const widgetType of ["modal", "slideout", "banner"] as const) {
       const create = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType, name: widgetType, buildUrl: "https://adoption-widgets.example.com/home", template: "blank", useBuildPageAsTarget: false } });
       expect(create.statusCode).toBe(201); const item = create.json();
+      expect(item.draftVersion.definition.design.size).toEqual(expectedSize[widgetType]);
       expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
     }
     const hotspotCreate = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType: "hotspot", name: "hotspot", buildUrl: "https://adoption-widgets.example.com/home", template: "blank", useBuildPageAsTarget: false } });
@@ -127,5 +129,15 @@ describe("visual experiences", () => {
     hotspot.draftVersion.definition.target = { primarySelector: "#new-feature", fallbackSelectors: ["[data-feature='new']"], reliability: "reliable" };
     expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition: hotspot.draftVersion.definition } })).statusCode).toBe(200);
     expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
+  });
+
+  it("round-trips valid sizing and rejects widget-specific constraint bypasses", async () => {
+    const { owner, site } = await setup(ctx.app, "widget-sizing"); const authorization = { authorization: `Bearer ${owner.accessToken}` };
+    const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: authorization, payload: { kind: "widget", widgetType: "modal", name: "Sized modal", buildUrl: "https://widget-sizing.example.com/home", template: "blank", useBuildPageAsTarget: false } })).json();
+    const definition = created.draftVersion.definition; definition.design.size = { width: { mode: "full" }, height: { mode: "viewport" } };
+    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.design.size.width.mode).toBe("full");
+    definition.design.size = { width: { mode: "fixed", value: 961 }, height: { mode: "auto" } };
+    const oversized = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); expect(oversized.statusCode).toBe(400); expect(oversized.json().error).toBe("invalid_widget_size");
+    delete definition.design.size; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(200);
   });
 });

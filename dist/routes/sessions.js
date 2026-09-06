@@ -34,24 +34,27 @@ export function registerSessionRoutes(app, db) {
             return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
         }
         const { limit, offset } = parsed.data;
-        const rows = await db
-            .select({
-            sessionId: sessionEvents.sessionId,
-            eventCount: sql `count(*)`,
-            firstSeen: sql `min(${sessionEvents.timestamp})`,
-            lastSeen: sql `max(${sessionEvents.timestamp})`,
-            pageVisitCount: sql `sum(case when ${sessionEvents.type} = 'page_view' then 1 else 0 end)`,
-            clickCount: sql `sum(case when ${sessionEvents.type} = 'click' then 1 else 0 end)`,
-            customEventCount: sql `sum(case when ${sessionEvents.type} = 'custom' then 1 else 0 end)`,
-            anonymousId: sql `min(${sessionEvents.anonymousId})`,
-            anonymousIdCount: sql `count(distinct ${sessionEvents.anonymousId})`,
-        })
-            .from(sessionEvents)
-            .where(eq(sessionEvents.siteId, site.id))
-            .groupBy(sessionEvents.sessionId)
-            .orderBy(desc(sql `max(${sessionEvents.timestamp})`))
-            .limit(limit)
-            .offset(offset);
+        const [rows, totalRows] = await Promise.all([db
+                .select({
+                sessionId: sessionEvents.sessionId,
+                eventCount: sql `count(*)`,
+                firstSeen: sql `min(${sessionEvents.timestamp})`,
+                lastSeen: sql `max(${sessionEvents.timestamp})`,
+                pageVisitCount: sql `sum(case when ${sessionEvents.type} = 'page_view' then 1 else 0 end)`,
+                clickCount: sql `sum(case when ${sessionEvents.type} = 'click' then 1 else 0 end)`,
+                customEventCount: sql `sum(case when ${sessionEvents.type} = 'custom' then 1 else 0 end)`,
+                anonymousId: sql `min(${sessionEvents.anonymousId})`,
+                anonymousIdCount: sql `count(distinct ${sessionEvents.anonymousId})`,
+            })
+                .from(sessionEvents)
+                .where(eq(sessionEvents.siteId, site.id))
+                .groupBy(sessionEvents.sessionId)
+                .orderBy(desc(sql `max(${sessionEvents.timestamp})`))
+                .limit(limit)
+                .offset(offset), db
+                .select({ total: sql `count(distinct ${sessionEvents.sessionId})` })
+                .from(sessionEvents)
+                .where(eq(sessionEvents.siteId, site.id))]);
         const sessionIds = rows.map((row) => row.sessionId);
         const anonymousIds = rows.map((row) => row.anonymousId).filter((id) => Boolean(id));
         const [replayRows, contextRows, identityRows] = await Promise.all([
@@ -109,6 +112,7 @@ export function registerSessionRoutes(app, db) {
             }),
             limit,
             offset,
+            total: totalRows[0]?.total ?? 0,
         });
     });
     /** Compact, page-grouped session presentation. The existing raw-detail endpoint above remains unchanged. */

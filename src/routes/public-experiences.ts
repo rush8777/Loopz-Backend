@@ -6,7 +6,8 @@ import { experienceEditorSessions, experienceImpressions, experiences, experienc
 import { env } from "../config.js";
 import { signEditorAccessToken, verifyEditorAccessToken } from "../lib/auth.js";
 import { definitionSchemaFor, impressionSchema, manifestQuerySchema, updateDraftSchema } from "../lib/experiences/validation.js";
-import type { ExperienceDefinition, ExperienceKind, ExperienceTargeting } from "../lib/experiences/types.js";
+import type { ExperienceDefinition, ExperienceKind, ExperienceTargeting, WidgetType } from "../lib/experiences/types.js";
+import { widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import { matchesRules } from "../lib/pages/pageMatcher.js";
 import { evaluateSegment } from "../lib/segments/evaluator.js";
 import type { SegmentDefinition } from "../lib/segments/types.js";
@@ -176,6 +177,7 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!parsed.success || parsed.data.definition === undefined) return reply.code(400).send({ error: "invalid_body" });
     const definition = definitionSchemaFor(experience.kind as ExperienceKind).safeParse(parsed.data.definition);
     if (!definition.success) return reply.code(400).send({ error: "invalid_definition", details: definition.error.flatten() });
+    if (experience.kind === "widget" && experience.widgetType && !widgetSizeIsValid(experience.widgetType as WidgetType, definition.data)) return reply.code(400).send({ error: "invalid_widget_size" });
     const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, experience.id));
     const draft = versions.find((item) => item.state === "draft");
     if (!draft) return reply.code(404).send({ error: "draft_not_found" });

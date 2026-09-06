@@ -7,6 +7,7 @@ import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
 import type { ExperienceDefinition, ExperienceKind, ExperienceTargeting, WidgetType } from "../lib/experiences/types.js";
+import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import type { PageRule } from "../lib/pages/types.js";
 
 async function loadSiteInOrg(db: Db, siteId: string, orgId: string) {
@@ -63,7 +64,7 @@ function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, 
   }
   return {
     content,
-    design: DEFAULT_DESIGN,
+    design: { ...DEFAULT_DESIGN, size: defaultWidgetSize(widgetType!) },
     behavior: {
       dismissible: true,
       ...(widgetType === "toast" ? { toastPosition: "bottom-right" as const, autoDismissMs: null } : {}),
@@ -180,6 +181,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (parsed.data.definition !== undefined) {
       const definition = definitionSchemaFor(row.kind as ExperienceKind).safeParse(parsed.data.definition);
       if (!definition.success) return reply.code(400).send({ error: "invalid_definition", details: definition.error.flatten() });
+      if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType as WidgetType, definition.data)) return reply.code(400).send({ error: "invalid_widget_size" });
       const referenceError = await validateReferences(db, site.id, definition.data);
       if (referenceError) return reply.code(400).send({ error: referenceError });
       await db.update(experienceVersions).set({ definition: definition.data }).where(eq(experienceVersions.id, draft.id));
@@ -199,6 +201,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!draft) return reply.code(409).send({ error: "draft_not_found" });
     const checked = definitionSchemaFor(row.kind as ExperienceKind).safeParse(draft.definition);
     if (!checked.success) return reply.code(400).send({ error: "invalid_definition", details: checked.error.flatten() });
+    if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType as WidgetType, checked.data)) return reply.code(400).send({ error: "invalid_widget_size" });
     const requirementError = validatePublishRequirements(row.kind as ExperienceKind, row.widgetType as WidgetType | null, checked.data);
     if (requirementError) return reply.code(400).send({ error: requirementError });
     const referenceError = await validateReferences(db, site.id, checked.data);

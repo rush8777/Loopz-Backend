@@ -89,6 +89,19 @@ describe("session list/detail endpoints", () => {
     );
   });
 
+  it("returns a site-scoped total independent of the requested page limit", async () => {
+    const { owner, site } = await setupSite(ctx.app);
+    for (const sessionId of ["sess_page_1", "sess_page_2", "sess_page_3"]) {
+      await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/events`, payload: { sessionId, events: [{ type: "page_view", timestamp: 1000 }] } });
+    }
+    const first = await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites/${site.id}/sessions?limit=2&offset=0`, headers: { authorization: `Bearer ${owner.accessToken}` } });
+    const second = await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites/${site.id}/sessions?limit=2&offset=2`, headers: { authorization: `Bearer ${owner.accessToken}` } });
+    expect(first.json()).toMatchObject({ total: 3, limit: 2, offset: 0 });
+    expect(first.json().sessions).toHaveLength(2);
+    expect(second.json()).toMatchObject({ total: 3, limit: 2, offset: 2 });
+    expect(second.json().sessions).toHaveLength(1);
+  });
+
   it("returns full ordered event timeline including coordinates for a single session", async () => {
     const { owner, site } = await setupSite(ctx.app);
     await ctx.app.inject({

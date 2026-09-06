@@ -51,7 +51,7 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
       }
       const { limit, offset } = parsed.data;
 
-      const rows = await db
+      const [rows, totalRows] = await Promise.all([db
         .select({
           sessionId: sessionEvents.sessionId,
           eventCount: sql<number>`count(*)`,
@@ -68,7 +68,10 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
         .groupBy(sessionEvents.sessionId)
         .orderBy(desc(sql`max(${sessionEvents.timestamp})`))
         .limit(limit)
-        .offset(offset);
+        .offset(offset), db
+        .select({ total: sql<number>`count(distinct ${sessionEvents.sessionId})` })
+        .from(sessionEvents)
+        .where(eq(sessionEvents.siteId, site.id))]);
 
       const sessionIds = rows.map((row) => row.sessionId);
       const anonymousIds = rows.map((row) => row.anonymousId).filter((id): id is string => Boolean(id));
@@ -128,6 +131,7 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
         }),
         limit,
         offset,
+        total: totalRows[0]?.total ?? 0,
       });
     }
   );
