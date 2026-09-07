@@ -5,6 +5,7 @@ import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
+const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner"];
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
     return site?.orgId === orgId ? site : null;
@@ -116,11 +117,15 @@ export function registerExperienceRoutes(app, db) {
         const site = await loadSiteInOrg(db, siteId, request.membership.orgId);
         if (!site)
             return reply.code(404).send({ error: "site_not_found" });
-        const kind = request.query.kind;
+        const { kind, widgetType } = request.query;
         if (kind && kind !== "guide" && kind !== "widget")
             return reply.code(400).send({ error: "invalid_kind" });
+        if (widgetType && !SUPPORTED_WIDGET_TYPES.includes(widgetType))
+            return reply.code(400).send({ error: "invalid_widget_type" });
+        if (widgetType && kind !== "widget")
+            return reply.code(400).send({ error: "widget_type_requires_widget_kind" });
         const rows = await db.select().from(experiences).where(eq(experiences.siteId, site.id)).orderBy(desc(experiences.updatedAt));
-        const filtered = kind ? rows.filter((row) => row.kind === kind) : rows;
+        const filtered = rows.filter((row) => (!kind || row.kind === kind) && (!widgetType || row.widgetType === widgetType));
         return reply.send({ experiences: await Promise.all(filtered.map((row) => serializeExperience(db, row))) });
     });
     app.post("/orgs/:orgId/sites/:siteId/experiences", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {

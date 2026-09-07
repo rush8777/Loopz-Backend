@@ -27,6 +27,18 @@ describe("visual experiences", () => {
     expect(published.statusCode).toBe(200); expect(published.json().publishedVersion.versionNumber).toBe(1); expect(published.json().draftVersion.versionNumber).toBe(2);
   });
 
+  it("filters unified widget experiences by a supported widget type", async () => {
+    const { owner, site } = await setup(ctx.app, "collection-filter");
+    for (const widgetType of ["modal", "banner"] as const) {
+      const response = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType, name: widgetType, buildUrl: "https://collection-filter.example.com", template: "blank", useBuildPageAsTarget: false } });
+      expect(response.statusCode).toBe(201);
+    }
+    const filtered = await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences?kind=widget&widgetType=modal`, headers: { authorization: `Bearer ${owner.accessToken}` } });
+    expect(filtered.statusCode).toBe(200); expect(filtered.json().experiences).toHaveLength(1); expect(filtered.json().experiences[0].widgetType).toBe("modal");
+    const invalid = await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences?kind=widget&widgetType=checklist`, headers: { authorization: `Bearer ${owner.accessToken}` } });
+    expect(invalid.statusCode).toBe(400); expect(invalid.json().error).toBe("invalid_widget_type");
+  });
+
   it("requires a valid DOM target for every guide step before publishing", async () => {
     const { owner, site } = await setup(ctx.app, "guide-steps");
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "guide", name: "Guide", buildUrl: "https://guide-steps.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
