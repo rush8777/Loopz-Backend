@@ -1,4 +1,5 @@
 import { compileBehavioralEvents } from "./behaviorCompiler.js";
+import { segmentIntoEpisodes } from "./episodeSegmentation.js";
 const LONG_HOVER_MS = 20_000;
 const MAX_SOURCE_REFERENCES = 20;
 /** Small typed storage adapter. Millisecond conversion is explicit at this boundary. */
@@ -135,7 +136,8 @@ function derivedItem(event, index) {
     };
 }
 export function buildSessionActivityGroups(rows, resolvePageName = () => null) {
-    return groupRows(rows).map((group) => {
+    const sessionId = rows[0]?.sessionId ?? "session";
+    const compiledGroups = groupRows(rows).map((group) => {
         const ordered = stableRows(group.rows);
         const frameUsable = group.attribution !== "unknown" && compatibleCoordinateFrame(ordered);
         // Short hovers are intentionally omitted from this presentation-only compile input so they cannot
@@ -181,21 +183,50 @@ export function buildSessionActivityGroups(rows, resolvePageName = () => null) {
         const safeEstimatedItems = items.map((item) => item.estimatedStartTimestamp && Date.parse(item.estimatedStartTimestamp) < firstMs
             ? { ...item, estimatedStartTimestamp: undefined }
             : item);
-        return {
-            id: group.id,
+        const episodes = segmentIntoEpisodes(`${sessionId}:${group.id}`, compiled).map((episode) => ({
+            id: episode.id,
+            startedAt: new Date(episode.startedAt).toISOString(),
+            endedAt: new Date(episode.endedAt).toISOString(),
+            startReason: episode.startReason,
+            endReason: episode.endReason,
+            ...(episode.idleGapBeforeMs != null ? { idleGapBeforeMs: episode.idleGapBeforeMs } : {}),
             pageViewId: group.pageViewId,
-            path: group.path,
-            pageName: group.path ? resolvePageName(group.path) : null,
-            attribution: group.attribution,
-            firstObserved: new Date(firstMs).toISOString(),
-            lastObserved: new Date(lastMs).toISOString(),
-            deepestScrollPercent: scrollValues.length ? Math.max(...scrollValues) : null,
-            scrollSampleCount: scrollValues.length,
-            items: safeEstimatedItems,
-            pointerSignalsAvailable: safeEstimatedItems.filter((item) => item.kind === "derived_signal").length,
-            geometryEvidenceUsable: frameUsable,
+            pagePath: group.path,
+            items: safeEstimatedItems.filter((item) => {
+                const timestamp = Date.parse(item.timestamp);
+                return timestamp >= episode.startedAt && timestamp <= episode.endedAt;
+            }),
+        }));
+        return {
+            page: {
+                id: group.id,
+                pageViewId: group.pageViewId,
+                path: group.path,
+                pageName: group.path ? resolvePageName(group.path) : null,
+                attribution: group.attribution,
+                firstObserved: new Date(firstMs).toISOString(),
+                lastObserved: new Date(lastMs).toISOString(),
+                deepestScrollPercent: scrollValues.length ? Math.max(...scrollValues) : null,
+                scrollSampleCount: scrollValues.length,
+                items: safeEstimatedItems,
+                episodes,
+                pointerSignalsAvailable: safeEstimatedItems.filter((item) => item.kind === "derived_signal").length,
+                geometryEvidenceUsable: frameUsable,
+            },
         };
     });
+    let episodeIndex = 0;
+    for (let groupIndex = 0; groupIndex < compiledGroups.length; groupIndex++) {
+        const episodes = compiledGroups[groupIndex].page.episodes;
+        for (const episode of episodes)
+            episode.id = `${sessionId}_episode_${episodeIndex++}`;
+        if (groupIndex === 0 && episodes[0])
+            episodes[0].startReason = "session_start";
+        if (groupIndex < compiledGroups.length - 1 && episodes.length > 0) {
+            episodes[episodes.length - 1].endReason = "page_enter";
+        }
+    }
+    return compiledGroups.map(({ page }) => page);
 }
 export const SESSION_LONG_HOVER_MS = LONG_HOVER_MS;
 //# sourceMappingURL=sessionActivity.js.map

@@ -42,6 +42,9 @@ describe("session activity presentation", () => {
 
     expect(groups).toHaveLength(2);
     expect(groups.map((group) => group.path)).toEqual(["/pricing", "/pricing"]);
+    expect(groups.flatMap((group) => group.episodes)).toHaveLength(2);
+    expect(groups[0].episodes[0]).toMatchObject({ startReason: "session_start", endReason: "page_enter", pageViewId: "pv_1", pagePath: "/pricing" });
+    expect(groups[1].episodes[0]).toMatchObject({ startReason: "page_enter", endReason: "session_end", pageViewId: "pv_2", pagePath: "/pricing" });
     expect(groups.flatMap((group) => group.items).filter((item) => item.signalKind === "repeated_attention")).toHaveLength(0);
   });
 
@@ -97,5 +100,30 @@ describe("session activity presentation", () => {
       row({ type: "click", timestamp: new Date(2_000), selector: "#missing-page-id" }),
     ]);
     expect(mixed.some((group) => group.attribution === "unknown" && group.path === null)).toBe(true);
+  });
+
+  it("splits idle activity without changing the page and retains the gap duration", () => {
+    const [group] = buildSessionActivityGroups([
+      row({ type: "page_view", timestamp: new Date(0), pageViewId: "pv_idle", pagePath: "/dashboard" }),
+      row({ type: "click", timestamp: new Date(10_000), pageViewId: "pv_idle", selector: "#one" }),
+      row({ type: "click", timestamp: new Date(20_000), pageViewId: "pv_idle", selector: "#two" }),
+      row({ type: "click", timestamp: new Date(120_000), pageViewId: "pv_idle", selector: "#three" }),
+    ]);
+
+    expect(group.episodes).toHaveLength(2);
+    expect(group.episodes[0].items.filter((item) => item.kind === "click")).toHaveLength(2);
+    expect(group.episodes[1]).toMatchObject({ startReason: "idle_gap", idleGapBeforeMs: 100_000 });
+    expect(group.episodes[1].items.filter((item) => item.kind === "click")).toHaveLength(1);
+  });
+
+  it("keeps continuous same-page interaction in one episode", () => {
+    const [group] = buildSessionActivityGroups([
+      row({ type: "page_view", timestamp: new Date(0), pageViewId: "pv_flow", pagePath: "/dashboard" }),
+      row({ type: "click", timestamp: new Date(10_000), pageViewId: "pv_flow", selector: "#one" }),
+      row({ type: "custom", timestamp: new Date(20_000), pageViewId: "pv_flow", eventName: "searched" }),
+      row({ type: "click", timestamp: new Date(29_000), pageViewId: "pv_flow", selector: "#two" }),
+    ]);
+    expect(group.episodes).toHaveLength(1);
+    expect(group.episodes[0].items).toHaveLength(3);
   });
 });

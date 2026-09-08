@@ -117,7 +117,7 @@ export function registerHeatmapRoutes(app: FastifyInstance, db: Db) {
     try { target = body.data.targetUrl ? new URL(body.data.targetUrl) : siteOrigin && path ? new URL(path, siteOrigin) : null; } catch { /* rejected below */ }
     if (!target || (siteOrigin && target.origin !== siteOrigin) || !matchesRules(target.pathname, page.rules as PageRule[])) return reply.code(400).send({ error: "target_url_unavailable" });
     const [capture] = await db.insert(heatmapCaptureRequests).values({ token: nanoid(32), siteId: site.id, pageDefinitionId: page.id, pageStateId: stateId, deviceClass: body.data.device, expiresAt: new Date(Date.now() + 15 * 60_000) }).returning();
-    target.searchParams.set("__loopz_heatmap_capture", capture.token); return reply.code(201).send({ captureUrl: target.toString(), expiresAt: capture.expiresAt.toISOString(), requestId: capture.id });
+    target.searchParams.set("__movecues_heatmap_capture", capture.token); return reply.code(201).send({ captureUrl: target.toString(), expiresAt: capture.expiresAt.toISOString(), requestId: capture.id });
   });
   app.get("/orgs/:orgId/sites/:siteId/pages/:pageId/heatmap/capture-request/:requestId", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
     const { siteId, pageId, requestId } = request.params as { siteId: string; pageId: string; requestId: string }, site = await ownSite(db, siteId, request.membership!.orgId); if (!site) return reply.code(404).send({ error: "site_not_found" });

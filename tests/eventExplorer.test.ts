@@ -586,35 +586,23 @@ describe("event timeseries", () => {
   });
 });
 
-describe("used in patterns", () => {
+describe("retired pattern references", () => {
   let ctx: Awaited<ReturnType<typeof createTestApp>>;
   beforeEach(async () => {
     ctx = await createTestApp();
   });
   afterEach(() => ctx.cleanup());
 
-  it("surfaces a real pattern referencing this event via a custom step, never a fabricated one", async () => {
+  it("does not surface stale pattern references", async () => {
     const { owner, site } = await setupSite(ctx.app);
     await seedCustomEvents(ctx.app, site.siteId, [{ name: "checkout_completed", timestamp: 1000, sessionId: "s1" }]);
-
-    await ctx.app.inject({
-      method: "POST",
-      url: `/orgs/${owner.org.id}/sites/${site.id}/patterns`,
-      headers: AUTH(owner.accessToken),
-      payload: {
-        name: "Checkout completion",
-        matchWindowMs: 60000,
-        feedback: { message: "Nice!", targetSelector: "#done" },
-        steps: [{ id: "s1", verb: "custom", eventName: "checkout_completed", required: true }],
-      },
-    });
 
     const res = await ctx.app.inject({
       method: "GET",
       url: `/orgs/${owner.org.id}/sites/${site.id}/events/checkout_completed`,
       headers: AUTH(owner.accessToken),
     });
-    expect(res.json().usedIn.patterns).toEqual([expect.objectContaining({ name: "Checkout completion" })]);
+    expect(res.json().usedIn.patterns).toEqual([]);
   });
 
   it("shows an empty list, never a fake reference, when no pattern uses the event", async () => {

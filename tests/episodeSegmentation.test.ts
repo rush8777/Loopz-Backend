@@ -66,6 +66,7 @@ describe("idle gaps", () => {
     expect(episodes).toHaveLength(2);
     expect(episodes[0].endReason).toBe("idle_gap");
     expect(episodes[1].startReason).toBe("idle_gap");
+    expect(episodes[1].idleGapBeforeMs).toBe(idleGapMs + 1);
   });
 
   it("a small idle gap does not create a boundary", () => {

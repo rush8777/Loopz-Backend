@@ -16,6 +16,7 @@ export function segmentIntoEpisodes(sessionId, events, configOverrides = {}) {
     let episodeIndex = 0;
     let currentEvents = [sorted[0]];
     let startReason = sorted[0].kind === "page_enter" ? "page_enter" : "session_start";
+    let idleGapBeforeMs;
     const closeEpisode = (endReason) => {
         const first = currentEvents[0];
         const last = currentEvents[currentEvents.length - 1];
@@ -27,6 +28,7 @@ export function segmentIntoEpisodes(sessionId, events, configOverrides = {}) {
             events: currentEvents,
             startReason,
             endReason,
+            ...(idleGapBeforeMs != null ? { idleGapBeforeMs } : {}),
         });
         episodeIndex += 1;
     };
@@ -44,6 +46,7 @@ export function segmentIntoEpisodes(sessionId, events, configOverrides = {}) {
             closeEpisode(reason);
             currentEvents = [event];
             startReason = reason;
+            idleGapBeforeMs = reason === "idle_gap" ? gapMs : undefined;
         }
         else {
             currentEvents.push(event);

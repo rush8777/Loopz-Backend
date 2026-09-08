@@ -1,6 +1,6 @@
 import { and, eq, gte, lte, like, desc, asc, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
-import { sessionEvents, trackedUserAliases, trackedUsers, patterns } from "../../db/schema.js";
+import { sessionEvents, trackedUserAliases, trackedUsers } from "../../db/schema.js";
 function dateRangeConditions(range) {
     const conditions = [];
     if (range.since)
@@ -359,14 +359,11 @@ export async function getEventPages(db, siteId, eventName, range) {
         .limit(MAX_PAGES_BREAKDOWN);
     return rows.map((r) => ({ pagePath: r.pagePath, occurrences: r.occurrences }));
 }
-/** Patterns whose steps reference this event name via a "custom" verb step (see patterns/matcher.ts). Small per-site pattern count, so a single fetch-and-filter in JS is simpler and just as fast as trying to query into the JSON steps column. */
+/** Legacy Patterns are retired, so Event Explorer no longer advertises stale references. */
 export async function getEventPatternReferences(db, siteId, eventName) {
-    const rows = await db
-        .select({ id: patterns.id, name: patterns.name, steps: patterns.steps })
-        .from(patterns)
-        .where(eq(patterns.siteId, siteId));
-    return rows
-        .filter((r) => r.steps.some((s) => s.verb === "custom" && s.eventName === eventName))
-        .map((r) => ({ id: r.id, name: r.name }));
+    void db;
+    void siteId;
+    void eventName;
+    return [];
 }
 //# sourceMappingURL=eventQueries.js.map

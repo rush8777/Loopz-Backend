@@ -53,7 +53,7 @@ function builderCssIsSafe(value: string): boolean {
   for (const match of css.matchAll(/([^{}]+)\{/g)) {
     const prelude = match[1].trim();
     if (!prelude || prelude.startsWith("@")) continue;
-    if (prelude.split(",").some(selector => !selector.trim().includes(".loopz-widget"))) return false;
+    if (prelude.split(",").some(selector => !selector.trim().includes(".movecues-widget"))) return false;
   }
   return true;
 }
@@ -69,7 +69,7 @@ const builderSchema = z.object({
   version: z.literal(1),
   projectData: z.record(z.string(), z.unknown()).refine(builderProjectValueIsSafe, "unsafe builder project data"),
   html: z.string().max(500_000).refine(value => !/<\s*(script|style|iframe|object|embed|form|input|textarea|select|video|audio)\b|\son[a-z]+\s*=|javascript\s*:/i.test(value), "unsafe builder HTML"),
-  css: z.string().max(250_000).refine(builderCssIsSafe, "builder CSS must be safe and scoped under .loopz-widget"),
+  css: z.string().max(250_000).refine(builderCssIsSafe, "builder CSS must be safe and scoped under .movecues-widget"),
 }).strict();
 
 const behaviorSchema = z.object({

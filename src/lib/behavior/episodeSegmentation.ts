@@ -38,6 +38,8 @@ export interface Episode {
   events: BehavioralEvent[];
   startReason: EpisodeBoundaryReason;
   endReason: EpisodeBoundaryReason;
+  /** Present when this episode resumed after an idle boundary. */
+  idleGapBeforeMs?: number;
 }
 
 export interface EpisodeSegmentationConfig {
@@ -73,6 +75,7 @@ export function segmentIntoEpisodes(
   let episodeIndex = 0;
   let currentEvents: BehavioralEvent[] = [sorted[0]];
   let startReason: EpisodeBoundaryReason = sorted[0].kind === "page_enter" ? "page_enter" : "session_start";
+  let idleGapBeforeMs: number | undefined;
 
   const closeEpisode = (endReason: EpisodeBoundaryReason): void => {
     const first = currentEvents[0];
@@ -85,6 +88,7 @@ export function segmentIntoEpisodes(
       events: currentEvents,
       startReason,
       endReason,
+      ...(idleGapBeforeMs != null ? { idleGapBeforeMs } : {}),
     });
     episodeIndex += 1;
   };
@@ -105,6 +109,7 @@ export function segmentIntoEpisodes(
       closeEpisode(reason);
       currentEvents = [event];
       startReason = reason;
+      idleGapBeforeMs = reason === "idle_gap" ? gapMs : undefined;
     } else {
       currentEvents.push(event);
     }

@@ -22,6 +22,12 @@ async function loadExperience(db: Db, siteId: string, experienceId: string) {
   return row?.siteId === siteId ? row : null;
 }
 
+async function experienceNameExists(db: Db, siteId: string, name: string, excludeId?: string) {
+  const rows = await db.select({ id: experiences.id, name: experiences.name }).from(experiences).where(eq(experiences.siteId, siteId));
+  const normalizedName = name.toLowerCase();
+  return rows.some((row) => row.id !== excludeId && row.name.toLowerCase() === normalizedName);
+}
+
 function siteOrigin(domain: string | null): string | null {
   if (!domain) return null;
   try {
@@ -134,6 +140,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!site) return reply.code(404).send({ error: "site_not_found" });
     const parsed = createExperienceSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+    if (await experienceNameExists(db, site.id, parsed.data.name)) return reply.code(409).send({ error: "experience_name_exists", message: "An experience with this name already exists." });
 
     let page: typeof pageDefinitions.$inferSelect | null = null;
     if (parsed.data.buildPageId) {
@@ -179,6 +186,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!row) return reply.code(404).send({ error: "experience_not_found" });
     const parsed = updateDraftSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+    if (parsed.data.name && await experienceNameExists(db, site.id, parsed.data.name, row.id)) return reply.code(409).send({ error: "experience_name_exists", message: "An experience with this name already exists." });
     const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, row.id)).orderBy(desc(experienceVersions.versionNumber));
     const draft = versions.find((version) => version.state === "draft");
     if (!draft) return reply.code(409).send({ error: "draft_not_found" });
@@ -239,7 +247,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
     const [session] = await db.insert(experienceEditorSessions).values({ experienceId: row.id, siteId: site.id, dashboardUserId: request.user!.id, tokenHash, allowedOrigin: new URL(row.buildUrl).origin, expiresAt }).returning();
     const launch = new URL(row.buildUrl);
-    launch.searchParams.set("loopz_editor_token", rawToken);
+    launch.searchParams.set("movecues_editor_token", rawToken);
     return reply.code(201).send({ sessionId: session.id, launchUrl: launch.toString(), expiresAt: expiresAt.toISOString() });
   });
 

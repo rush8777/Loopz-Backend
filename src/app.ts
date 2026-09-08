@@ -4,9 +4,10 @@ import rateLimit from "@fastify/rate-limit";
 import type { Db } from "./db/client.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerOrgRoutes } from "./routes/orgs.js";
-import { registerPatternRoutes } from "./routes/patterns.js";
-import { registerAnalysisRoutes } from "./routes/analysis.js";
-import { registerPatternObserverRoutes } from "./routes/pattern-observer.js";
+// Legacy Behavioral Intelligence routes are intentionally dormant.
+// import { registerPatternRoutes } from "./routes/patterns.js";
+// import { registerAnalysisRoutes } from "./routes/analysis.js";
+// import { registerPatternObserverRoutes } from "./routes/pattern-observer.js";
 import { registerElementRoutes } from "./routes/elements.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerPageRoutes } from "./routes/pages.js";
@@ -42,9 +43,9 @@ export async function buildApp(db: Db) {
 
   registerAuthRoutes(app, db);
   registerOrgRoutes(app, db);
-  registerPatternRoutes(app, db);
-  registerAnalysisRoutes(app, db);
-  registerPatternObserverRoutes(app, db);
+  // registerPatternRoutes(app, db);
+  // registerAnalysisRoutes(app, db);
+  // registerPatternObserverRoutes(app, db);
   registerElementRoutes(app, db);
   registerSessionRoutes(app, db);
   registerPageRoutes(app, db);

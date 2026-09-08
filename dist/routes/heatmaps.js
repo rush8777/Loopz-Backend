@@ -175,7 +175,7 @@ export function registerHeatmapRoutes(app, db) {
         if (!target || (siteOrigin && target.origin !== siteOrigin) || !matchesRules(target.pathname, page.rules))
             return reply.code(400).send({ error: "target_url_unavailable" });
         const [capture] = await db.insert(heatmapCaptureRequests).values({ token: nanoid(32), siteId: site.id, pageDefinitionId: page.id, pageStateId: stateId, deviceClass: body.data.device, expiresAt: new Date(Date.now() + 15 * 60_000) }).returning();
-        target.searchParams.set("__loopz_heatmap_capture", capture.token);
+        target.searchParams.set("__movecues_heatmap_capture", capture.token);
         return reply.code(201).send({ captureUrl: target.toString(), expiresAt: capture.expiresAt.toISOString(), requestId: capture.id });
     });
     app.get("/orgs/:orgId/sites/:siteId/pages/:pageId/heatmap/capture-request/:requestId", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {

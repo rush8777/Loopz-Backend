@@ -70,7 +70,7 @@ describe("Page heatmaps", () => {
     const state = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/pages/${page.id}/heatmap/states`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { name: "Notifications Drawer", selector: "[data-drawer=notifications]" } })).json();
     const request = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/pages/${page.id}/heatmap/capture-request`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { stateId: state.id, device: "desktop", targetUrl: "https://customer.example/dashboard" } });
     expect(request.statusCode).toBe(201);
-    const token = new URL(request.json().captureUrl).searchParams.get("__loopz_heatmap_capture");
+    const token = new URL(request.json().captureUrl).searchParams.get("__movecues_heatmap_capture");
     expect(request.json()).not.toHaveProperty("command");
     const upload = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/heatmap-snapshots/${token}`, payload: { pagePath: "/dashboard", deviceClass: "desktop", viewportWidth: 1440, viewportHeight: 900, documentWidth: 1440, documentHeight: 2400, imageDataUrl: "data:image/webp;base64,AAAA" } });
     expect(upload.statusCode).toBe(201);

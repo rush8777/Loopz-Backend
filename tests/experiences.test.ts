@@ -39,6 +39,25 @@ describe("visual experiences", () => {
     expect(invalid.statusCode).toBe(400); expect(invalid.json().error).toBe("invalid_widget_type");
   });
 
+  it("rejects duplicate experience names within the same site", async () => {
+    const { owner, site } = await setup(ctx.app, "unique-names");
+    const authorization = { authorization: `Bearer ${owner.accessToken}` };
+    const url = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
+    const payload = { kind: "widget", widgetType: "modal", name: "Untitled widget", buildUrl: "https://unique-names.example.com", template: "blank", useBuildPageAsTarget: false };
+    const first = await ctx.app.inject({ method: "POST", url, headers: authorization, payload });
+    expect(first.statusCode).toBe(201);
+
+    const duplicate = await ctx.app.inject({ method: "POST", url, headers: authorization, payload: { ...payload, name: "untitled widget" } });
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json().error).toBe("experience_name_exists");
+
+    const second = await ctx.app.inject({ method: "POST", url, headers: authorization, payload: { ...payload, name: "Another experience" } });
+    expect(second.statusCode).toBe(201);
+    const rename = await ctx.app.inject({ method: "PATCH", url: `${url}/${second.json().id}`, headers: authorization, payload: { name: "UNTITLED WIDGET" } });
+    expect(rename.statusCode).toBe(409);
+    expect(rename.json().error).toBe("experience_name_exists");
+  });
+
   it("requires a valid DOM target for every guide step before publishing", async () => {
     const { owner, site } = await setup(ctx.app, "guide-steps");
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "guide", name: "Guide", buildUrl: "https://guide-steps.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
@@ -55,12 +74,12 @@ describe("visual experiences", () => {
     const { owner, site } = await setup(ctx.app, "editor");
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType: "toast", name: "Editor", buildUrl: "https://editor.example.com/home", template: "blank", useBuildPageAsTarget: false } })).json();
     const sessionRes = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/editor-sessions`, headers: { authorization: `Bearer ${owner.accessToken}` } });
-    expect(sessionRes.statusCode).toBe(201); const session = sessionRes.json(); const raw = new URL(session.launchUrl).searchParams.get("loopz_editor_token")!; expect(JSON.stringify(session)).not.toContain("tokenHash");
+    expect(sessionRes.statusCode).toBe(201); const session = sessionRes.json(); const raw = new URL(session.launchUrl).searchParams.get("movecues_editor_token")!; expect(JSON.stringify(session)).not.toContain("tokenHash");
     const wrongOrigin = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://evil.example.com" }, payload: { token: raw } }); expect(wrongOrigin.statusCode).toBe(401);
     const exchanged = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://editor.example.com" }, payload: { token: raw } }); expect(exchanged.statusCode).toBe(200);
     const reused = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://editor.example.com" }, payload: { token: raw } }); expect(reused.statusCode).toBe(401);
     const editorHeaders = { origin: "https://editor.example.com", authorization: `Bearer ${exchanged.json().accessToken}` }; const loadedDraft = await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders }); expect(loadedDraft.statusCode).toBe(200);
-    const editorDefinition = loadedDraft.json().version.definition; editorDefinition.builder = { version: 1, projectData: { pages: [{ id: "main" }] }, html: '<section class="loopz-widget">Editor content</section>', css: ".loopz-widget{color:#111}" };
+    const editorDefinition = loadedDraft.json().version.definition; editorDefinition.builder = { version: 1, projectData: { pages: [{ id: "main" }] }, html: '<section class="movecues-widget">Editor content</section>', css: ".movecues-widget{color:#111}" };
     const editorSaved = await ctx.app.inject({ method: "PATCH", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders, payload: { definition: editorDefinition } }); expect(editorSaved.statusCode).toBe(200); expect(editorSaved.json().version.definition.builder.projectData.pages[0].id).toBe("main");
     await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/editor-sessions/${session.sessionId}/revoke`, headers: { authorization: `Bearer ${owner.accessToken}` } });
     const draft = await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${session.sessionId}/draft`, headers: { origin: "https://editor.example.com", authorization: `Bearer ${exchanged.json().accessToken}` } }); expect(draft.statusCode).toBe(401);
@@ -71,7 +90,7 @@ describe("visual experiences", () => {
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType: "toast", name: "Expired", buildUrl: "https://expired.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
     const session = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/editor-sessions`, headers: { authorization: `Bearer ${owner.accessToken}` } })).json();
     await ctx.db.update(experienceEditorSessions).set({ expiresAt: new Date(Date.now() - 1) }).where(eq(experienceEditorSessions.id, session.sessionId));
-    const raw = new URL(session.launchUrl).searchParams.get("loopz_editor_token")!;
+    const raw = new URL(session.launchUrl).searchParams.get("movecues_editor_token")!;
     const exchange = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://expired.example.com" }, payload: { token: raw } });
     expect(exchange.statusCode).toBe(401);
   });
@@ -112,17 +131,17 @@ describe("visual experiences", () => {
   it("persists and publishes safe builder data while rejecting unsafe markup and CSS", async () => {
     const { owner, site } = await setup(ctx.app, "builder-data"); const authorization = { authorization: `Bearer ${owner.accessToken}` };
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: authorization, payload: { kind: "widget", widgetType: "modal", name: "Builder", buildUrl: "https://builder-data.example.com/home", template: "blank", useBuildPageAsTarget: false } })).json();
-    const definition = created.draftVersion.definition; definition.builder = { version: 1, projectData: { pages: [{ id: "main", component: { type: "wrapper" } }] }, html: '<section class="loopz-widget"><button data-loopz-action-id="primary">Continue</button></section>', css: ".loopz-widget .button{color:#fff}" };
-    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.builder.html).toContain("data-loopz-action-id");
+    const definition = created.draftVersion.definition; definition.builder = { version: 1, projectData: { pages: [{ id: "main", component: { type: "wrapper" } }] }, html: '<section class="movecues-widget"><button data-movecues-action-id="primary">Continue</button></section>', css: ".movecues-widget .button{color:#fff}" };
+    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.builder.html).toContain("data-movecues-action-id");
     const published = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
     const manifest = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fbuilder-data.example.com%2Fhome&anonymousId=builder_anon&sessionId=builder_session` }); expect(manifest.json().experiences[0].definition.builder.projectData.pages[0].id).toBe("main");
-    const nextDraft = published.json().draftVersion.definition; nextDraft.builder.html = '<section class="loopz-widget">Unpublished draft builder</section>'; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition: nextDraft } })).statusCode).toBe(200);
+    const nextDraft = published.json().draftVersion.definition; nextDraft.builder.html = '<section class="movecues-widget">Unpublished draft builder</section>'; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition: nextDraft } })).statusCode).toBe(200);
     const productionAfterDraftEdit = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fbuilder-data.example.com%2Fhome&anonymousId=builder_anon_2&sessionId=builder_session_2` }); expect(productionAfterDraftEdit.json().experiences[0].definition.builder.html).not.toContain("Unpublished draft builder");
-    const editorSession = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/editor-sessions`, headers: authorization })).json(); const editorToken = new URL(editorSession.launchUrl).searchParams.get("loopz_editor_token")!;
+    const editorSession = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/editor-sessions`, headers: authorization })).json(); const editorToken = new URL(editorSession.launchUrl).searchParams.get("movecues_editor_token")!;
     const editorAccess = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://builder-data.example.com" }, payload: { token: editorToken } }); const editorDraft = await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${editorSession.sessionId}/draft`, headers: { origin: "https://builder-data.example.com", authorization: `Bearer ${editorAccess.json().accessToken}` } }); expect(editorDraft.json().version.definition.builder.html).toContain("Unpublished draft builder");
-    definition.builder.html = '<section class="loopz-widget"><script>alert(1)</script></section>'; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
-    definition.builder.html = '<section class="loopz-widget">Safe</section>'; definition.builder.css = "button{color:red}"; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
-    definition.builder.css = ".loopz-widget{color:red}"; definition.builder.projectData = { pages: [{ component: { script: "alert(1)" } }] }; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
+    definition.builder.html = '<section class="movecues-widget"><script>alert(1)</script></section>'; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
+    definition.builder.html = '<section class="movecues-widget">Safe</section>'; definition.builder.css = "button{color:red}"; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
+    definition.builder.css = ".movecues-widget{color:red}"; definition.builder.projectData = { pages: [{ component: { script: "alert(1)" } }] }; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
     definition.builder.projectData = { pages: [{ component: { attributes: { onpointerdown: "alert(1)" } } }] }; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
   });
 

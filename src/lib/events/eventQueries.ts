@@ -1,8 +1,7 @@
 import { and, eq, gte, lte, like, desc, asc, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Db } from "../../db/client.js";
-import { sessionEvents, trackedUserAliases, trackedUsers, patterns } from "../../db/schema.js";
-import type { PatternStep } from "../patterns/types.js";
+import { sessionEvents, trackedUserAliases, trackedUsers } from "../../db/schema.js";
 
 /**
  * The read/aggregation core of the Event Explorer (developer-defined
@@ -663,13 +662,10 @@ export interface UsedInPattern {
   name: string;
 }
 
-/** Patterns whose steps reference this event name via a "custom" verb step (see patterns/matcher.ts). Small per-site pattern count, so a single fetch-and-filter in JS is simpler and just as fast as trying to query into the JSON steps column. */
+/** Legacy Patterns are retired, so Event Explorer no longer advertises stale references. */
 export async function getEventPatternReferences(db: Db, siteId: string, eventName: string): Promise<UsedInPattern[]> {
-  const rows = await db
-    .select({ id: patterns.id, name: patterns.name, steps: patterns.steps })
-    .from(patterns)
-    .where(eq(patterns.siteId, siteId));
-  return rows
-    .filter((r) => (r.steps as PatternStep[]).some((s) => s.verb === "custom" && s.eventName === eventName))
-    .map((r) => ({ id: r.id, name: r.name }));
+  void db;
+  void siteId;
+  void eventName;
+  return [];
 }

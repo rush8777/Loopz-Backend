@@ -14,6 +14,11 @@ async function loadExperience(db, siteId, experienceId) {
     const [row] = await db.select().from(experiences).where(eq(experiences.id, experienceId)).limit(1);
     return row?.siteId === siteId ? row : null;
 }
+async function experienceNameExists(db, siteId, name, excludeId) {
+    const rows = await db.select({ id: experiences.id, name: experiences.name }).from(experiences).where(eq(experiences.siteId, siteId));
+    const normalizedName = name.toLowerCase();
+    return rows.some((row) => row.id !== excludeId && row.name.toLowerCase() === normalizedName);
+}
 function siteOrigin(domain) {
     if (!domain)
         return null;
@@ -136,6 +141,8 @@ export function registerExperienceRoutes(app, db) {
         const parsed = createExperienceSchema.safeParse(request.body);
         if (!parsed.success)
             return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+        if (await experienceNameExists(db, site.id, parsed.data.name))
+            return reply.code(409).send({ error: "experience_name_exists", message: "An experience with this name already exists." });
         let page = null;
         if (parsed.data.buildPageId) {
             [page] = await db.select().from(pageDefinitions).where(eq(pageDefinitions.id, parsed.data.buildPageId)).limit(1);
@@ -184,6 +191,8 @@ export function registerExperienceRoutes(app, db) {
         const parsed = updateDraftSchema.safeParse(request.body);
         if (!parsed.success)
             return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+        if (parsed.data.name && await experienceNameExists(db, site.id, parsed.data.name, row.id))
+            return reply.code(409).send({ error: "experience_name_exists", message: "An experience with this name already exists." });
         const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, row.id)).orderBy(desc(experienceVersions.versionNumber));
         const draft = versions.find((version) => version.state === "draft");
         if (!draft)
@@ -257,7 +266,7 @@ export function registerExperienceRoutes(app, db) {
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
         const [session] = await db.insert(experienceEditorSessions).values({ experienceId: row.id, siteId: site.id, dashboardUserId: request.user.id, tokenHash, allowedOrigin: new URL(row.buildUrl).origin, expiresAt }).returning();
         const launch = new URL(row.buildUrl);
-        launch.searchParams.set("loopz_editor_token", rawToken);
+        launch.searchParams.set("movecues_editor_token", rawToken);
         return reply.code(201).send({ sessionId: session.id, launchUrl: launch.toString(), expiresAt: expiresAt.toISOString() });
     });
     app.post("/orgs/:orgId/sites/:siteId/experiences/:experienceId/editor-sessions/:sessionId/revoke", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {

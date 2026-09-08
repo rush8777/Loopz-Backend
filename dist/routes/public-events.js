@@ -1,27 +1,19 @@
-import { eq, and } from "drizzle-orm";
-import { sites, patterns, patternMatchStates, patternMatches, sessionEvents } from "../db/schema.js";
+import { eq } from "drizzle-orm";
+import { sites, sessionEvents } from "../db/schema.js";
 import { trackEventsBodySchema } from "../lib/patterns/validation.js";
-import { advanceMatch, createInitialMatchState } from "../lib/patterns/matcher.js";
 import { resolveIdentity } from "../lib/identity/resolveIdentity.js";
 import { recordSessionStart } from "../lib/identity/environmentContext.js";
 /**
  * Public, unauthenticated (same trust model as /public/config - see the
  * comment there) endpoint the SDK calls as event batches are ready to
- * send. For each ACTIVE pattern on the site, advances that pattern's
- * match state for this session by the newly-arrived events, persists
- * the updated state, and returns feedback for any pattern that just
- * completed in this call.
- *
- * Deliberately NOT a general-purpose analytics ingestion endpoint -
- * events are held only long enough to advance match state, not stored
- * as a queryable event log. That's a distinct, larger piece of
- * infrastructure (heatmaps/funnels/replay) covered elsewhere; this
- * endpoint exists solely to serve the live-feedback trigger loop.
+ * send. It durably stores interaction telemetry for Sessions, Events,
+ * Funnels, Heatmaps, and behavioral episode compilation. The retired
+ * authored Pattern matcher no longer runs here.
  *
  * `custom` events (analytics.event(name, properties?) on the SDK) are a
  * first-class event type here, alongside page_view/click/hover/scroll/
  * cursor - not a parallel pipeline. They flow through the exact same
- * validation -> session_events persistence -> pattern-matching path as
+ * validation -> session_events persistence path as
  * every other behavioral event; the only difference is which columns
  * get populated (eventName/eventProperties instead of
  * selector/durationMs/etc.) - see the insert below.
@@ -140,71 +132,9 @@ export function registerPublicEventsRoutes(app, db) {
                 referrer: sessionStartEvent.referrer,
             });
         }
-        const activePatterns = await db
-            .select()
-            .from(patterns)
-            .where(and(eq(patterns.siteId, site.id), eq(patterns.status, "ACTIVE")));
-        const triggers = [];
-        for (const patternRow of activePatterns) {
-            const definition = {
-                id: patternRow.id,
-                siteId: site.id,
-                name: patternRow.name,
-                matchWindowMs: patternRow.matchWindowMs,
-                origin: patternRow.origin,
-                status: patternRow.status,
-                steps: patternRow.steps,
-                feedback: patternRow.feedback,
-            };
-            const [existingStateRow] = await db
-                .select()
-                .from(patternMatchStates)
-                .where(and(eq(patternMatchStates.patternId, patternRow.id), eq(patternMatchStates.sessionId, sessionId)))
-                .limit(1);
-            // A terminal (matched/expired) state means this pattern has
-            // already run its course for this session - don't re-evaluate.
-            // Re-arming (letting a pattern fire again per session, or with a
-            // cooldown) is a deliberate product decision left for later, not
-            // an oversight.
-            if (existingStateRow && (existingStateRow.status === "matched" || existingStateRow.status === "expired")) {
-                continue;
-            }
-            const priorState = existingStateRow
-                ? {
-                    patternId: patternRow.id,
-                    sessionId,
-                    cursor: existingStateRow.cursor,
-                    matchedSteps: existingStateRow.matchedSteps,
-                    startedAt: existingStateRow.startedAt?.getTime() ?? null,
-                    lastMatchedAt: existingStateRow.lastMatchedAt?.getTime() ?? null,
-                    status: existingStateRow.status,
-                }
-                : createInitialMatchState(patternRow.id, sessionId);
-            const nextState = advanceMatch(definition, priorState, behavioralEvents);
-            const nextStateValues = {
-                cursor: nextState.cursor,
-                matchedSteps: nextState.matchedSteps,
-                startedAt: nextState.startedAt != null ? new Date(nextState.startedAt) : null,
-                lastMatchedAt: nextState.lastMatchedAt != null ? new Date(nextState.lastMatchedAt) : null,
-                status: nextState.status,
-                updatedAt: new Date(),
-            };
-            if (existingStateRow) {
-                await db.update(patternMatchStates).set(nextStateValues).where(eq(patternMatchStates.id, existingStateRow.id));
-            }
-            else {
-                await db.insert(patternMatchStates).values({
-                    patternId: patternRow.id,
-                    sessionId,
-                    ...nextStateValues,
-                });
-            }
-            if (nextState.status === "matched" && priorState.status !== "matched") {
-                await db.insert(patternMatches).values({ patternId: patternRow.id, siteId: site.id, sessionId });
-                triggers.push({ patternId: patternRow.id, patternName: patternRow.name, feedback: definition.feedback });
-            }
-        }
-        return reply.send({ triggers });
+        // The authored Pattern matcher is retired. Keep the response shape for
+        // older SDK transports while ingestion remains fully operational.
+        return reply.send({ triggers: [] });
     });
 }
 //# sourceMappingURL=public-events.js.map

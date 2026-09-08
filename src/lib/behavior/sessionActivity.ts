@@ -1,6 +1,7 @@
 import type { sessionEvents } from "../../db/schema.js";
 import type { BehavioralEvent, BehavioralEventEvidence } from "./behavioralEvent.js";
 import { compileBehavioralEvents, type CompilableRawEvent } from "./behaviorCompiler.js";
+import { segmentIntoEpisodes, type EpisodeBoundaryReason } from "./episodeSegmentation.js";
 import type { IncomingEvent } from "../patterns/event.js";
 
 type StoredSessionEvent = typeof sessionEvents.$inferSelect;
@@ -37,8 +38,21 @@ export interface SessionActivityPageGroup {
   deepestScrollPercent: number | null;
   scrollSampleCount: number;
   items: SessionActivityItem[];
+  episodes: SessionActivityEpisode[];
   pointerSignalsAvailable: number;
   geometryEvidenceUsable: boolean;
+}
+
+export interface SessionActivityEpisode {
+  id: string;
+  startedAt: string;
+  endedAt: string;
+  startReason: EpisodeBoundaryReason;
+  endReason: EpisodeBoundaryReason;
+  idleGapBeforeMs?: number;
+  pageViewId: string | null;
+  pagePath: string | null;
+  items: SessionActivityItem[];
 }
 
 interface MutableGroup {
@@ -194,7 +208,8 @@ export function buildSessionActivityGroups(
   rows: readonly StoredSessionEvent[],
   resolvePageName: (path: string) => string | null = () => null
 ): SessionActivityPageGroup[] {
-  return groupRows(rows).map((group) => {
+  const sessionId = rows[0]?.sessionId ?? "session";
+  const compiledGroups = groupRows(rows).map((group) => {
     const ordered = stableRows(group.rows);
     const frameUsable = group.attribution !== "unknown" && compatibleCoordinateFrame(ordered);
     // Short hovers are intentionally omitted from this presentation-only compile input so they cannot
@@ -247,7 +262,23 @@ export function buildSessionActivityGroups(
         : item
     );
 
+    const episodes = segmentIntoEpisodes(`${sessionId}:${group.id}`, compiled).map((episode) => ({
+      id: episode.id,
+      startedAt: new Date(episode.startedAt).toISOString(),
+      endedAt: new Date(episode.endedAt).toISOString(),
+      startReason: episode.startReason,
+      endReason: episode.endReason,
+      ...(episode.idleGapBeforeMs != null ? { idleGapBeforeMs: episode.idleGapBeforeMs } : {}),
+      pageViewId: group.pageViewId,
+      pagePath: group.path,
+      items: safeEstimatedItems.filter((item) => {
+        const timestamp = Date.parse(item.timestamp);
+        return timestamp >= episode.startedAt && timestamp <= episode.endedAt;
+      }),
+    }));
+
     return {
+      page: {
       id: group.id,
       pageViewId: group.pageViewId,
       path: group.path,
@@ -258,10 +289,24 @@ export function buildSessionActivityGroups(
       deepestScrollPercent: scrollValues.length ? Math.max(...scrollValues) : null,
       scrollSampleCount: scrollValues.length,
       items: safeEstimatedItems,
+      episodes,
       pointerSignalsAvailable: safeEstimatedItems.filter((item) => item.kind === "derived_signal").length,
       geometryEvidenceUsable: frameUsable,
+      },
     };
   });
+
+  let episodeIndex = 0;
+  for (let groupIndex = 0; groupIndex < compiledGroups.length; groupIndex++) {
+    const episodes = compiledGroups[groupIndex].page.episodes;
+    for (const episode of episodes) episode.id = `${sessionId}_episode_${episodeIndex++}`;
+    if (groupIndex === 0 && episodes[0]) episodes[0].startReason = "session_start";
+    if (groupIndex < compiledGroups.length - 1 && episodes.length > 0) {
+      episodes[episodes.length - 1].endReason = "page_enter";
+    }
+  }
+
+  return compiledGroups.map(({ page }) => page);
 }
 
 export const SESSION_LONG_HOVER_MS = LONG_HOVER_MS;

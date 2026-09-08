@@ -45,6 +45,20 @@ describe("session activity endpoint", () => {
     expect(body.counts).toEqual({ pageVisits: 1, clicks: 1, customEvents: 1 });
     expect(body.coverage).toMatchObject({ complete: true, cursorSampleCount: 100 });
     expect(body.pages[0]).toMatchObject({ pageViewId: "pv_1", path: "/pricing", deepestScrollPercent: 78 });
+    expect(body.pages[0].episodes).toEqual([
+      expect.objectContaining({
+        id: "sess_activity_episode_0",
+        startReason: "session_start",
+        endReason: "session_end",
+        pageViewId: "pv_1",
+        pagePath: "/pricing",
+      }),
+    ]);
+    expect(body.pages[0].episodes[0].items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "click" }),
+      expect.objectContaining({ kind: "custom", name: "checkout_started" }),
+      expect.objectContaining({ kind: "long_hover" }),
+    ]));
     expect(body.pages[0].items).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "click", element: expect.objectContaining({ label: "Start trial" }) }),
       expect.objectContaining({ kind: "custom", name: "checkout_started", properties: { plan: "pro" } }),
