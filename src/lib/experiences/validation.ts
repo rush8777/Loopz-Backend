@@ -126,6 +126,7 @@ export const widgetDefinitionSchema = z.object({
 const guideStepSchema = z.object({
   id: z.string().min(1).max(64),
   content: contentSchema,
+  builder: builderSchema.optional(),
   target: targetSchema.optional(),
   behavior: behaviorSchema.pick({ placement: true, alignment: true, offset: true, dismissible: true }),
 });

@@ -58,12 +58,15 @@ describe("visual experiences", () => {
     expect(rename.json().error).toBe("experience_name_exists");
   });
 
-  it("requires a valid DOM target for every guide step before publishing", async () => {
+  it("validates per-step Guide builders and requires a DOM target before publishing", async () => {
     const { owner, site } = await setup(ctx.app, "guide-steps");
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "guide", name: "Guide", buildUrl: "https://guide-steps.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
     const definition = created.draftVersion.definition; definition.steps.push({ id: "step_2", content: { heading: "Second", body: "Second step" }, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } });
+    definition.steps[0].builder = { version: 1, projectData: { pages: [] }, html: '<section class="movecues-widget">First builder</section>', css: ".movecues-widget{color:#111}" };
     definition.steps[0].target = { primarySelector: "#first", fallbackSelectors: [], reliability: "reliable" };
-    await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
+    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
+    expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.steps[0].builder.html).toContain("First builder");
+    definition.steps[0].builder.css = "body{color:red}"; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } })).statusCode).toBe(400); definition.steps[0].builder.css = ".movecues-widget{color:#111}";
     expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).json().error).toBe("target_required");
     definition.steps[1].target = { primarySelector: "#second", fallbackSelectors: ["[data-step=second]"], reliability: "reliable" };
     await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
