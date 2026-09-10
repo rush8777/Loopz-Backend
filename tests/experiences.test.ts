@@ -64,9 +64,9 @@ describe("visual experiences", () => {
     const definition = created.draftVersion.definition; definition.steps.push({ id: "step_2", content: { heading: "Second", body: "Second step" }, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } });
     definition.steps[0].builder = { version: 1, projectData: { pages: [] }, html: '<section class="movecues-widget">First builder</section>', css: ".movecues-widget{color:#111}" };
     definition.steps[0].advance = { type: "element_hover", durationMs: 500 }; definition.targeting.interruptPolicy = "interrupt";
-    definition.steps[0].target = { primarySelector: "#first", fallbackSelectors: [], reliability: "reliable" };
+    definition.steps[0].target = { primarySelector: "#first", fallbackSelectors: [], reliability: "reliable", targetContext: { pagePath: "/dashboard" } };
     const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
-    expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.steps[0]).toMatchObject({ builder: { html: expect.stringContaining("First builder") }, advance: { type: "element_hover", durationMs: 500 } });
+    expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.steps[0]).toMatchObject({ builder: { html: expect.stringContaining("First builder") }, advance: { type: "element_hover", durationMs: 500 }, target: { targetContext: { pagePath: "/dashboard" } } });
     definition.steps[0].builder.css = "body{color:red}"; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } })).statusCode).toBe(400); definition.steps[0].builder.css = ".movecues-widget{color:#111}";
     expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).json().error).toBe("target_required");
     definition.steps[1].target = { primarySelector: "#second", fallbackSelectors: ["[data-step=second]"], reliability: "reliable" };
@@ -125,6 +125,22 @@ describe("visual experiences", () => {
     const shown = await ctx.app.inject({ method: "POST", url: `/public/sites/${a.site.siteId}/experience-events`, payload: { experienceId: created.id, versionId: manifest.json().experiences[0].versionId, anonymousId: "anon_1", sessionId: "sess_1", event: "shown" } }); expect(shown.statusCode).toBe(201);
     const dismissed = await ctx.app.inject({ method: "POST", url: `/public/sites/${a.site.siteId}/experience-events`, payload: { experienceId: created.id, versionId: manifest.json().experiences[0].versionId, impressionId: shown.json().impressionId, event: "dismissed" } }); expect(dismissed.statusCode).toBe(204);
     const second = await ctx.app.inject({ method: "GET", url: `/public/sites/${a.site.siteId}/experiences?url=https%3A%2F%2Fsite-a.example.com%2Fhome&anonymousId=anon_1&sessionId=sess_2` }); expect(second.json().experiences).toEqual([]);
+  });
+
+  it("continues an active Guide across full-page navigation without creating another impression", async () => {
+    const { owner, site } = await setup(ctx.app, "guide-resume"); const authorization = { authorization: `Bearer ${owner.accessToken}` };
+    const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: authorization, payload: { kind: "guide", name: "Multi-page Guide", buildUrl: "https://guide-resume.example.com/home", template: "blank", useBuildPageAsTarget: false } })).json();
+    const definition = created.draftVersion.definition; definition.targeting.pageRules = [{ id: "home", kind: "include", operator: "equals", value: "/home" }]; definition.targeting.frequency = { mode: "once" };
+    definition.steps[0].target = { primarySelector: "#first", fallbackSelectors: [], reliability: "reliable", targetContext: { pagePath: "/home" } };
+    definition.steps.push(
+      { id: "step_2", content: { heading: "Second", body: "Second page" }, target: { primarySelector: "#second", fallbackSelectors: [], reliability: "reliable", targetContext: { pagePath: "/pricing" } }, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } },
+      { id: "step_3", content: { heading: "Third", body: "Third page" }, target: { primarySelector: "#third", fallbackSelectors: [], reliability: "reliable", targetContext: { pagePath: "/integrations" } }, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } },
+    );
+    await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); const published = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
+    const first = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fguide-resume.example.com%2Fhome&anonymousId=guide_anon&sessionId=guide_session` }); const versionId = first.json().experiences[0].versionId;
+    const shown = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/experience-events`, payload: { experienceId: created.id, versionId, anonymousId: "guide_anon", sessionId: "guide_session", event: "shown" } }); expect(shown.statusCode).toBe(201);
+    const withoutProgress = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fguide-resume.example.com%2Fpricing&anonymousId=guide_anon&sessionId=guide_session` }); expect(withoutProgress.json().experiences).toEqual([]);
+    const resume = new URLSearchParams({ url: "https://guide-resume.example.com/pricing", anonymousId: "guide_anon", sessionId: "guide_session", activeGuideId: created.id, activeGuideVersionId: versionId }); const continued = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?${resume}` }); expect(continued.statusCode).toBe(200); expect(continued.json().experiences).toHaveLength(1); expect(continued.json().experiences[0]).toMatchObject({ id: created.id, versionId, impressionId: shown.json().impressionId }); expect(continued.json().experiences[0].definition.steps).toHaveLength(3);
   });
 
   it("does not allow another organization to read an experience", async () => {

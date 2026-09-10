@@ -28,6 +28,7 @@ export const targetSchema = z.object({
     role: z.string().max(80).optional(),
     tagName: z.string().max(40).optional(),
     reliability: z.enum(["reliable", "moderate", "fragile"]),
+    targetContext: z.object({ pagePath: z.string().min(1).max(2048) }).strict().optional(),
 });
 const sizeSchema = z.object({
     width: z.discriminatedUnion("mode", [z.object({ mode: z.literal("auto") }).strict(), z.object({ mode: z.literal("fixed"), value: z.number().int().min(1).max(4000) }).strict(), z.object({ mode: z.literal("full") }).strict()]),
@@ -167,7 +168,9 @@ export const manifestQuerySchema = z.object({
     trackedUserId: z.string().min(1).max(200).optional(),
     sessionId: z.string().min(1).max(200),
     trigger: z.string().min(1).max(200).optional(),
-});
+    activeGuideId: z.string().min(1).max(64).optional(),
+    activeGuideVersionId: z.string().min(1).max(64).optional(),
+}).refine(value => Boolean(value.activeGuideId) === Boolean(value.activeGuideVersionId), { message: "active Guide ID and version must be provided together" });
 export const impressionSchema = z.object({
     experienceId: z.string().min(1).max(64),
     versionId: z.string().min(1).max(64),

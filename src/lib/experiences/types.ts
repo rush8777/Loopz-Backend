@@ -25,6 +25,7 @@ export interface ExperienceTarget {
   role?: string;
   tagName?: string;
   reliability: "reliable" | "moderate" | "fragile";
+  targetContext?: { pagePath: string };
 }
 
 export type LegacyExperienceWidth = "sm" | "md" | "lg";

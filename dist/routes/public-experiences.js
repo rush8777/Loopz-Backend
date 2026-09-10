@@ -100,6 +100,7 @@ export function registerPublicExperienceRoutes(app, db) {
                 continue;
             const definition = checked.data;
             const target = definition.targeting;
+            const resumingGuide = experience.kind === "guide" && query.data.activeGuideId === experience.id && query.data.activeGuideVersionId === version.id;
             const now = new Date();
             if (target.schedule?.startsAt && now < new Date(target.schedule.startsAt))
                 continue;
@@ -107,25 +108,26 @@ export function registerPublicExperienceRoutes(app, db) {
                 continue;
             if (target.allowedOrigins?.length && !target.allowedOrigins.includes(requestUrl.origin))
                 continue;
-            if (target.pageRules.length > 0 && !matchesRules(pagePath, target.pageRules))
+            if (!resumingGuide && target.pageRules.length > 0 && !matchesRules(pagePath, target.pageRules))
                 continue;
-            if (target.trigger.type === "custom_event" && query.data.trigger !== target.trigger.eventName)
+            if (!resumingGuide && target.trigger.type === "custom_event" && query.data.trigger !== target.trigger.eventName)
                 continue;
-            if (target.trigger.type === "page_load" && query.data.trigger)
+            if (!resumingGuide && target.trigger.type === "page_load" && query.data.trigger)
                 continue;
             if (!await matchesAudience(db, site.id, identityKey, target.audience))
                 continue;
             const impressions = await db.select().from(experienceImpressions).where(and(eq(experienceImpressions.siteId, site.id), eq(experienceImpressions.experienceId, experience.id)));
             const personImpressions = impressions.filter((item) => item.anonymousId === query.data.anonymousId || (trackedUserId && item.trackedUserId === trackedUserId));
-            if (target.frequency.mode === "once" && personImpressions.length > 0)
+            if (!resumingGuide && target.frequency.mode === "once" && personImpressions.length > 0)
                 continue;
-            if (target.frequency.mode === "once_per_session" && personImpressions.some((item) => item.sessionId === query.data.sessionId))
+            if (!resumingGuide && target.frequency.mode === "once_per_session" && personImpressions.some((item) => item.sessionId === query.data.sessionId))
                 continue;
-            if (target.frequency.maxImpressions && personImpressions.length >= target.frequency.maxImpressions)
+            if (!resumingGuide && target.frequency.maxImpressions && personImpressions.length >= target.frequency.maxImpressions)
                 continue;
-            if (target.frequency.cooldownHours && personImpressions.some((item) => item.shownAt.getTime() > Date.now() - target.frequency.cooldownHours * 3600000))
+            if (!resumingGuide && target.frequency.cooldownHours && personImpressions.some((item) => item.shownAt.getTime() > Date.now() - target.frequency.cooldownHours * 3600000))
                 continue;
-            eligible.push({ id: experience.id, versionId: version.id, kind: experience.kind, widgetType: experience.widgetType, priority: target.priority, interruptPolicy: target.interruptPolicy ?? "queue", definition: withoutPrivateTargeting(definition) });
+            const activeImpression = resumingGuide ? personImpressions.find(item => item.versionId === version.id && item.sessionId === query.data.sessionId && !item.dismissedAt && !item.completedAt) : undefined;
+            eligible.push({ id: experience.id, versionId: version.id, kind: experience.kind, widgetType: experience.widgetType, priority: target.priority, interruptPolicy: target.interruptPolicy ?? "queue", ...(activeImpression ? { impressionId: activeImpression.id } : {}), definition: withoutPrivateTargeting(definition) });
         }
         eligible.sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
         reply.header("Cache-Control", "private, no-store");
