@@ -83,7 +83,7 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
     const identityKey = trackedUserId ?? query.data.anonymousId;
     const rows = (await db.select().from(experiences).where(and(eq(experiences.siteId, site.id), eq(experiences.status, "published"))))
       .filter((row) => row.publishedVersionId);
-    const eligible: Array<{ id: string; versionId: string; kind: string; widgetType: string | null; priority: number; definition: unknown }> = [];
+    const eligible: Array<{ id: string; versionId: string; kind: string; widgetType: string | null; priority: number; interruptPolicy: "queue" | "interrupt"; definition: unknown }> = [];
 
     for (const experience of rows) {
       const [version] = await db.select().from(experienceVersions).where(eq(experienceVersions.id, experience.publishedVersionId!)).limit(1);
@@ -106,7 +106,7 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
       if (target.frequency.mode === "once_per_session" && personImpressions.some((item) => item.sessionId === query.data.sessionId)) continue;
       if (target.frequency.maxImpressions && personImpressions.length >= target.frequency.maxImpressions) continue;
       if (target.frequency.cooldownHours && personImpressions.some((item) => item.shownAt.getTime() > Date.now() - target.frequency.cooldownHours! * 3600000)) continue;
-      eligible.push({ id: experience.id, versionId: version.id, kind: experience.kind, widgetType: experience.widgetType, priority: target.priority, definition: withoutPrivateTargeting(definition) });
+      eligible.push({ id: experience.id, versionId: version.id, kind: experience.kind, widgetType: experience.widgetType, priority: target.priority, interruptPolicy: target.interruptPolicy ?? "queue", definition: withoutPrivateTargeting(definition) });
     }
     eligible.sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
     reply.header("Cache-Control", "private, no-store");

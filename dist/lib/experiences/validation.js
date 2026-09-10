@@ -106,6 +106,7 @@ const targetingSchema = z.object({
         maxImpressions: z.number().int().min(1).max(10000).optional(),
     }),
     priority: z.number().int().min(-1000).max(1000),
+    interruptPolicy: z.enum(["queue", "interrupt"]).optional(),
     schedule: z.object({ startsAt: z.iso.datetime().optional(), endsAt: z.iso.datetime().optional() }).optional().superRefine((value, ctx) => { if (value?.startsAt && value.endsAt && value.startsAt >= value.endsAt)
         ctx.addIssue({ code: "custom", message: "end must be after start" }); }),
     allowedOrigins: z.array(z.url().transform(value => new URL(value).origin)).max(20).optional(),
@@ -125,6 +126,13 @@ const guideStepSchema = z.object({
     id: z.string().min(1).max(64),
     content: contentSchema,
     builder: builderSchema.optional(),
+    advance: z.discriminatedUnion("type", [
+        z.object({ type: z.literal("button") }).strict(),
+        z.object({ type: z.literal("element_click") }).strict(),
+        z.object({ type: z.literal("element_hover"), durationMs: z.number().int().min(100).max(60_000).optional() }).strict(),
+        z.object({ type: z.literal("custom_event"), eventName: z.string().trim().min(1).max(200) }).strict(),
+        z.object({ type: z.literal("route"), pageRules: z.array(pageRuleSchema).min(1).max(30).refine(rules => rules.some(rule => rule.kind === "include"), "at least one include rule is required") }).strict(),
+    ]).optional(),
     target: targetSchema.optional(),
     behavior: behaviorSchema.pick({ placement: true, alignment: true, offset: true, dismissible: true }),
 });

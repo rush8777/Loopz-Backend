@@ -63,9 +63,10 @@ describe("visual experiences", () => {
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "guide", name: "Guide", buildUrl: "https://guide-steps.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
     const definition = created.draftVersion.definition; definition.steps.push({ id: "step_2", content: { heading: "Second", body: "Second step" }, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } });
     definition.steps[0].builder = { version: 1, projectData: { pages: [] }, html: '<section class="movecues-widget">First builder</section>', css: ".movecues-widget{color:#111}" };
+    definition.steps[0].advance = { type: "element_hover", durationMs: 500 }; definition.targeting.interruptPolicy = "interrupt";
     definition.steps[0].target = { primarySelector: "#first", fallbackSelectors: [], reliability: "reliable" };
     const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
-    expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.steps[0].builder.html).toContain("First builder");
+    expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.steps[0]).toMatchObject({ builder: { html: expect.stringContaining("First builder") }, advance: { type: "element_hover", durationMs: 500 } });
     definition.steps[0].builder.css = "body{color:red}"; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } })).statusCode).toBe(400); definition.steps[0].builder.css = ".movecues-widget{color:#111}";
     expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).json().error).toBe("target_required");
     definition.steps[1].target = { primarySelector: "#second", fallbackSelectors: ["[data-step=second]"], reliability: "reliable" };
@@ -100,16 +101,17 @@ describe("visual experiences", () => {
 
   it("orders eligible experiences by priority with a stable id tie-break", async () => {
     const { owner, site } = await setup(ctx.app, "priority");
-    async function create(name: string, priority: number) {
+    async function create(name: string, priority: number, interruptPolicy?: "queue" | "interrupt") {
       const item = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType: "toast", name, buildUrl: "https://priority.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
-      const definition = item.draftVersion.definition; definition.targeting.priority = priority;
+      const definition = item.draftVersion.definition; definition.targeting.priority = priority; if (interruptPolicy) definition.targeting.interruptPolicy = interruptPolicy;
       await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
       await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } });
       return item;
     }
-    const low = await create("Low", 1); const high = await create("High", 20);
+    const low = await create("Low", 1); const high = await create("High", 20, "interrupt");
     const manifest = (await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fpriority.example.com%2F&anonymousId=anon_priority&sessionId=sess_priority` })).json();
     expect(manifest.experiences.map((item: { id: string }) => item.id)).toEqual([high.id, low.id]);
+    expect(manifest.experiences.map((item: { interruptPolicy: string }) => item.interruptPolicy)).toEqual(["interrupt", "queue"]);
   });
 
   it("returns only published site-scoped presentation data, persists impressions, and applies once frequency", async () => {

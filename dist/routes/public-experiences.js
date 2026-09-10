@@ -125,7 +125,7 @@ export function registerPublicExperienceRoutes(app, db) {
                 continue;
             if (target.frequency.cooldownHours && personImpressions.some((item) => item.shownAt.getTime() > Date.now() - target.frequency.cooldownHours * 3600000))
                 continue;
-            eligible.push({ id: experience.id, versionId: version.id, kind: experience.kind, widgetType: experience.widgetType, priority: target.priority, definition: withoutPrivateTargeting(definition) });
+            eligible.push({ id: experience.id, versionId: version.id, kind: experience.kind, widgetType: experience.widgetType, priority: target.priority, interruptPolicy: target.interruptPolicy ?? "queue", definition: withoutPrivateTargeting(definition) });
         }
         eligible.sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
         reply.header("Cache-Control", "private, no-store");

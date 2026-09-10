@@ -81,6 +81,7 @@ export interface ExperienceTargeting {
     maxImpressions?: number;
   };
   priority: number;
+  interruptPolicy?: "queue" | "interrupt";
   schedule?: { startsAt?: string; endsAt?: string };
   allowedOrigins?: string[];
 }
@@ -89,6 +90,7 @@ export interface GuideStep {
   id: string;
   content: ExperienceContent;
   builder?: WidgetBuilderState;
+  advance?: { type: "button" } | { type: "element_click" } | { type: "element_hover"; durationMs?: number } | { type: "custom_event"; eventName: string } | { type: "route"; pageRules: PageRule[] };
   target?: ExperienceTarget;
   behavior: Pick<ExperienceBehavior, "placement" | "alignment" | "offset" | "dismissible">;
 }
