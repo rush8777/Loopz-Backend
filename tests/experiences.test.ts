@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestApp, signup } from "./helpers.js";
 import { eq } from "drizzle-orm";
-import { experienceEditorSessions } from "../src/db/schema.js";
+import { experienceEditorSessions, surveyResponses } from "../src/db/schema.js";
 
 async function setup(app: Awaited<ReturnType<typeof createTestApp>>["app"], suffix = "a") {
   const owner = await signup(app, { email: `experience-${suffix}@example.com` });
@@ -191,5 +191,30 @@ describe("visual experiences", () => {
     definition.design.size = { width: { mode: "fixed", value: 961 }, height: { mode: "auto" } };
     const oversized = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); expect(oversized.statusCode).toBe(400); expect(oversized.json().error).toBe("invalid_widget_size");
     delete definition.design.size; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(200);
+  });
+
+  it("creates and publishes a validated multi-step survey and persists submitted or abandoned structured responses", async () => {
+    const { owner, site } = await setup(ctx.app, "survey"); const authorization = { authorization: `Bearer ${owner.accessToken}` };
+    const createdResponse = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: authorization, payload: { kind: "widget", widgetType: "survey", name: "Task feedback", buildUrl: "https://survey.example.com/task", template: "blank", useBuildPageAsTarget: false } });
+    expect(createdResponse.statusCode).toBe(201); const created = createdResponse.json(); const definition = created.draftVersion.definition;
+    expect(definition.survey.steps).toHaveLength(2); expect(definition.design.size.width.value).toBe(700); expect(definition.behavior).toMatchObject({ modalLayout: "center", backdrop: true, backdropOpacity: 0.45, closeOnBackdrop: false, dismissible: true });
+    const duplicate = structuredClone(definition); duplicate.survey.steps[1].questions = [{ ...duplicate.survey.steps[0].questions[0] }];
+    expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition: duplicate } })).statusCode).toBe(400);
+    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); expect(saved.statusCode).toBe(200);
+    const published = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
+    const manifest = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fsurvey.example.com%2Ftask&anonymousId=survey_anon&sessionId=survey_session` }); expect(manifest.statusCode).toBe(200); const delivered = manifest.json().experiences[0]; expect(delivered.widgetType).toBe("survey");
+    const shown = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/experience-events`, payload: { experienceId: created.id, versionId: delivered.versionId, anonymousId: "survey_anon", sessionId: "survey_session", event: "shown" } }); expect(shown.statusCode).toBe(201);
+    const identity = { experienceId: created.id, versionId: delivered.versionId, impressionId: shown.json().impressionId, anonymousId: "survey_anon", sessionId: "survey_session" };
+    const response = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/survey-responses`, payload: identity }); expect(response.statusCode).toBe(201);
+    const idempotent = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/survey-responses`, payload: identity }); expect(idempotent.statusCode).toBe(200); expect(idempotent.json().responseId).toBe(response.json().responseId);
+    const rating = definition.survey.steps[0].questions[0]; const text = definition.survey.steps[0].questions[1];
+    const missingRequired = await ctx.app.inject({ method: "PATCH", url: `/public/sites/${site.siteId}/survey-responses/${response.json().responseId}`, payload: { ...identity, currentStepId: definition.survey.steps[1].id, answers: { [text.id]: "Hard to find" }, submitted: true } }); expect(missingRequired.statusCode).toBe(400);
+    const submit = await ctx.app.inject({ method: "PATCH", url: `/public/sites/${site.siteId}/survey-responses/${response.json().responseId}`, payload: { ...identity, currentStepId: definition.survey.steps[1].id, answers: { [rating.id]: 4, [text.id]: "Hard to find" }, submitted: true } }); expect(submit.statusCode).toBe(204);
+    const [stored] = await ctx.db.select().from(surveyResponses); expect(stored.answers).toEqual({ [rating.id]: 4, [text.id]: "Hard to find" }); expect(stored.submittedAt).toBeInstanceOf(Date);
+    const shownTwo = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/experience-events`, payload: { experienceId: created.id, versionId: delivered.versionId, anonymousId: "survey_anon_2", sessionId: "survey_session_2", event: "shown" } });
+    const identityTwo = { experienceId: created.id, versionId: delivered.versionId, impressionId: shownTwo.json().impressionId, anonymousId: "survey_anon_2", sessionId: "survey_session_2" };
+    const responseTwo = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/survey-responses`, payload: identityTwo });
+    expect((await ctx.app.inject({ method: "PATCH", url: `/public/sites/${site.siteId}/survey-responses/${responseTwo.json().responseId}`, payload: { ...identityTwo, currentStepId: definition.survey.steps[0].id, answers: { [rating.id]: 2 }, abandoned: true } })).statusCode).toBe(204);
+    const rows = await ctx.db.select().from(surveyResponses); expect(rows.find(row => row.id === responseTwo.json().responseId)?.abandonedAt).toBeInstanceOf(Date);
   });
 });

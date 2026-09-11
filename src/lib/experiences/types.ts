@@ -1,7 +1,7 @@
 import type { PageRule } from "../pages/types.js";
 
 export type ExperienceKind = "guide" | "widget";
-export type WidgetType = "anchored_card" | "toast" | "cursor_follow" | "modal" | "slideout" | "hotspot" | "banner";
+export type WidgetType = "anchored_card" | "toast" | "cursor_follow" | "modal" | "slideout" | "hotspot" | "banner" | "survey";
 export type ExperienceStatus = "draft" | "published" | "paused" | "archived";
 
 export interface ExperienceAction {
@@ -96,6 +96,18 @@ export interface GuideStep {
   behavior: Pick<ExperienceBehavior, "placement" | "alignment" | "offset" | "dismissible">;
 }
 
+export interface SurveyOption { id: string; label: string }
+export type SurveyQuestion =
+  | { id: string; type: "single_choice"; label: string; required?: boolean; options: SurveyOption[] }
+  | { id: string; type: "multiple_choice"; label: string; required?: boolean; options: SurveyOption[] }
+  | { id: string; type: "short_text"; label: string; required?: boolean; placeholder?: string; maxLength?: number }
+  | { id: string; type: "long_text"; label: string; required?: boolean; placeholder?: string; maxLength?: number }
+  | { id: string; type: "rating"; label: string; required?: boolean; min: number; max: number }
+  | { id: string; type: "nps"; label: string; required?: boolean };
+export interface SurveyStep { id: string; content: { heading: string; body: string }; questions: SurveyQuestion[]; builder?: WidgetBuilderState; size?: ExperienceSize }
+export interface SurveyConfig { steps: SurveyStep[]; showProgress: boolean; allowBack: boolean; submitLabel: string }
+export type SurveyAnswers = Record<string, string | string[] | number>;
+
 export interface WidgetExperienceDefinition {
   content: ExperienceContent;
   design: ExperienceDesign;
@@ -103,6 +115,7 @@ export interface WidgetExperienceDefinition {
   builder?: WidgetBuilderState;
   target?: ExperienceTarget;
   targeting: ExperienceTargeting;
+  survey?: SurveyConfig;
 }
 
 export interface GuideExperienceDefinition {

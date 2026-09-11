@@ -5,7 +5,7 @@ import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
-const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner"];
+const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
     return site?.orgId === orgId ? site : null;
@@ -62,7 +62,7 @@ function initialDefinition(kind, widgetType, pageRules) {
     if (kind === "guide") {
         return { steps: [{ id: "step_1", content, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } }], design: DEFAULT_DESIGN, targeting: targeting(pageRules) };
     }
-    return {
+    const definition = {
         content,
         design: { ...DEFAULT_DESIGN, size: defaultWidgetSize(widgetType) },
         behavior: {
@@ -70,13 +70,50 @@ function initialDefinition(kind, widgetType, pageRules) {
             ...(widgetType === "toast" ? { toastPosition: "bottom-right", autoDismissMs: null } : {}),
             ...(widgetType === "cursor_follow" ? { cursorOffset: { x: 16, y: 16 } } : {}),
             ...(widgetType === "anchored_card" || widgetType === "hotspot" ? { placement: "auto", alignment: "center", offset: 8 } : {}),
-            ...(widgetType === "modal" ? { modalLayout: "center", backdrop: true, backdropOpacity: 0.45, closeOnBackdrop: false } : {}),
+            ...(widgetType === "modal" || widgetType === "survey" ? { modalLayout: "center", backdrop: true, backdropOpacity: 0.45, closeOnBackdrop: false } : {}),
             ...(widgetType === "slideout" ? { slideoutPosition: "bottom-right", backdrop: false, backdropOpacity: 0.35, closeOnBackdrop: false } : {}),
             ...(widgetType === "banner" ? { bannerPosition: "top" } : {}),
             ...(widgetType === "hotspot" ? { hotspotStyle: "pulse", hotspotColor: DEFAULT_DESIGN.theme.primary } : {}),
         },
         targeting: targeting(pageRules),
     };
+    if (widgetType === "survey" && "content" in definition) {
+        const firstId = `survey_step_${crypto.randomBytes(6).toString("hex")}`;
+        const secondId = `survey_step_${crypto.randomBytes(6).toString("hex")}`;
+        const ratingId = `question_${crypto.randomBytes(6).toString("hex")}`;
+        const detailId = `question_${crypto.randomBytes(6).toString("hex")}`;
+        definition.content = { heading: "How easy was it to complete this task?", body: "Your feedback helps us improve the experience." };
+        definition.survey = {
+            showProgress: true, allowBack: true, submitLabel: "Submit feedback",
+            steps: [
+                {
+                    id: firstId,
+                    content: { heading: "How easy was it to complete this task?", body: "Your feedback helps us improve the experience." },
+                    questions: [
+                        { id: ratingId, type: "rating", label: "How easy was it to complete this task?", required: true, min: 1, max: 5 },
+                        { id: detailId, type: "long_text", label: "What was the most challenging part?", required: false, placeholder: "Tell us more (optional)", maxLength: 2000 },
+                    ],
+                    builder: surveyStarter(firstId, ratingId, detailId, false),
+                },
+                {
+                    id: secondId,
+                    content: { heading: "Anything else to share?", body: "Add more questions here, or use this as a simple follow-up slide." },
+                    questions: [],
+                    builder: surveyStarter(secondId, null, null, true),
+                },
+            ],
+        };
+    }
+    return definition;
+}
+function surveyStarter(stepId, ratingId, detailId, final) {
+    const questions = ratingId && detailId ? `<div class="movecues-survey-question movecues-survey-question--rating" data-movecues-question-id="${ratingId}" data-movecues-question-type="rating"><p class="movecues-survey-question__label">How easy was it to complete this task? <span aria-hidden="true">*</span></p><div class="movecues-survey-options" role="group" aria-label="Rating">${[1, 2, 3, 4, 5].map(value => `<button type="button" class="movecues-survey-option" data-movecues-option-id="${value}" aria-pressed="false">${value}</button>`).join("")}</div></div><div class="movecues-survey-question movecues-survey-question--long_text" data-movecues-question-id="${detailId}" data-movecues-question-type="long_text"><label class="movecues-survey-question__label">What was the most challenging part?</label><textarea class="movecues-survey-input" data-movecues-question-input placeholder="Tell us more (optional)" maxlength="2000" aria-label="What was the most challenging part?"></textarea></div>` : `<p class="movecues-widget__body" data-movecues-content="body">Add more questions here, or use this as a simple follow-up slide.</p>`;
+    const back = final ? `<button type="button" class="movecues-survey-button movecues-survey-button--back" data-movecues-survey-action="back">Back</button>` : "";
+    const action = final ? "submit" : "next";
+    const label = final ? "Submit feedback" : "Next →";
+    const html = `<section class="movecues-widget movecues-widget--survey" data-movecues-widget-type="survey" data-movecues-survey-step-id="${stepId}"><span class="movecues-widget__eyebrow">We'd love your feedback</span><h2 class="movecues-widget__heading" data-movecues-content="heading">${final ? "Anything else to share?" : "How easy was it to complete this task?"}</h2>${questions}<div class="movecues-survey-validation" role="status" aria-live="polite"></div><div class="movecues-survey-footer">${back}<div class="movecues-survey-progress" data-movecues-survey-progress><span>Step ${final ? 2 : 1} of 2</span><span class="movecues-survey-progress__track"><span data-movecues-survey-progress-bar></span></span></div><button type="button" class="movecues-survey-button" data-movecues-survey-action="${action}">${label}</button></div></section>`;
+    const css = `.movecues-widget{box-sizing:border-box;width:100%;padding:36px;background:#fff;color:#111827;border:1px solid rgba(15,23,42,.1);border-radius:16px;font-family:ui-sans-serif,system-ui,sans-serif;box-shadow:0 24px 70px rgba(15,23,42,.22)}.movecues-widget .movecues-widget__eyebrow{display:block;margin-bottom:10px;color:#2563eb;font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase}.movecues-widget .movecues-widget__heading{margin:0 0 26px;font-size:28px;line-height:1.2}.movecues-widget .movecues-widget__body{margin:0 0 28px;color:#64748b;line-height:1.6}.movecues-widget .movecues-survey-question{margin:0 0 24px}.movecues-widget .movecues-survey-question__label{display:block;margin:0 0 10px;font-size:14px;font-weight:650}.movecues-widget .movecues-survey-options{display:grid;grid-template-columns:repeat(5,minmax(44px,1fr));gap:9px}.movecues-widget .movecues-survey-option{min-height:46px;border:1px solid #dbe2ea;border-radius:10px;background:#fff;color:#334155;font:700 14px inherit;cursor:pointer}.movecues-widget .movecues-survey-option:hover,.movecues-widget .movecues-survey-option.is-selected{border-color:#2563eb;background:#eff6ff;color:#1d4ed8}.movecues-widget .movecues-survey-input{box-sizing:border-box;width:100%;min-height:110px;padding:12px 14px;resize:vertical;border:1px solid #dbe2ea;border-radius:10px;background:#fff;color:#111827;font:14px/1.5 inherit}.movecues-widget .movecues-survey-input:focus{outline:2px solid #bfdbfe;border-color:#2563eb}.movecues-widget .movecues-survey-validation{min-height:18px;color:#b91c1c;font-size:12px}.movecues-widget .movecues-survey-footer{display:flex;align-items:center;gap:12px;margin-top:10px}.movecues-widget .movecues-survey-progress{display:flex;flex:1;align-items:center;gap:12px;color:#64748b;font-size:12px}.movecues-widget .movecues-survey-progress__track{height:5px;flex:1;overflow:hidden;border-radius:99px;background:#e2e8f0}.movecues-widget [data-movecues-survey-progress-bar]{display:block;width:${final ? 100 : 50}%;height:100%;background:#2563eb}.movecues-widget .movecues-survey-button{border:0;border-radius:9px;padding:10px 16px;background:#2563eb;color:#fff;font:700 13px inherit;cursor:pointer}.movecues-widget .movecues-survey-button--back{background:#f1f5f9;color:#334155}@media(max-width:600px){.movecues-widget{padding:24px}.movecues-widget .movecues-widget__heading{font-size:23px}.movecues-widget .movecues-survey-footer{flex-wrap:wrap}.movecues-widget .movecues-survey-progress{order:-1;flex-basis:100%}}`;
+    return { version: 1, projectData: {}, html, css };
 }
 async function serializeExperience(db, row) {
     const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, row.id)).orderBy(desc(experienceVersions.versionNumber));
@@ -198,7 +235,7 @@ export function registerExperienceRoutes(app, db) {
         if (!draft)
             return reply.code(409).send({ error: "draft_not_found" });
         if (parsed.data.definition !== undefined) {
-            const definition = definitionSchemaFor(row.kind).safeParse(parsed.data.definition);
+            const definition = definitionSchemaFor(row.kind, row.widgetType).safeParse(parsed.data.definition);
             if (!definition.success)
                 return reply.code(400).send({ error: "invalid_definition", details: definition.error.flatten() });
             if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType, definition.data))
@@ -223,7 +260,7 @@ export function registerExperienceRoutes(app, db) {
         const draft = versions.find((version) => version.state === "draft");
         if (!draft)
             return reply.code(409).send({ error: "draft_not_found" });
-        const checked = definitionSchemaFor(row.kind).safeParse(draft.definition);
+        const checked = definitionSchemaFor(row.kind, row.widgetType).safeParse(draft.definition);
         if (!checked.success)
             return reply.code(400).send({ error: "invalid_definition", details: checked.error.flatten() });
         if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType, checked.data))

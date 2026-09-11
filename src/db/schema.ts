@@ -913,6 +913,27 @@ export const experienceImpressions = sqliteTable(
   (table) => [index("experience_impressions_lookup_idx").on(table.siteId, table.experienceId, table.anonymousId, table.sessionId)]
 );
 
+export const surveyResponses = sqliteTable(
+  "survey_responses",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("srv")),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    experienceId: text("experience_id").notNull().references(() => experiences.id, { onDelete: "cascade" }),
+    versionId: text("version_id").notNull().references(() => experienceVersions.id, { onDelete: "cascade" }),
+    impressionId: text("impression_id").notNull().references(() => experienceImpressions.id, { onDelete: "cascade" }),
+    anonymousId: text("anonymous_id").notNull(),
+    trackedUserId: text("tracked_user_id").references(() => trackedUsers.id, { onDelete: "set null" }),
+    sessionId: text("session_id").notNull(),
+    currentStepId: text("current_step_id"),
+    answers: text("answers", { mode: "json" }).notNull(),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    submittedAt: integer("submitted_at", { mode: "timestamp_ms" }),
+    abandonedAt: integer("abandoned_at", { mode: "timestamp_ms" }),
+  },
+  (table) => [uniqueIndex("survey_responses_impression_uidx").on(table.impressionId), index("survey_responses_experience_idx").on(table.siteId, table.experienceId, table.startedAt)]
+);
+
 export const experienceEditorSessions = sqliteTable(
   "experience_editor_sessions",
   {

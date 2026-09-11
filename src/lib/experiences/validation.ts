@@ -66,12 +66,45 @@ function builderProjectValueIsSafe(value: unknown): boolean {
   return Object.entries(value).every(([key, nested]) => !/^on[a-z]+$/i.test(key) && !/^script(?:-|$)/i.test(key) && builderProjectValueIsSafe(nested));
 }
 
-const builderSchema = z.object({
+const surveyHtmlTags = new Set(["div", "section", "h1", "h2", "h3", "h4", "p", "span", "button", "img", "hr", "label", "input", "textarea"]);
+const surveyHtmlAttributes = new Set(["class", "id", "title", "role", "aria-label", "aria-live", "aria-hidden", "aria-pressed", "alt", "src", "width", "height", "type", "placeholder", "maxlength", "data-movecues-action-id", "data-movecues-content", "data-movecues-widget-type", "data-movecues-question-id", "data-movecues-question-type", "data-movecues-question-input", "data-movecues-option-id", "data-movecues-survey-action", "data-movecues-survey-progress", "data-movecues-survey-progress-bar", "data-movecues-survey-step-id"]);
+
+function surveyHtmlUsesAllowlist(value: string): boolean {
+  for (const tag of value.matchAll(/<\s*([a-z][\w-]*)\b([^>]*)>/gi)) {
+    if (!surveyHtmlTags.has(tag[1].toLowerCase())) return false;
+    let attributes = tag[2].trim();
+    while (attributes && attributes !== "/") {
+      const match = /^([^\s=/>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?\s*/.exec(attributes);
+      if (!match || !surveyHtmlAttributes.has(match[1].toLowerCase())) return false;
+      attributes = attributes.slice(match[0].length).trim();
+    }
+  }
+  return true;
+}
+
+function builderHtmlIsSafe(value: string, allowSurveyInputs = false): boolean {
+  const blocked = allowSurveyInputs ? "script|style|iframe|object|embed|form|select|video|audio" : "script|style|iframe|object|embed|form|input|textarea|select|video|audio";
+  if (new RegExp(`<\\s*(${blocked})\\b|\\son[a-z]+\\s*=|javascript\\s*:`, "i").test(value)) return false;
+  if (!allowSurveyInputs) return true;
+  if (!surveyHtmlUsesAllowlist(value)) return false;
+  for (const match of value.matchAll(/<\s*(input|textarea)\b([^>]*)>/gi)) {
+    const attributes = match[2];
+    if (/\son[a-z]+\s*=|javascript\s*:/i.test(attributes)) return false;
+    if (match[1].toLowerCase() === "input") {
+      const type = /\btype\s*=\s*["']?([^\s"'>]+)/i.exec(attributes)?.[1]?.toLowerCase() ?? "text";
+      if (!["text", "radio", "checkbox", "number"].includes(type)) return false;
+    }
+  }
+  return true;
+}
+
+const builderShape = {
   version: z.literal(1),
   projectData: z.record(z.string(), z.unknown()).refine(builderProjectValueIsSafe, "unsafe builder project data"),
-  html: z.string().max(500_000).refine(value => !/<\s*(script|style|iframe|object|embed|form|input|textarea|select|video|audio)\b|\son[a-z]+\s*=|javascript\s*:/i.test(value), "unsafe builder HTML"),
   css: z.string().max(250_000).refine(builderCssIsSafe, "builder CSS must be safe and scoped under .movecues-widget"),
-}).strict();
+};
+const builderSchema = z.object({ ...builderShape, html: z.string().max(500_000).refine(value => builderHtmlIsSafe(value), "unsafe builder HTML") }).strict();
+const surveyBuilderSchema = z.object({ ...builderShape, html: z.string().max(500_000).refine(value => builderHtmlIsSafe(value, true), "unsafe survey builder HTML") }).strict();
 
 const behaviorSchema = z.object({
   dismissible: z.boolean(),
@@ -121,8 +154,61 @@ export const widgetDefinitionSchema = z.object({
   builder: builderSchema.optional(),
   target: targetSchema.optional(),
   targeting: targetingSchema,
+  survey: z.lazy(() => surveyConfigSchema).optional(),
 }).strict().superRefine((definition, ctx) => {
   if (definition.content.primaryAction?.type === "next_step") ctx.addIssue({ code: "custom", path: ["content", "primaryAction", "type"], message: "next_step is only supported by guides" });
+});
+
+const surveyIdSchema = z.string().trim().min(1).max(64);
+const surveyOptionSchema = z.object({ id: surveyIdSchema, label: z.string().trim().min(1).max(200) }).strict();
+const surveyQuestionBase = { id: surveyIdSchema, label: z.string().trim().min(1).max(500), required: z.boolean().optional() };
+export const surveyQuestionSchema = z.discriminatedUnion("type", [
+  z.object({ ...surveyQuestionBase, type: z.literal("single_choice"), options: z.array(surveyOptionSchema).min(1).max(20) }).strict(),
+  z.object({ ...surveyQuestionBase, type: z.literal("multiple_choice"), options: z.array(surveyOptionSchema).min(1).max(20) }).strict(),
+  z.object({ ...surveyQuestionBase, type: z.literal("short_text"), placeholder: z.string().max(500).optional(), maxLength: z.number().int().min(1).max(10_000).optional() }).strict(),
+  z.object({ ...surveyQuestionBase, type: z.literal("long_text"), placeholder: z.string().max(500).optional(), maxLength: z.number().int().min(1).max(10_000).optional() }).strict(),
+  z.object({ ...surveyQuestionBase, type: z.literal("rating"), min: z.number().int().min(0).max(100), max: z.number().int().min(1).max(100) }).strict().refine(value => value.max > value.min && value.max - value.min <= 20, { message: "rating range must be ascending and contain at most 21 values" }),
+  z.object({ ...surveyQuestionBase, type: z.literal("nps") }).strict(),
+]);
+const surveyStepSchema = z.object({
+  id: surveyIdSchema,
+  content: z.object({ heading: z.string().trim().max(500), body: z.string().trim().max(2000) }).strict(),
+  questions: z.array(surveyQuestionSchema).max(20),
+  builder: surveyBuilderSchema.optional(),
+  size: sizeSchema.optional(),
+}).strict().superRefine((step, ctx) => {
+  const questionIds = new Set<string>();
+  step.questions.forEach((question, questionIndex) => {
+    if (questionIds.has(question.id)) ctx.addIssue({ code: "custom", path: ["questions", questionIndex, "id"], message: "question IDs must be unique" });
+    questionIds.add(question.id);
+    if ("options" in question) {
+      const optionIds = new Set<string>();
+      question.options.forEach((option, optionIndex) => { if (optionIds.has(option.id)) ctx.addIssue({ code: "custom", path: ["questions", questionIndex, "options", optionIndex, "id"], message: "option IDs must be unique" }); optionIds.add(option.id); });
+    }
+  });
+  if (step.builder) {
+    const markers = Array.from(step.builder.html.matchAll(/<[^>]*\bdata-movecues-question-id\s*=\s*["']([^"']+)["'][^>]*>/gi));
+    const structured = new Map(step.questions.map(question => [question.id, question.type]));
+    const counts = new Map<string, number>();
+    markers.forEach(marker => {
+      const id = marker[1]; counts.set(id, (counts.get(id) ?? 0) + 1);
+      const type = /\bdata-movecues-question-type\s*=\s*["']([^"']+)["']/i.exec(marker[0])?.[1];
+      if (!structured.has(id) || structured.get(id) !== type) ctx.addIssue({ code: "custom", path: ["builder", "html"], message: "survey question markup must match structured question IDs and types" });
+    });
+    step.questions.forEach(question => { if (counts.get(question.id) !== 1) ctx.addIssue({ code: "custom", path: ["builder", "html"], message: `question ${question.id} must appear exactly once in builder HTML` }); });
+  }
+});
+export const surveyConfigSchema = z.object({
+  steps: z.array(surveyStepSchema).min(1).max(20),
+  showProgress: z.boolean(),
+  allowBack: z.boolean(),
+  submitLabel: z.string().trim().min(1).max(80),
+}).strict().superRefine((survey, ctx) => {
+  const stepIds = new Set<string>(); const questionIds = new Set<string>();
+  survey.steps.forEach((step, stepIndex) => {
+    if (stepIds.has(step.id)) ctx.addIssue({ code: "custom", path: ["steps", stepIndex, "id"], message: "step IDs must be unique" }); stepIds.add(step.id);
+    step.questions.forEach((question, questionIndex) => { if (questionIds.has(question.id)) ctx.addIssue({ code: "custom", path: ["steps", stepIndex, "questions", questionIndex, "id"], message: "question IDs must be unique across the survey" }); questionIds.add(question.id); });
+  });
 });
 
 const guideStepSchema = z.object({
@@ -148,7 +234,7 @@ export const guideDefinitionSchema = z.object({
 
 export const createExperienceSchema = z.object({
   kind: z.enum(["guide", "widget"]),
-  widgetType: z.enum(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner"]).nullable().optional(),
+  widgetType: z.enum(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"]).nullable().optional(),
   name: z.string().trim().min(1).max(200),
   buildPageId: z.string().min(1).max(64).nullable().optional(),
   buildUrl: z.url().max(2000).nullable().optional(),
@@ -187,6 +273,24 @@ export const impressionSchema = z.object({
   action: z.string().min(1).max(80).optional(),
 });
 
-export function definitionSchemaFor(kind: "guide" | "widget") {
-  return kind === "guide" ? guideDefinitionSchema : widgetDefinitionSchema;
+const surveyAnswerValueSchema = z.union([z.string().max(10_000), z.array(z.string().max(64)).max(20), z.number().int()]);
+const surveyIdentityShape = {
+  experienceId: z.string().min(1).max(64), versionId: z.string().min(1).max(64), impressionId: z.string().min(1).max(64),
+  anonymousId: z.string().min(1).max(200), sessionId: z.string().min(1).max(200), trackedUserId: z.string().min(1).max(200).optional(),
+};
+export const createSurveyResponseSchema = z.object(surveyIdentityShape).strict();
+export const updateSurveyResponseSchema = z.object({
+  ...surveyIdentityShape,
+  currentStepId: z.string().min(1).max(64).nullable().optional(),
+  answers: z.record(z.string().min(1).max(64), surveyAnswerValueSchema),
+  submitted: z.boolean().optional(),
+  abandoned: z.boolean().optional(),
+}).strict().refine(value => !(value.submitted && value.abandoned), "a response cannot be submitted and abandoned together");
+
+export function definitionSchemaFor(kind: "guide" | "widget", widgetType?: string | null) {
+  if (kind === "guide") return guideDefinitionSchema;
+  return widgetDefinitionSchema.superRefine((definition, ctx) => {
+    if (widgetType === "survey" && !definition.survey) ctx.addIssue({ code: "custom", path: ["survey"], message: "survey config is required for survey widgets" });
+    if (widgetType !== "survey" && definition.survey) ctx.addIssue({ code: "custom", path: ["survey"], message: "survey config is only supported by survey widgets" });
+  });
 }
