@@ -66,7 +66,7 @@ function builderProjectValueIsSafe(value: unknown): boolean {
   return Object.entries(value).every(([key, nested]) => !/^on[a-z]+$/i.test(key) && !/^script(?:-|$)/i.test(key) && builderProjectValueIsSafe(nested));
 }
 
-const surveyHtmlTags = new Set(["div", "section", "h1", "h2", "h3", "h4", "p", "span", "button", "img", "hr", "label", "input", "textarea"]);
+const surveyHtmlTags = new Set(["div", "section", "h1", "h2", "h3", "h4", "p", "span", "br", "button", "img", "hr", "label", "input", "textarea"]);
 const surveyHtmlAttributes = new Set(["class", "id", "title", "role", "aria-label", "aria-live", "aria-hidden", "aria-pressed", "alt", "src", "width", "height", "type", "placeholder", "maxlength", "data-movecues-action-id", "data-movecues-content", "data-movecues-widget-type", "data-movecues-question-id", "data-movecues-question-type", "data-movecues-question-input", "data-movecues-option-id", "data-movecues-survey-action", "data-movecues-survey-controls", "data-movecues-survey-progress", "data-movecues-survey-progress-bar", "data-movecues-survey-step-id"]);
 
 function surveyHtmlUsesAllowlist(value: string): boolean {
