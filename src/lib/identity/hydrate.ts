@@ -3,11 +3,8 @@ import type { Db } from "../../db/client.js";
 import { sessionEvents, trackedUsers } from "../../db/schema.js";
 
 /**
- * A single identity key, exactly as `identityExpr` in
- * lib/events/eventQueries.ts, lib/segments/evaluator.ts, and
- * lib/funnels/evaluator.ts all compute it: a tracked user's `id` if
- * `tracked_user_aliases` has claimed the anonymousId behind an event,
- * otherwise the bare anonymousId.
+ * A single immutable event identity key: a tracked user's id captured
+ * on the event, otherwise the bare anonymous id.
  */
 export type IdentityKey = string;
 

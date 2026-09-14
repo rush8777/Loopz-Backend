@@ -1,4 +1,4 @@
-import { eq, and, inArray, sql, desc, asc } from "drizzle-orm";
+import { eq, and, inArray, isNull, or, sql, desc, asc } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { trackedUserAliases, sessionEvents, sessionReplayEvents } from "../../db/schema.js";
 
@@ -49,8 +49,15 @@ const EMPTY_STATS: ProfileStats = {
  * signal for "how much of the page did they interact with") but never
  * appear as their own timeline entries - see listActivity below.
  */
-export async function computeProfileStats(db: Db, siteId: string, anonymousIds: string[]): Promise<ProfileStats> {
-  if (anonymousIds.length === 0) return EMPTY_STATS;
+function profileEventsWhere(siteId: string, anonymousIds: string[], trackedUserId?: string) {
+  const legacyAnonymous = anonymousIds.length ? and(isNull(sessionEvents.trackedUserId), inArray(sessionEvents.anonymousId, anonymousIds)) : undefined;
+  const owned = trackedUserId ? eq(sessionEvents.trackedUserId, trackedUserId) : undefined;
+  return and(eq(sessionEvents.siteId, siteId), owned && legacyAnonymous ? or(owned, legacyAnonymous) : owned ?? legacyAnonymous ?? sql`0`);
+}
+
+export async function computeProfileStats(db: Db, siteId: string, anonymousIds: string[], trackedUserId?: string): Promise<ProfileStats> {
+  if (anonymousIds.length === 0 && !trackedUserId) return EMPTY_STATS;
+  const where = profileEventsWhere(siteId, anonymousIds, trackedUserId);
 
   const [totals] = await db
     .select({
@@ -61,7 +68,7 @@ export async function computeProfileStats(db: Db, siteId: string, anonymousIds: 
       sessionCount: sql<number>`count(distinct ${sessionEvents.sessionId})`,
     })
     .from(sessionEvents)
-    .where(and(eq(sessionEvents.siteId, siteId), inArray(sessionEvents.anonymousId, anonymousIds)));
+    .where(where);
 
   if (!totals || totals.eventCount === 0) return EMPTY_STATS;
 
@@ -77,7 +84,7 @@ export async function computeProfileStats(db: Db, siteId: string, anonymousIds: 
       lastTs: sql<number>`max(${sessionEvents.timestamp})`,
     })
     .from(sessionEvents)
-    .where(and(eq(sessionEvents.siteId, siteId), inArray(sessionEvents.anonymousId, anonymousIds)))
+    .where(where)
     .groupBy(sessionEvents.sessionId);
   const totalActiveTimeMs = perSession.reduce((sum, s) => sum + Math.max(0, s.lastTs - s.firstTs), 0);
 
@@ -86,8 +93,7 @@ export async function computeProfileStats(db: Db, siteId: string, anonymousIds: 
     .from(sessionEvents)
     .where(
       and(
-        eq(sessionEvents.siteId, siteId),
-        inArray(sessionEvents.anonymousId, anonymousIds),
+        where,
         eq(sessionEvents.type, "page_view")
       )
     )
@@ -99,8 +105,7 @@ export async function computeProfileStats(db: Db, siteId: string, anonymousIds: 
     .from(sessionEvents)
     .where(
       and(
-        eq(sessionEvents.siteId, siteId),
-        inArray(sessionEvents.anonymousId, anonymousIds),
+        where,
         eq(sessionEvents.type, "page_view")
       )
     )
@@ -139,13 +144,13 @@ export async function listActivity(
   db: Db,
   siteId: string,
   anonymousIds: string[],
-  opts: { limit: number; offset: number }
+  opts: { limit: number; offset: number },
+  trackedUserId?: string
 ): Promise<{ activities: ActivityItem[]; total: number }> {
-  if (anonymousIds.length === 0) return { activities: [], total: 0 };
+  if (anonymousIds.length === 0 && !trackedUserId) return { activities: [], total: 0 };
 
   const where = and(
-    eq(sessionEvents.siteId, siteId),
-    inArray(sessionEvents.anonymousId, anonymousIds),
+    profileEventsWhere(siteId, anonymousIds, trackedUserId),
     sql`${sessionEvents.type} != 'cursor'`
   );
 
@@ -220,14 +225,16 @@ export async function listSessionsForTrackedUser(
   db: Db,
   siteId: string,
   anonymousIds: string[],
-  opts: { limit: number; offset: number }
+  opts: { limit: number; offset: number },
+  trackedUserId?: string
 ): Promise<{ sessions: ProfileSessionSummary[]; total: number }> {
-  if (anonymousIds.length === 0) return { sessions: [], total: 0 };
+  if (anonymousIds.length === 0 && !trackedUserId) return { sessions: [], total: 0 };
+  const where = profileEventsWhere(siteId, anonymousIds, trackedUserId);
 
   const [{ total }] = await db
     .select({ total: sql<number>`count(distinct ${sessionEvents.sessionId})` })
     .from(sessionEvents)
-    .where(and(eq(sessionEvents.siteId, siteId), inArray(sessionEvents.anonymousId, anonymousIds)));
+    .where(where);
 
   const rows = await db
     .select({
@@ -237,7 +244,7 @@ export async function listSessionsForTrackedUser(
       lastSeen: sql<number>`max(${sessionEvents.timestamp})`,
     })
     .from(sessionEvents)
-    .where(and(eq(sessionEvents.siteId, siteId), inArray(sessionEvents.anonymousId, anonymousIds)))
+    .where(where)
     .groupBy(sessionEvents.sessionId)
     .orderBy(desc(sql`max(${sessionEvents.timestamp})`))
     .limit(opts.limit)

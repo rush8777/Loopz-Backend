@@ -469,6 +469,10 @@ export const sessionEvents = sqliteTable("session_events", {
     // doesn't send one - those events simply aren't deduped, same
     // tradeoff already made for anonymousId above.
     eventId: text("event_id"),
+    // Immutable identity snapshot.  Unlike tracked_user_aliases this is
+    // the answer to "who owned this event when it happened?" and must
+    // never be changed by a later login on the same browser.
+    trackedUserId: text("tracked_user_id").references(() => trackedUsers.id, { onDelete: "set null" }),
     // The SDK's page-view lifecycle id active when this event was
     // captured (AnalyticsEvent.pageViewId - see SessionManager's
     // getPageViewId()/newPageView() on the SDK side). The SDK alone owns
@@ -539,6 +543,7 @@ export const sessionEvents = sqliteTable("session_events", {
     // this file) - the leading (site_id, type) columns already keep it
     // useful for any other type-scoped query, not just custom events.
     index("session_events_site_type_name_ts_idx").on(table.siteId, table.type, table.eventName, table.timestamp),
+    index("session_events_site_tracked_user_ts_idx").on(table.siteId, table.trackedUserId, table.timestamp),
 ]);
 /**
  * Raw rrweb events for session replay, one row per event, ordered by
@@ -784,6 +789,28 @@ export const funnels = sqliteTable("funnels", {
         .notNull()
         .default(sql `(unixepoch('now') * 1000)`),
 }, (table) => [index("funnels_site_name_idx").on(table.siteId, table.name)]);
+/** Saved dashboard definitions. Runtime date/audience filters deliberately
+ * remain request state; only reusable card semantics and layout are stored. */
+export const dashboards = sqliteTable("dashboards", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("dsh")),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    createdBy: text("created_by").notNull().references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+}, (table) => [index("dashboards_site_updated_idx").on(table.siteId, table.updatedAt)]);
+export const dashboardCards = sqliteTable("dashboard_cards", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("dsc")),
+    dashboardId: text("dashboard_id").notNull().references(() => dashboards.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    cardType: text("card_type").notNull(),
+    position: integer("position").notNull(),
+    width: text("width").notNull().default("medium"),
+    configuration: text("configuration", { mode: "json" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+}, (table) => [index("dashboard_cards_dashboard_position_idx").on(table.dashboardId, table.position)]);
 /** Versioned, isolated visual-experience domain. Definitions are JSON because
  * their presentation vocabulary evolves, but every read/write crosses the
  * Zod boundary in lib/experiences/validation.ts. */

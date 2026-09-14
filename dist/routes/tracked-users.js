@@ -179,7 +179,7 @@ export function registerTrackedUserRoutes(app, db) {
         if (!user)
             return reply.code(404).send({ error: "user_not_found" });
         const anonymousIds = await getAliasAnonymousIds(db, site.id, user.id);
-        const stats = await computeProfileStats(db, site.id, anonymousIds);
+        const stats = await computeProfileStats(db, site.id, anonymousIds, user.id);
         const properties = await propertiesFor(db, user.id);
         const environment = await getLatestEnvironmentContext(db, site.id, anonymousIds);
         return reply.send({
@@ -245,7 +245,7 @@ export function registerTrackedUserRoutes(app, db) {
         }
         const { limit, offset } = parsed.data;
         const anonymousIds = await getAliasAnonymousIds(db, site.id, user.id);
-        const { activities, total } = await listActivity(db, site.id, anonymousIds, { limit, offset });
+        const { activities, total } = await listActivity(db, site.id, anonymousIds, { limit, offset }, user.id);
         return reply.send({ activities, total, limit, offset });
     });
     /** Sessions belonging to this tracked user, resolved via anonymousId aliases - anonymous activity before identification included. */
@@ -263,7 +263,7 @@ export function registerTrackedUserRoutes(app, db) {
         }
         const { limit, offset } = parsed.data;
         const anonymousIds = await getAliasAnonymousIds(db, site.id, user.id);
-        const { sessions, total } = await listSessionsForTrackedUser(db, site.id, anonymousIds, { limit, offset });
+        const { sessions, total } = await listSessionsForTrackedUser(db, site.id, anonymousIds, { limit, offset }, user.id);
         const contexts = await getEnvironmentContextsForSessions(db, site.id, sessions.map((s) => s.sessionId));
         const sessionsWithDevice = sessions.map((s) => {
             const ctx = contexts.get(s.sessionId);

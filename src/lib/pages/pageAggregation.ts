@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNotNull, gte, lte, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { sessionEvents, trackedUserAliases } from "../../db/schema.js";
+import { sessionEvents } from "../../db/schema.js";
 import { canonicalIdentityExpr } from "../analytics/identity.js";
 
 /** One distinct pagePath's raw traffic, independent of any Page's rules - the row shape Untagged URLs and rule-preview both work from. */
@@ -65,7 +65,6 @@ export async function computeMatchedMetrics(db: Db, siteId: string, matchedPaths
       lastSeenAt: sql<number>`max(${sessionEvents.timestamp})`,
     })
     .from(sessionEvents)
-    .leftJoin(trackedUserAliases, and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId)))
     .where(
       and(...conditions)
     );

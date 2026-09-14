@@ -58,6 +58,16 @@ describe("visual experiences", () => {
     expect(rename.json().error).toBe("experience_name_exists");
   });
 
+  it("deletes an experience and removes it from its site", async () => {
+    const { owner, site } = await setup(ctx.app, "delete");
+    const authorization = { authorization: `Bearer ${owner.accessToken}` };
+    const url = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
+    const created = (await ctx.app.inject({ method: "POST", url, headers: authorization, payload: { kind: "widget", widgetType: "modal", name: "Disposable", buildUrl: "https://delete.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
+    expect((await ctx.app.inject({ method: "DELETE", url: `${url}/${created.id}`, headers: authorization })).statusCode).toBe(204);
+    expect((await ctx.app.inject({ method: "GET", url: `${url}/${created.id}`, headers: authorization })).statusCode).toBe(404);
+    expect((await ctx.app.inject({ method: "GET", url, headers: authorization })).json().experiences).toEqual([]);
+  });
+
   it("validates per-step Guide builders and requires a DOM target before publishing", async () => {
     const { owner, site } = await setup(ctx.app, "guide-steps");
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "guide", name: "Guide", buildUrl: "https://guide-steps.example.com", template: "blank", useBuildPageAsTarget: false } })).json();

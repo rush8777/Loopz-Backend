@@ -1,9 +1,10 @@
-import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
-import { sessionEvents, trackedUserAliases, pageDefinitions, segments as segmentsTable } from "../../db/schema.js";
+import { and, eq, gte, inArray, lte } from "drizzle-orm";
+import { sessionEvents, pageDefinitions, segments as segmentsTable } from "../../db/schema.js";
 import { resolveMatchedPagePaths, evaluateSegment } from "../segments/evaluator.js";
 import { hydrateIdentities } from "../identity/hydrate.js";
 import { funnelStepLabel } from "./types.js";
-const identityExpr = sql `coalesce(${trackedUserAliases.trackedUserId}, ${sessionEvents.anonymousId})`;
+import { canonicalIdentityExpr } from "../analytics/identity.js";
+const identityExpr = canonicalIdentityExpr;
 // Defensive cap on rows pulled per step for in-memory sequence matching -
 // keeps a single funnel evaluation bounded even for a very high-volume
 // event. A real high-scale implementation would push the ordering/window
@@ -27,7 +28,6 @@ async function fetchStepTimestamps(db, siteId, step, since, until) {
     const rows = await db
         .select({ identity: identityExpr, timestamp: sessionEvents.timestamp })
         .from(sessionEvents)
-        .leftJoin(trackedUserAliases, and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId)))
         .where(and(...baseConditions))
         .orderBy(sessionEvents.timestamp)
         .limit(MAX_ROWS_PER_STEP);

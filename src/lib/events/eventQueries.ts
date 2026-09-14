@@ -1,7 +1,7 @@
 import { and, eq, gte, lte, like, desc, asc, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Db } from "../../db/client.js";
-import { sessionEvents, trackedUserAliases, trackedUsers } from "../../db/schema.js";
+import { sessionEvents, trackedUsers } from "../../db/schema.js";
 import { canonicalIdentityExpr } from "../analytics/identity.js";
 
 /**
@@ -48,7 +48,7 @@ function dateRangeConditions(range: DateRange) {
   return conditions;
 }
 
-/** Identity-resolved "who" behind a session_events row - a tracked user if an alias claims this anonymousId, else the bare anonymousId. See the module doc comment above. */
+/** Immutable owner captured on the event, or the bare anonymous id. */
 const identityExpr = canonicalIdentityExpr;
 
 /** Whether this event name has ever occurred for this site, regardless of any date range - the existence check the :eventName sub-routes 404 on. Deliberately unfiltered by date: a real event with zero occurrences in the *selected* range should render an empty state, not a 404 - see routes/events.ts. */
@@ -88,10 +88,6 @@ export async function listEventDefinitions(
   const [{ total }] = await db
     .select({ total: sql<number>`count(distinct ${sessionEvents.eventName})` })
     .from(sessionEvents)
-    .leftJoin(
-      trackedUserAliases,
-      and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId))
-    )
     .where(where);
   if (total === 0) return { events: [], total: 0 };
 
@@ -105,10 +101,6 @@ export async function listEventDefinitions(
       lastSeen: sql<number>`max(${sessionEvents.timestamp})`,
     })
     .from(sessionEvents)
-    .leftJoin(
-      trackedUserAliases,
-      and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId))
-    )
     .where(where)
     .groupBy(sessionEvents.eventName)
     .orderBy(opts.sort === "users" ? desc(sql`count(distinct ${identityExpr})`) : opts.sort === "sessions" ? desc(sql`count(distinct ${sessionEvents.sessionId})`) : opts.sort === "lastSeen" ? desc(sql`max(${sessionEvents.timestamp})`) : opts.sort === "firstSeen" ? desc(sql`min(${sessionEvents.timestamp})`) : opts.sort === "az" ? asc(sessionEvents.eventName) : opts.sort === "za" ? desc(sessionEvents.eventName) : desc(sql`count(*)`))
@@ -166,10 +158,6 @@ export async function getEventSummary(db: Db, siteId: string, eventName: string,
       lastSeen: sql<number | null>`max(${sessionEvents.timestamp})`,
     })
     .from(sessionEvents)
-    .leftJoin(
-      trackedUserAliases,
-      and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId))
-    )
     .where(where);
 
   if (!row || row.occurrences === 0) return EMPTY_SUMMARY(eventName);
@@ -385,7 +373,7 @@ function selectOccurrenceColumns(pageViewRows: ReturnType<typeof alias<typeof se
     timestamp: sessionEvents.timestamp,
     sessionId: sessionEvents.sessionId,
     anonymousId: sessionEvents.anonymousId,
-    trackedUserId: trackedUserAliases.trackedUserId,
+    trackedUserId: sessionEvents.trackedUserId,
     externalUserId: trackedUsers.externalUserId,
     pagePath: pageViewRows.pagePath,
     properties: sessionEvents.eventProperties,
@@ -436,11 +424,7 @@ export async function listEventOccurrences(
   const rows = await db
     .select(selectOccurrenceColumns(pageViewRows))
     .from(sessionEvents)
-    .leftJoin(
-      trackedUserAliases,
-      and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId))
-    )
-    .leftJoin(trackedUsers, eq(trackedUsers.id, trackedUserAliases.trackedUserId))
+    .leftJoin(trackedUsers, eq(trackedUsers.id, sessionEvents.trackedUserId))
     .leftJoin(
       pageViewRows,
       and(
@@ -468,11 +452,7 @@ export async function getEventOccurrence(
   const [row] = await db
     .select(selectOccurrenceColumns(pageViewRows))
     .from(sessionEvents)
-    .leftJoin(
-      trackedUserAliases,
-      and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId))
-    )
-    .leftJoin(trackedUsers, eq(trackedUsers.id, trackedUserAliases.trackedUserId))
+    .leftJoin(trackedUsers, eq(trackedUsers.id, sessionEvents.trackedUserId))
     .leftJoin(
       pageViewRows,
       and(
@@ -524,16 +504,12 @@ export async function getEventUsers(
   const [{ total }] = await db
     .select({ total: sql<number>`count(distinct ${identityExpr})` })
     .from(sessionEvents)
-    .leftJoin(
-      trackedUserAliases,
-      and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId))
-    )
     .where(where);
   if (total === 0) return { users: [], total: 0 };
 
   const rows = await db
     .select({
-      trackedUserId: trackedUserAliases.trackedUserId,
+      trackedUserId: sessionEvents.trackedUserId,
       externalUserId: trackedUsers.externalUserId,
       anonymousId: sql<string | null>`max(${sessionEvents.anonymousId})`,
       occurrences: sql<number>`count(*)`,
@@ -541,13 +517,9 @@ export async function getEventUsers(
       lastSeen: sql<number>`max(${sessionEvents.timestamp})`,
     })
     .from(sessionEvents)
-    .leftJoin(
-      trackedUserAliases,
-      and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId))
-    )
-    .leftJoin(trackedUsers, eq(trackedUsers.id, trackedUserAliases.trackedUserId))
+    .leftJoin(trackedUsers, eq(trackedUsers.id, sessionEvents.trackedUserId))
     .where(where)
-    .groupBy(identityExpr, trackedUserAliases.trackedUserId, trackedUsers.externalUserId)
+    .groupBy(identityExpr, sessionEvents.trackedUserId, trackedUsers.externalUserId)
     .orderBy(desc(sql`max(${sessionEvents.timestamp})`))
     .limit(opts.limit)
     .offset(opts.offset);

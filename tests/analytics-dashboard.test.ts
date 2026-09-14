@@ -14,6 +14,32 @@ describe("dashboard analytics", () => {
     const response = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/analytics/query`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { filters: filters(), query: { schemaVersion: 1, kind: "metric", metricId: "users.unique", events: { eventNames: ["used"], match: "any" }, mode: "trend", visualization: "line" } } });
     expect(response.statusCode).toBe(200); const body = response.json(); expect(body.result.buckets).toHaveLength(4); expect(Math.max(...body.result.buckets.map((b: { values: { value: number } }) => b.values.value))).toBe(1);
   });
+  it("keeps historical ownership immutable when a shared browser switches accounts", async () => {
+    const { owner, site } = await setup(ctx.app), at = Date.now() - 1_000;
+    await track(ctx.app, site.siteId, "shared", [
+      { type: "custom", timestamp: at, name: "used", anonymousId: "shared" },
+      { type: "identify", timestamp: at + 1, anonymousId: "shared", externalUserId: "alice", traits: {} },
+      { type: "custom", timestamp: at + 2, name: "used", anonymousId: "shared" },
+    ]);
+    const query = { schemaVersion: 1, kind: "metric", metricId: "users.unique", mode: "single", visualization: "total" };
+    const request = { method: "POST" as const, url: `/orgs/${owner.org.id}/sites/${site.id}/analytics/query`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { filters: filters(), query } };
+    expect((await ctx.app.inject(request)).json().result.values[0].value).toBe(1);
+
+    await track(ctx.app, site.siteId, "shared", [
+      { type: "identify", timestamp: at + 3, anonymousId: "shared", externalUserId: "bob", traits: {} },
+      { type: "custom", timestamp: at + 4, name: "used", anonymousId: "shared" },
+    ]);
+    const afterSwitch = await ctx.app.inject(request);
+    expect(afterSwitch.json().result.values[0].value).toBe(2);
+
+    const perUser = await ctx.app.inject({ ...request, payload: { filters: filters(), query: { ...query, metricId: "events.per_user" } } });
+    expect(perUser.json().result.values[0].value).toBe(1.5);
+
+    const drilldown = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/analytics/drilldown`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { filters: filters(), query, selection: { offset: 0, limit: 50 } } });
+    expect(drilldown.statusCode).toBe(200);
+    expect(drilldown.json().total).toBe(2);
+    expect(new Set(drilldown.json().items.map((item: { externalUserId: string }) => item.externalUserId))).toEqual(new Set(["alice", "bob"]));
+  });
   it("implements Each, Any, and All event-set semantics", async () => {
     const { owner, site } = await setup(ctx.app), at = Date.now() - 1000;
     await track(ctx.app, site.siteId, "one", [{ type: "custom", timestamp: at, name: "a", anonymousId: "one" }, { type: "custom", timestamp: at + 1, name: "b", anonymousId: "one" }]);

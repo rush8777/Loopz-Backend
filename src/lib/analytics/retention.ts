@@ -1,5 +1,5 @@
 import type { Db } from "../../db/client.js";
-import { segments, sessionEvents, trackedUserAliases } from "../../db/schema.js";
+import { segments, sessionEvents } from "../../db/schema.js";
 import { and, eq, gte, lte } from "drizzle-orm";
 import { evaluateSegment } from "../segments/evaluator.js";
 import type { SegmentDefinition } from "../segments/types.js";
@@ -24,8 +24,8 @@ function offsetBetween(start: Date, value: Date, grain: DashboardFilters["granul
 
 export async function computeRetention(db: Db, siteId: string, filters: DashboardFilters, config: RetentionConfiguration) {
   const exclusions = new Set(filters.excludedEventNames);
-  const facts = (await db.select({ type: sessionEvents.type, eventName: sessionEvents.eventName, at: sessionEvents.timestamp, anonymousId: sessionEvents.anonymousId, trackedUserId: trackedUserAliases.trackedUserId })
-    .from(sessionEvents).leftJoin(trackedUserAliases, and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId)))
+  const facts = (await db.select({ type: sessionEvents.type, eventName: sessionEvents.eventName, at: sessionEvents.timestamp, anonymousId: sessionEvents.anonymousId, trackedUserId: sessionEvents.trackedUserId })
+    .from(sessionEvents)
     .where(and(eq(sessionEvents.siteId, siteId), gte(sessionEvents.timestamp, new Date(filters.since)), lte(sessionEvents.timestamp, new Date(filters.until)))))
     .map((r) => ({ identity: r.trackedUserId ?? r.anonymousId, type: r.type, eventName: r.eventName, at: r.at })).filter((r): r is RetentionFact => Boolean(r.identity));
 

@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { sessionEvents, trackedUserAliases, trackedUsers, trackedUserProperties, pageDefinitions } from "../../db/schema.js";
+import { sessionEvents, trackedUsers, trackedUserProperties, pageDefinitions } from "../../db/schema.js";
 import { matchesRules } from "../pages/pageMatcher.js";
 import { loadPagePathStats } from "../pages/pageAggregation.js";
 import type { PageRule } from "../pages/types.js";
@@ -79,10 +79,6 @@ async function getKnownIdentities(db: Db, siteId: string): Promise<Set<IdentityK
     db
       .selectDistinct({ identity: identityExpr })
       .from(sessionEvents)
-      .leftJoin(
-        trackedUserAliases,
-        and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId))
-      )
       .where(eq(sessionEvents.siteId, siteId)),
   ]);
   const identities = new Set<IdentityKey>(trackedRows.map((r) => r.id));
@@ -103,10 +99,6 @@ async function resolveEventCondition(db: Db, siteId: string, c: EventCondition, 
   const rows = await db
     .selectDistinct({ identity: identityExpr })
     .from(sessionEvents)
-    .leftJoin(
-      trackedUserAliases,
-      and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId))
-    )
     .where(and(...conditions));
   const performed = new Set(rows.map((r) => r.identity).filter((x): x is string => !!x));
 
@@ -205,10 +197,6 @@ async function resolvePageCondition(db: Db, siteId: string, c: PageCondition, un
   const rows = await db
     .selectDistinct({ identity: identityExpr })
     .from(sessionEvents)
-    .leftJoin(
-      trackedUserAliases,
-      and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId))
-    )
     .where(and(...conditions));
   const visited = new Set(rows.map((r) => r.identity).filter((x): x is string => !!x));
 

@@ -1,4 +1,4 @@
-import { eq, and, sql, desc, like, notInArray } from "drizzle-orm";
+import { eq, and, isNull, sql, desc, like } from "drizzle-orm";
 import { sessionEvents, trackedUserAliases, trackedUsers } from "../../db/schema.js";
 /**
  * Anonymous visitor discovery - the counterpart to the tracked-user
@@ -26,10 +26,7 @@ async function getClaimedAnonymousIds(db, siteId) {
  * anonymous visitors have no name/email to search by, only the id).
  */
 export async function listAnonymousVisitors(db, siteId, opts) {
-    const claimed = await getClaimedAnonymousIds(db, siteId);
-    const conditions = [eq(sessionEvents.siteId, siteId), sql `${sessionEvents.anonymousId} is not null`];
-    if (claimed.length > 0)
-        conditions.push(notInArray(sessionEvents.anonymousId, claimed));
+    const conditions = [eq(sessionEvents.siteId, siteId), sql `${sessionEvents.anonymousId} is not null`, isNull(sessionEvents.trackedUserId)];
     if (opts.search)
         conditions.push(like(sessionEvents.anonymousId, `%${opts.search}%`));
     const where = and(...conditions);

@@ -1,6 +1,6 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { trackedUsers, trackedUserAliases, trackedUserProperties } from "../../db/schema.js";
+import { trackedUsers, trackedUserAliases, trackedUserProperties, sessionEvents } from "../../db/schema.js";
 
 export interface IdentifyInput {
   siteId: string; // internal site.id, already resolved from the public siteId
@@ -20,8 +20,9 @@ export interface IdentifyInput {
  *
  * Called from the public events ingestion route, once per identify
  * event in a batch - see public-events.ts. Never touches
- * session_events/behavioral_events; this is purely the identity/
- * properties side of the profile layer (task brief sections 3-6).
+ * session_events except for the one safe merge operation below: unresolved
+ * activity for a previously unclaimed anonymous id is claimed at identify
+ * time.  It never overwrites an existing event snapshot.
  */
 export async function resolveIdentity(db: Db, input: IdentifyInput): Promise<{ trackedUserId: string }> {
   const { siteId, anonymousId, externalUserId, traits, timestamp } = input;
@@ -70,6 +71,7 @@ export async function resolveIdentity(db: Db, input: IdentifyInput): Promise<{ t
       .where(and(eq(trackedUserAliases.siteId, siteId), eq(trackedUserAliases.anonymousId, anonymousId)))
       .limit(1);
 
+    const mayClaimUnresolvedHistory = !existingAlias || existingAlias.trackedUserId === trackedUserId;
     if (!existingAlias) {
       await db.insert(trackedUserAliases).values({
         siteId,
@@ -91,6 +93,17 @@ export async function resolveIdentity(db: Db, input: IdentifyInput): Promise<{ t
           lastSeenAt: now > existingAlias.lastSeenAt ? now : existingAlias.lastSeenAt,
         })
         .where(eq(trackedUserAliases.id, existingAlias.id));
+    }
+
+    // Preserve anonymous -> identified merging without making aliases a
+    // historical source of truth.  If this anonymous id was already mapped
+    // to another person, its unresolved legacy rows are ambiguous, so leave
+    // them anonymous rather than assigning them to the new account.
+    if (mayClaimUnresolvedHistory) {
+      await db
+        .update(sessionEvents)
+        .set({ trackedUserId })
+        .where(and(eq(sessionEvents.siteId, siteId), eq(sessionEvents.anonymousId, anonymousId), isNull(sessionEvents.trackedUserId)));
     }
   }
 

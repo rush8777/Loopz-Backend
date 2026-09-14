@@ -1,4 +1,4 @@
-import { eq, and, sql, desc, like, notInArray } from "drizzle-orm";
+import { eq, and, isNull, sql, desc, like } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { sessionEvents, trackedUserAliases, trackedUsers } from "../../db/schema.js";
 
@@ -43,10 +43,7 @@ export async function listAnonymousVisitors(
   siteId: string,
   opts: { limit: number; offset: number; search?: string }
 ): Promise<{ visitors: AnonymousVisitorSummary[]; total: number }> {
-  const claimed = await getClaimedAnonymousIds(db, siteId);
-
-  const conditions = [eq(sessionEvents.siteId, siteId), sql`${sessionEvents.anonymousId} is not null`];
-  if (claimed.length > 0) conditions.push(notInArray(sessionEvents.anonymousId, claimed));
+  const conditions = [eq(sessionEvents.siteId, siteId), sql`${sessionEvents.anonymousId} is not null`, isNull(sessionEvents.trackedUserId)];
   if (opts.search) conditions.push(like(sessionEvents.anonymousId, `%${opts.search}%`));
   const where = and(...conditions);
 

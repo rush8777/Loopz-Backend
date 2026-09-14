@@ -504,6 +504,10 @@ export const sessionEvents = sqliteTable(
     // doesn't send one - those events simply aren't deduped, same
     // tradeoff already made for anonymousId above.
     eventId: text("event_id"),
+    // Immutable identity snapshot.  Unlike tracked_user_aliases this is
+    // the answer to "who owned this event when it happened?" and must
+    // never be changed by a later login on the same browser.
+    trackedUserId: text("tracked_user_id").references(() => trackedUsers.id, { onDelete: "set null" }),
     // The SDK's page-view lifecycle id active when this event was
     // captured (AnalyticsEvent.pageViewId - see SessionManager's
     // getPageViewId()/newPageView() on the SDK side). The SDK alone owns
@@ -575,6 +579,7 @@ export const sessionEvents = sqliteTable(
     // this file) - the leading (site_id, type) columns already keep it
     // useful for any other type-scoped query, not just custom events.
     index("session_events_site_type_name_ts_idx").on(table.siteId, table.type, table.eventName, table.timestamp),
+    index("session_events_site_tracked_user_ts_idx").on(table.siteId, table.trackedUserId, table.timestamp),
   ]
 );
 

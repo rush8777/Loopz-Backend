@@ -1,5 +1,6 @@
 import { and, eq, inArray, isNotNull, gte, lte, sql } from "drizzle-orm";
 import { sessionEvents } from "../../db/schema.js";
+import { canonicalIdentityExpr } from "../analytics/identity.js";
 export const EMPTY_PAGE_METRICS = { views: 0, uniqueVisitors: 0, uniqueSessions: 0, lastSeenAt: null };
 /**
  * Every distinct pagePath this site has recorded a `page_view` for,
@@ -43,7 +44,7 @@ export async function computeMatchedMetrics(db, siteId, matchedPaths, range = {}
     const [row] = await db
         .select({
         views: sql `count(*)`,
-        uniqueVisitors: sql `count(distinct ${sessionEvents.anonymousId})`,
+        uniqueVisitors: sql `count(distinct ${canonicalIdentityExpr})`,
         uniqueSessions: sql `count(distinct ${sessionEvents.sessionId})`,
         lastSeenAt: sql `max(${sessionEvents.timestamp})`,
     })

@@ -248,6 +248,17 @@ export function registerExperienceRoutes(app, db) {
         const [updated] = await db.update(experiences).set({ ...(parsed.data.name ? { name: parsed.data.name } : {}), updatedAt: new Date() }).where(eq(experiences.id, row.id)).returning();
         return reply.send(await serializeExperience(db, updated));
     });
+    app.delete("/orgs/:orgId/sites/:siteId/experiences/:experienceId", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+        const { siteId, experienceId } = request.params;
+        const site = await loadSiteInOrg(db, siteId, request.membership.orgId);
+        if (!site)
+            return reply.code(404).send({ error: "site_not_found" });
+        const row = await loadExperience(db, site.id, experienceId);
+        if (!row)
+            return reply.code(404).send({ error: "experience_not_found" });
+        await db.delete(experiences).where(eq(experiences.id, row.id));
+        return reply.code(204).send();
+    });
     app.post("/orgs/:orgId/sites/:siteId/experiences/:experienceId/publish", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
         const { siteId, experienceId } = request.params;
         const site = await loadSiteInOrg(db, siteId, request.membership.orgId);

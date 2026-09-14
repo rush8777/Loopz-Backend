@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { sessionEvents, trackedUserAliases, pageDefinitions, segments as segmentsTable } from "../../db/schema.js";
+import { sessionEvents, pageDefinitions, segments as segmentsTable } from "../../db/schema.js";
 import { resolveMatchedPagePaths, evaluateSegment } from "../segments/evaluator.js";
 import type { SegmentDefinition } from "../segments/types.js";
 import { hydrateIdentities, type IdentitySummary, type IdentityKey } from "../identity/hydrate.js";
@@ -63,10 +63,6 @@ async function fetchStepTimestamps(db: Db, siteId: string, step: FunnelStep, sin
   const rows = await db
     .select({ identity: identityExpr, timestamp: sessionEvents.timestamp })
     .from(sessionEvents)
-    .leftJoin(
-      trackedUserAliases,
-      and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId))
-    )
     .where(and(...baseConditions))
     .orderBy(sessionEvents.timestamp)
     .limit(MAX_ROWS_PER_STEP);

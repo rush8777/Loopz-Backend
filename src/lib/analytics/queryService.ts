@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { funnels, pageDefinitions, segments, sessionContexts, sessionEvents, trackedUserAliases, trackedUserProperties } from "../../db/schema.js";
+import { funnels, pageDefinitions, segments, sessionContexts, sessionEvents, trackedUserProperties } from "../../db/schema.js";
 import { evaluateFunnel, getFunnelStepUsers } from "../funnels/evaluator.js";
 import type { FunnelStep } from "../funnels/types.js";
 import { hydrateIdentities } from "../identity/hydrate.js";
@@ -18,8 +18,8 @@ type Fact = { id: string; identity: string; trackedUserId: string | null; anonym
 type Context = { browserName: string | null; osName: string | null; deviceType: string | null; language: string | null; referrer: string | null };
 
 async function loadFacts(db: Db, siteId: string, since: Date, until: Date): Promise<Fact[]> {
-  const rows = await db.select({ id: sessionEvents.id, anonymousId: sessionEvents.anonymousId, trackedUserId: trackedUserAliases.trackedUserId, sessionId: sessionEvents.sessionId, type: sessionEvents.type, eventName: sessionEvents.eventName, at: sessionEvents.timestamp, pagePath: sessionEvents.pagePath })
-    .from(sessionEvents).leftJoin(trackedUserAliases, and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId)))
+  const rows = await db.select({ id: sessionEvents.id, anonymousId: sessionEvents.anonymousId, trackedUserId: sessionEvents.trackedUserId, sessionId: sessionEvents.sessionId, type: sessionEvents.type, eventName: sessionEvents.eventName, at: sessionEvents.timestamp, pagePath: sessionEvents.pagePath })
+    .from(sessionEvents)
     .where(and(eq(sessionEvents.siteId, siteId), gte(sessionEvents.timestamp, since), lte(sessionEvents.timestamp, until)));
   return rows.map((r) => ({ ...r, identity: r.trackedUserId ?? r.anonymousId })).filter((r): r is Fact => Boolean(r.identity));
 }
@@ -175,7 +175,10 @@ export async function executeDrilldown(db: Db, siteId: string, filters: Dashboar
   const since = new Date(selection.bucketStart ?? filters.since), until = new Date(selection.bucketEnd ?? filters.until);
   let facts = await loadFacts(db, siteId, since, until); const members = await segmentMembers(db, siteId, filters.segmentId); if (members) facts = facts.filter((f) => members.has(f.identity));
   if (query.kind === "retention" || query.metricId.startsWith("users.")) {
-    const ids = [...new Set(facts.filter((f) => meaningful(f, new Set(filters.excludedEventNames))).map((f) => f.identity))];
+    // Use the exact event qualification path as the metric so a Unique
+    // users card and its drilldown always describe the same identities.
+    const config: MetricConfiguration = query.kind === "metric" ? query : { schemaVersion: 1, kind: "metric", metricId: "users.unique", mode: "single", visualization: "total" };
+    const ids = [...new Set(qualifyAll(applyEventPool(facts, config, new Set(filters.excludedEventNames)), config, "identity").map((f) => f.identity))];
     const items = await hydrateIdentities(db, siteId, ids.slice(selection.offset, selection.offset + selection.limit));
     return { kind: "users", items, total: ids.length, limit: selection.limit, offset: selection.offset };
   }

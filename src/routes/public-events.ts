@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { sites, sessionEvents } from "../db/schema.js";
+import { sites, sessionEvents, trackedUserAliases } from "../db/schema.js";
 import { trackEventsBodySchema } from "../lib/patterns/validation.js";
 import type { IncomingEvent } from "../lib/patterns/event.js";
 import { resolveIdentity } from "../lib/identity/resolveIdentity.js";
@@ -55,15 +55,6 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
     // unchanged, now just carrying anonymousId + page path along with
     // it so the identity layer and profile activity feed have
     // something to resolve/display.
-    const identifyEvents = events.filter((e) => e.type === "identify");
-    const sessionStartEvents = events.filter((e) => e.type === "session_start");
-    const behavioralEvents = events.filter(
-      (
-        e
-      ): e is IncomingEvent & { anonymousId?: string; path?: string; eventId?: string; pageViewId?: string } =>
-        e.type !== "identify" && e.type !== "session_start"
-    );
-
     // Durable log first - this is what feeds clustering/feature-extraction
     // later. Independent of whether any pattern is active on the site;
     // analysis shouldn't depend on the site owner having authored a
@@ -77,14 +68,40 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
     // behavioral event. Events without an eventId (older SDK builds) are
     // never deduped against anything, per SQLite's default unique-index
     // NULL handling - same tradeoff already accepted for anonymousId.
-    if (behavioralEvents.length > 0) {
+    // Process the SDK's ordered event stream in order.  This gives events
+    // following identify() an immutable owner while still letting identify()
+    // claim earlier unresolved events in the same batch.
+    const currentIdentity = new Map<string, string | null>();
+    const ownerFor = async (anonymousId?: string) => {
+      if (!anonymousId) return null;
+      if (currentIdentity.has(anonymousId)) return currentIdentity.get(anonymousId) ?? null;
+      const [alias] = await db.select({ trackedUserId: trackedUserAliases.trackedUserId }).from(trackedUserAliases)
+        .where(and(eq(trackedUserAliases.siteId, site.id), eq(trackedUserAliases.anonymousId, anonymousId))).limit(1);
+      const owner = alias?.trackedUserId ?? null;
+      currentIdentity.set(anonymousId, owner);
+      return owner;
+    };
+
+    for (const event of events) {
+      if (event.type === "identify") {
+        if (!event.externalUserId) continue;
+        const { trackedUserId } = await resolveIdentity(db, { siteId: site.id, anonymousId: event.anonymousId, externalUserId: event.externalUserId, traits: event.traits, timestamp: event.timestamp });
+        if (event.anonymousId) currentIdentity.set(event.anonymousId, trackedUserId);
+        continue;
+      }
+      if (event.type === "session_start") {
+        if (!event.anonymousId) continue;
+        await recordSessionStart(db, { siteId: site.id, sessionId, anonymousId: event.anonymousId, timestamp: event.timestamp, browserName: event.browserName, browserVersion: event.browserVersion, osName: event.osName, osVersion: event.osVersion, deviceType: event.deviceType, language: event.language, timezone: event.timezone, screenWidth: event.screenWidth, screenHeight: event.screenHeight, referrer: event.referrer });
+        continue;
+      }
+      const e = event as IncomingEvent & { anonymousId?: string; path?: string; eventId?: string; pageViewId?: string };
       await db
         .insert(sessionEvents)
-        .values(
-          behavioralEvents.map((e) => ({
+        .values({
             siteId: site.id,
             sessionId,
             anonymousId: e.anonymousId ?? null,
+            trackedUserId: await ownerFor(e.anonymousId),
             eventId: e.eventId ?? null,
             pageViewId: e.pageViewId ?? null,
             type: e.type,
@@ -112,40 +129,8 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
             // `mode: "json"` on the column round-trips it verbatim.
             eventName: e.type === "custom" ? (e.name ?? null) : null,
             eventProperties: e.type === "custom" ? (e.properties ?? null) : null,
-          }))
-        )
+          })
         .onConflictDoNothing({ target: [sessionEvents.siteId, sessionEvents.eventId] });
-    }
-
-    for (const identifyEvent of identifyEvents) {
-      if (!identifyEvent.externalUserId) continue; // malformed - identify() with no userId, nothing to resolve
-      await resolveIdentity(db, {
-        siteId: site.id,
-        anonymousId: identifyEvent.anonymousId,
-        externalUserId: identifyEvent.externalUserId,
-        traits: identifyEvent.traits,
-        timestamp: identifyEvent.timestamp,
-      });
-    }
-
-    for (const sessionStartEvent of sessionStartEvents) {
-      if (!sessionStartEvent.anonymousId) continue; // malformed - can't attribute this session's environment to anyone
-      await recordSessionStart(db, {
-        siteId: site.id,
-        sessionId,
-        anonymousId: sessionStartEvent.anonymousId,
-        timestamp: sessionStartEvent.timestamp,
-        browserName: sessionStartEvent.browserName,
-        browserVersion: sessionStartEvent.browserVersion,
-        osName: sessionStartEvent.osName,
-        osVersion: sessionStartEvent.osVersion,
-        deviceType: sessionStartEvent.deviceType,
-        language: sessionStartEvent.language,
-        timezone: sessionStartEvent.timezone,
-        screenWidth: sessionStartEvent.screenWidth,
-        screenHeight: sessionStartEvent.screenHeight,
-        referrer: sessionStartEvent.referrer,
-      });
     }
 
     // The authored Pattern matcher is retired. Keep the response shape for

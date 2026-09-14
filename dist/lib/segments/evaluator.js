@@ -1,10 +1,11 @@
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
-import { sessionEvents, trackedUserAliases, trackedUsers, trackedUserProperties, pageDefinitions } from "../../db/schema.js";
+import { and, eq, gte, inArray } from "drizzle-orm";
+import { sessionEvents, trackedUsers, trackedUserProperties, pageDefinitions } from "../../db/schema.js";
 import { matchesRules } from "../pages/pageMatcher.js";
 import { loadPagePathStats } from "../pages/pageAggregation.js";
 import { hydrateIdentities } from "../identity/hydrate.js";
 import { isGroup } from "./types.js";
-const identityExpr = sql `coalesce(${trackedUserAliases.trackedUserId}, ${sessionEvents.anonymousId})`;
+import { canonicalIdentityExpr } from "../analytics/identity.js";
+const identityExpr = canonicalIdentityExpr;
 function windowSince(window) {
     if (!window)
         return undefined;
@@ -34,7 +35,6 @@ async function getKnownIdentities(db, siteId) {
         db
             .selectDistinct({ identity: identityExpr })
             .from(sessionEvents)
-            .leftJoin(trackedUserAliases, and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId)))
             .where(eq(sessionEvents.siteId, siteId)),
     ]);
     const identities = new Set(trackedRows.map((r) => r.id));
@@ -53,7 +53,6 @@ async function resolveEventCondition(db, siteId, c, universe) {
     const rows = await db
         .selectDistinct({ identity: identityExpr })
         .from(sessionEvents)
-        .leftJoin(trackedUserAliases, and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId)))
         .where(and(...conditions));
     const performed = new Set(rows.map((r) => r.identity).filter((x) => !!x));
     if (c.operator === "performed")
@@ -146,7 +145,6 @@ async function resolvePageCondition(db, siteId, c, universe) {
     const rows = await db
         .selectDistinct({ identity: identityExpr })
         .from(sessionEvents)
-        .leftJoin(trackedUserAliases, and(eq(trackedUserAliases.siteId, sessionEvents.siteId), eq(trackedUserAliases.anonymousId, sessionEvents.anonymousId)))
         .where(and(...conditions));
     const visited = new Set(rows.map((r) => r.identity).filter((x) => !!x));
     if (c.operator === "visited")
