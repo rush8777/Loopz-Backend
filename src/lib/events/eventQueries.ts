@@ -2,6 +2,7 @@ import { and, eq, gte, lte, like, desc, asc, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { Db } from "../../db/client.js";
 import { sessionEvents, trackedUserAliases, trackedUsers } from "../../db/schema.js";
+import { canonicalIdentityExpr } from "../analytics/identity.js";
 
 /**
  * The read/aggregation core of the Event Explorer (developer-defined
@@ -48,7 +49,7 @@ function dateRangeConditions(range: DateRange) {
 }
 
 /** Identity-resolved "who" behind a session_events row - a tracked user if an alias claims this anonymousId, else the bare anonymousId. See the module doc comment above. */
-const identityExpr = sql<string>`coalesce(${trackedUserAliases.trackedUserId}, ${sessionEvents.anonymousId})`;
+const identityExpr = canonicalIdentityExpr;
 
 /** Whether this event name has ever occurred for this site, regardless of any date range - the existence check the :eventName sub-routes 404 on. Deliberately unfiltered by date: a real event with zero occurrences in the *selected* range should render an empty state, not a 404 - see routes/events.ts. */
 export async function eventExistsForSite(db: Db, siteId: string, eventName: string): Promise<boolean> {

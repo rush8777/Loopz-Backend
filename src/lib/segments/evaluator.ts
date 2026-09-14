@@ -6,6 +6,7 @@ import { loadPagePathStats } from "../pages/pageAggregation.js";
 import type { PageRule } from "../pages/types.js";
 import { hydrateIdentities, type IdentitySummary } from "../identity/hydrate.js";
 import { isGroup } from "./types.js";
+import { canonicalIdentityExpr } from "../analytics/identity.js";
 import type {
   EventCondition,
   PageCondition,
@@ -47,7 +48,7 @@ import type {
 /** Either a tracked user's id, or a bare (never-identified) anonymousId. Same shape identityExpr produces in eventQueries.ts. */
 export type IdentityKey = string;
 
-const identityExpr = sql<string>`coalesce(${trackedUserAliases.trackedUserId}, ${sessionEvents.anonymousId})`;
+const identityExpr = canonicalIdentityExpr;
 
 function windowSince(window?: SegmentTimeWindow): Date | undefined {
   if (!window) return undefined;

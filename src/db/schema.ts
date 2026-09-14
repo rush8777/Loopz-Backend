@@ -854,6 +854,38 @@ export const funnels = sqliteTable(
   (table) => [index("funnels_site_name_idx").on(table.siteId, table.name)]
 );
 
+/** Saved dashboard definitions. Runtime date/audience filters deliberately
+ * remain request state; only reusable card semantics and layout are stored. */
+export const dashboards = sqliteTable(
+  "dashboards",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("dsh")),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    createdBy: text("created_by").notNull().references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
+  },
+  (table) => [index("dashboards_site_updated_idx").on(table.siteId, table.updatedAt)]
+);
+
+export const dashboardCards = sqliteTable(
+  "dashboard_cards",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("dsc")),
+    dashboardId: text("dashboard_id").notNull().references(() => dashboards.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    cardType: text("card_type").notNull(),
+    position: integer("position").notNull(),
+    width: text("width").notNull().default("medium"),
+    configuration: text("configuration", { mode: "json" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
+  },
+  (table) => [index("dashboard_cards_dashboard_position_idx").on(table.dashboardId, table.position)]
+);
+
 /** Versioned, isolated visual-experience domain. Definitions are JSON because
  * their presentation vocabulary evolves, but every read/write crosses the
  * Zod boundary in lib/experiences/validation.ts. */

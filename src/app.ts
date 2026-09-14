@@ -23,6 +23,8 @@ import { registerPublicElementsRoutes } from "./routes/public-elements.js";
 import { registerHeatmapRoutes } from "./routes/heatmaps.js";
 import { registerExperienceRoutes } from "./routes/experiences.js";
 import { registerPublicExperienceRoutes } from "./routes/public-experiences.js";
+import { registerDashboardRoutes } from "./routes/dashboards.js";
+import { registerAnalyticsRoutes } from "./routes/analytics.js";
 
 export async function buildApp(db: Db) {
   const app = Fastify({ logger: false });
@@ -56,6 +58,8 @@ export async function buildApp(db: Db) {
   registerFunnelRoutes(app, db);
   registerHeatmapRoutes(app, db);
   registerExperienceRoutes(app, db);
+  registerDashboardRoutes(app, db);
+  registerAnalyticsRoutes(app, db);
 
   await app.register(async (publicScope) => {
     await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });

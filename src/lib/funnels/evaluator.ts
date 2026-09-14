@@ -6,6 +6,7 @@ import type { SegmentDefinition } from "../segments/types.js";
 import { hydrateIdentities, type IdentitySummary, type IdentityKey } from "../identity/hydrate.js";
 import type { FunnelStep } from "./types.js";
 import { funnelStepLabel } from "./types.js";
+import { canonicalIdentityExpr } from "../analytics/identity.js";
 
 /**
  * The Funnel Evaluation Engine (task brief section 20) -
@@ -35,7 +36,7 @@ export interface DateRangeRequired {
   until: Date;
 }
 
-const identityExpr = sql<string>`coalesce(${trackedUserAliases.trackedUserId}, ${sessionEvents.anonymousId})`;
+const identityExpr = canonicalIdentityExpr;
 
 // Defensive cap on rows pulled per step for in-memory sequence matching -
 // keeps a single funnel evaluation bounded even for a very high-volume
