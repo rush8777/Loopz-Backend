@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { cuid, dashboardCards, dashboards, funnels, segments, sites } from "../db/schema.js";
+import { cuid, dashboardCards, dashboards, experiences, funnels, segments, sites } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { cardConfigurationSchema, dashboardCreateSchema, dashboardUpdateSchema } from "../lib/analytics/validation.js";
@@ -11,11 +11,13 @@ async function dashboardInSite(db: Db, dashboardId: string, siteId: string) { co
 const iso = (d: Date) => d.toISOString();
 function cardJson(row: typeof dashboardCards.$inferSelect) { const configuration = cardConfigurationSchema.parse(row.configuration); return { ...row, configuration, createdAt: iso(row.createdAt), updatedAt: iso(row.updatedAt) }; }
 function dashboardJson(row: typeof dashboards.$inferSelect) { return { ...row, createdAt: iso(row.createdAt), updatedAt: iso(row.updatedAt) }; }
-async function invalidReference(db: Db, siteId: string, cards: { configuration: { kind: string; funnelId?: string; cohort?: { type: string; segmentIds?: string[] }; breakdown?: { dimension: string; segmentIds?: string[] } } }[]) {
+async function invalidReference(db: Db, siteId: string, cards: { configuration: { kind: string; funnelId?: string; experienceId?: string; cohort?: { type: string; segmentIds?: string[] }; breakdown?: { dimension: string; segmentIds?: string[] } } }[]) {
   const funnelIds = cards.flatMap((card) => card.configuration.kind === "funnel" && card.configuration.funnelId ? [card.configuration.funnelId] : []);
   const segmentIds = cards.flatMap((card) => card.configuration.kind === "retention" && card.configuration.cohort?.type === "segments" ? card.configuration.cohort.segmentIds ?? [] : card.configuration.kind === "metric" && card.configuration.breakdown?.dimension === "segment" ? card.configuration.breakdown.segmentIds ?? [] : []);
+  const experienceIds = cards.flatMap(card => card.configuration.kind === "experience" && card.configuration.experienceId ? [card.configuration.experienceId] : []);
   if (funnelIds.length) { const found = await db.select({ id: funnels.id }).from(funnels).where(and(eq(funnels.siteId, siteId), inArray(funnels.id, funnelIds))); if (new Set(found.map((r) => r.id)).size !== new Set(funnelIds).size) return "funnel_not_found"; }
   if (segmentIds.length) { const found = await db.select({ id: segments.id }).from(segments).where(and(eq(segments.siteId, siteId), inArray(segments.id, segmentIds))); if (new Set(found.map((r) => r.id)).size !== new Set(segmentIds).size) return "segment_not_found"; }
+  if (experienceIds.length) { const found = await db.select({ id: experiences.id }).from(experiences).where(and(eq(experiences.siteId, siteId), inArray(experiences.id, experienceIds))); if (new Set(found.map(row => row.id)).size !== new Set(experienceIds).size) return "experience_not_found"; }
   return null;
 }
 

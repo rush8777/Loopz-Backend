@@ -950,6 +950,34 @@ export const experienceImpressions = sqliteTable(
   (table) => [index("experience_impressions_lookup_idx").on(table.siteId, table.experienceId, table.anonymousId, table.sessionId)]
 );
 
+/** Small, append-only interaction records. Experience definitions and rendered
+ * content never belong here; aggregation is performed by the backend. */
+export const experienceEvents = sqliteTable(
+  "experience_events",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("exe")),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    experienceId: text("experience_id").notNull().references(() => experiences.id, { onDelete: "cascade" }),
+    versionId: text("version_id").notNull().references(() => experienceVersions.id, { onDelete: "cascade" }),
+    impressionId: text("impression_id").references(() => experienceImpressions.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    stepId: text("step_id"),
+    stepIndex: integer("step_index"),
+    anonymousId: text("anonymous_id"),
+    trackedUserId: text("tracked_user_id").references(() => trackedUsers.id, { onDelete: "set null" }),
+    sessionId: text("session_id"),
+    pageViewId: text("page_view_id"),
+    durationMs: integer("duration_ms"),
+    action: text("action"),
+    timestamp: integer("timestamp", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("experience_events_site_time_idx").on(table.siteId, table.timestamp),
+    index("experience_events_experience_time_idx").on(table.siteId, table.experienceId, table.timestamp),
+    index("experience_events_impression_type_step_idx").on(table.impressionId, table.eventType, table.stepId),
+  ]
+);
+
 export const surveyResponses = sqliteTable(
   "survey_responses",
   {

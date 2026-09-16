@@ -169,6 +169,13 @@
       "when": 1788900000000,
       "tag": "0023_immutable_event_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1789000000000,
+      "tag": "0024_experience_analytics",
+      "breakpoints": true
     }
   ]
 }

@@ -272,9 +272,17 @@ export const impressionSchema = z.object({
   trackedUserId: z.string().min(1).max(200).optional(),
   sessionId: z.string().min(1).max(200).optional(),
   pageViewId: z.string().min(1).max(200).optional(),
-  event: z.enum(["shown", "dismissed", "completed", "action"]),
+  event: z.enum(["shown", "dismissed", "completed", "action", "interaction"]),
+  eventType: z.enum(["experience_shown", "guide_step_shown", "guide_step_completed", "guide_completed", "guide_dismissed", "survey_started", "survey_step_completed", "survey_submitted", "survey_abandoned", "widget_interacted", "widget_dismissed"]).optional(),
   impressionId: z.string().min(1).max(64).optional(),
+  stepId: z.string().min(1).max(64).optional(),
+  stepIndex: z.number().int().min(0).max(1000).optional(),
+  durationMs: z.number().int().min(0).max(86_400_000).optional(),
   action: z.string().min(1).max(80).optional(),
+  timestamp: z.number().int().positive().default(() => Date.now()),
+}).superRefine((value, ctx) => {
+  if (value.event !== "shown" && !value.impressionId) ctx.addIssue({ code: "custom", path: ["impressionId"], message: "impression ID is required" });
+  if (value.eventType?.startsWith("guide_step_") && (!value.stepId || value.stepIndex === undefined)) ctx.addIssue({ code: "custom", path: ["stepId"], message: "Guide step events require a step ID and index" });
 });
 
 const surveyAnswerValueSchema = z.union([z.string().max(10_000), z.array(z.string().max(64)).max(20), z.number().int()]);

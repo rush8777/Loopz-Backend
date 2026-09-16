@@ -11,6 +11,7 @@ import type { SegmentDefinition } from "../segments/types.js";
 import { METRIC_CATALOG } from "./catalog.js";
 import { createBuckets, floorUtc } from "./buckets.js";
 import { computeRetention } from "./retention.js";
+import { experienceMetric } from "../experiences/analytics.js";
 import type { CardConfiguration, DashboardFilters, MetricConfiguration } from "./validation.js";
 
 export class AnalyticsError extends Error { constructor(public code: string, message: string, public status = 400) { super(message); } }
@@ -150,12 +151,13 @@ async function executeBreakdown(db: Db, siteId: string, facts: Fact[], config: M
 
 function metadata(filters: DashboardFilters, query: CardConfiguration, result: { kind: string }) {
   const metric = query.kind === "metric" ? METRIC_CATALOG.find((m) => m.id === query.metricId) : undefined;
-  return { metricId: query.kind === "metric" ? query.metricId : query.kind === "funnel" ? `funnel:${query.funnelId}` : "retention", definition: metric?.definition ?? (query.kind === "funnel" ? "Ordered conversion through the saved Funnel." : "Percentage of each cohort returning in a specific later period."), resolvedDateRange: { since: filters.since, until: filters.until }, granularity: filters.granularity, appliedFilters: filters, breakdown: query.kind === "metric" ? query.breakdown ?? null : null, dataFreshness: new Date().toISOString(), resultShape: result.kind, timezone: "UTC", drilldown: query.kind === "metric" ? metric?.drilldown ?? [] : query.kind === "funnel" ? ["users"] : ["users"] };
+  return { metricId: query.kind === "metric" ? query.metricId : query.kind === "funnel" ? `funnel:${query.funnelId}` : query.kind === "experience" ? `experience:${query.metric}` : "retention", definition: metric?.definition ?? (query.kind === "funnel" ? "Ordered conversion through the saved Funnel." : query.kind === "experience" ? "Aggregated Experience interaction data." : "Percentage of each cohort returning in a specific later period."), resolvedDateRange: { since: filters.since, until: filters.until }, granularity: filters.granularity, appliedFilters: filters, breakdown: query.kind === "metric" ? query.breakdown ?? null : null, dataFreshness: new Date().toISOString(), resultShape: result.kind, timezone: "UTC", drilldown: query.kind === "experience" ? [] : query.kind === "metric" ? metric?.drilldown ?? [] : ["users"] };
 }
 
 export async function executeAnalyticsQuery(db: Db, siteId: string, filters: DashboardFilters, query: CardConfiguration) {
   let result;
   if (query.kind === "metric") result = await executeMetric(db, siteId, filters, query);
+  else if (query.kind === "experience") { result = await experienceMetric(db, siteId, query.experienceId, query.metric, { since: new Date(filters.since), until: new Date(filters.until) }); if (!result) throw new AnalyticsError("experience_not_found", "The Experience does not belong to this site.", 404); }
   else if (query.kind === "retention") result = await computeRetention(db, siteId, filters, query);
   else {
     const [row] = await db.select().from(funnels).where(and(eq(funnels.id, query.funnelId), eq(funnels.siteId, siteId))).limit(1);
@@ -166,6 +168,7 @@ export async function executeAnalyticsQuery(db: Db, siteId: string, filters: Das
 }
 
 export async function executeDrilldown(db: Db, siteId: string, filters: DashboardFilters, query: CardConfiguration, selection: { bucketStart?: string; bucketEnd?: string; stepIndex?: number; offset: number; limit: number }) {
+  if (query.kind === "experience") throw new AnalyticsError("drilldown_not_supported", "Experience cards do not expose raw event drilldown.");
   if (query.kind === "funnel") {
     const [row] = await db.select().from(funnels).where(and(eq(funnels.id, query.funnelId), eq(funnels.siteId, siteId))).limit(1);
     if (!row) throw new AnalyticsError("funnel_not_found", "The saved Funnel does not belong to this site.");

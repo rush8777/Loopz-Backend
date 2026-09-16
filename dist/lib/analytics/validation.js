@@ -80,10 +80,15 @@ export const retentionConfigurationSchema = z.object({
     ]),
     visualization: z.enum(["grid", "trend"]),
 });
-export const cardConfigurationSchema = z.discriminatedUnion("kind", [metricConfigurationSchema, funnelConfigurationSchema, retentionConfigurationSchema]);
+export const experienceConfigurationSchema = z.object({
+    schemaVersion: z.literal(1), kind: z.literal("experience"), experienceType: z.enum(["guide", "survey", "widget"]), experienceId: z.string().min(1).max(64),
+    metric: z.enum(["users_seen", "completions", "completion_rate", "dismissals", "step_reach", "step_drop_off", "responses", "response_rate", "abandonment_rate", "impressions", "interactions", "interaction_rate"]),
+    visualization: z.enum(["total", "bars", "horizontal_bars", "table"]),
+});
+export const cardConfigurationSchema = z.discriminatedUnion("kind", [metricConfigurationSchema, funnelConfigurationSchema, retentionConfigurationSchema, experienceConfigurationSchema]);
 export const dashboardCardInputSchema = z.object({
     id: z.string().min(1).max(64).optional(), title: z.string().trim().min(1).max(120),
-    cardType: z.enum(["metric", "funnel", "retention"]), width: z.enum(["small", "medium", "full"]), configuration: cardConfigurationSchema,
+    cardType: z.enum(["metric", "funnel", "retention", "experience"]), width: z.enum(["small", "medium", "full"]), configuration: cardConfigurationSchema,
 }).superRefine((value, ctx) => { if (value.cardType !== value.configuration.kind)
     ctx.addIssue({ code: "custom", message: "cardType must match configuration kind", path: ["configuration", "kind"] }); });
 export const dashboardCreateSchema = z.object({ name: z.string().trim().min(1).max(120), description: z.string().trim().max(1000).nullable().optional(), cards: z.array(dashboardCardInputSchema).max(ANALYTICS_LIMITS.maxCards).default([]) });

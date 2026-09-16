@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq } from "drizzle-orm";
+import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { experienceEditorSessions, experiences, experienceVersions, pageDefinitions, segments, sites } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
@@ -8,6 +9,7 @@ import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
 import { guideStepRequiresTarget, type ExperienceDefinition, type ExperienceKind, type ExperienceTargeting, type WidgetType } from "../lib/experiences/types.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
+import { getExperienceAnalytics, listExperienceAnalytics, listSurveyResponses } from "../lib/experiences/analytics.js";
 import type { PageRule } from "../lib/pages/types.js";
 
 const SUPPORTED_WIDGET_TYPES: WidgetType[] = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
@@ -158,6 +160,26 @@ function validatePublishRequirements(kind: ExperienceKind, widgetType: WidgetTyp
 }
 
 export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
+  const analyticsRangeSchema = z.object({ since: z.coerce.date().optional(), until: z.coerce.date().optional(), limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0) });
+  const range = (value: { since?: Date; until?: Date }) => { const until = value.until ?? new Date(); return { since: value.since ?? new Date(until.getTime() - 30 * 86_400_000), until }; };
+
+  app.get("/orgs/:orgId/sites/:siteId/experience-analytics", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
+    const { siteId } = request.params as { siteId: string }; const site = await loadSiteInOrg(db, siteId, request.membership!.orgId); if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const parsed = analyticsRangeSchema.safeParse(request.query); if (!parsed.success) return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
+    return listExperienceAnalytics(db, site.id, range(parsed.data));
+  });
+
+  app.get("/orgs/:orgId/sites/:siteId/experiences/:experienceId/analytics", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
+    const { siteId, experienceId } = request.params as { siteId: string; experienceId: string }; const site = await loadSiteInOrg(db, siteId, request.membership!.orgId); if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const parsed = analyticsRangeSchema.safeParse(request.query); if (!parsed.success) return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
+    const result = await getExperienceAnalytics(db, site.id, experienceId, range(parsed.data)); return result ? reply.send(result) : reply.code(404).send({ error: "experience_not_found" });
+  });
+
+  app.get("/orgs/:orgId/sites/:siteId/experiences/:experienceId/responses", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
+    const { siteId, experienceId } = request.params as { siteId: string; experienceId: string }; const site = await loadSiteInOrg(db, siteId, request.membership!.orgId); if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const parsed = analyticsRangeSchema.safeParse(request.query); if (!parsed.success) return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
+    return listSurveyResponses(db, site.id, experienceId, range(parsed.data), parsed.data.limit, parsed.data.offset);
+  });
   app.get("/orgs/:orgId/sites/:siteId/experiences", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
     const { siteId } = request.params as { siteId: string };
     const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);

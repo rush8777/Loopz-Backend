@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { experienceEditorSessions, experienceImpressions, experiences, experienceVersions, segments, sites, surveyResponses, trackedUsers } from "../db/schema.js";
+import { experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, surveyResponses, trackedUsers } from "../db/schema.js";
 import { env } from "../config.js";
 import { signEditorAccessToken, verifyEditorAccessToken } from "../lib/auth.js";
 import { createSurveyResponseSchema, definitionSchemaFor, impressionSchema, manifestQuerySchema, updateDraftSchema, updateSurveyResponseSchema } from "../lib/experiences/validation.js";
@@ -181,6 +181,7 @@ export function registerPublicExperienceRoutes(app, db) {
         if (!experience || experience.siteId !== site.id || !version || version.experienceId !== experience.id || experience.publishedVersionId !== version.id) {
             return reply.code(404).send({ error: "experience_not_found" });
         }
+        const eventType = parsed.data.eventType ?? (parsed.data.event === "shown" ? "experience_shown" : parsed.data.event === "dismissed" ? (experience.kind === "guide" ? "guide_dismissed" : experience.widgetType === "survey" ? "survey_abandoned" : "widget_dismissed") : parsed.data.event === "completed" ? (experience.kind === "guide" ? "guide_completed" : experience.widgetType === "survey" ? "survey_submitted" : "widget_interacted") : "widget_interacted");
         if (parsed.data.event === "shown") {
             const trackedUserId = await resolveTrackedUserId(db, site.id, parsed.data.trackedUserId);
             const [impression] = await db.insert(experienceImpressions).values({
@@ -188,6 +189,12 @@ export function registerPublicExperienceRoutes(app, db) {
                 anonymousId: parsed.data.anonymousId ?? null, trackedUserId, sessionId: parsed.data.sessionId ?? null,
                 pageViewId: parsed.data.pageViewId ?? null, shownAt: new Date(),
             }).returning();
+            await db.insert(experienceEvents).values({
+                siteId: site.id, experienceId: experience.id, versionId: version.id, impressionId: impression.id,
+                eventType, anonymousId: parsed.data.anonymousId ?? null, trackedUserId,
+                sessionId: parsed.data.sessionId ?? null, pageViewId: parsed.data.pageViewId ?? null,
+                timestamp: new Date(parsed.data.timestamp),
+            });
             return reply.code(201).send({ impressionId: impression.id });
         }
         if (!parsed.data.impressionId)
@@ -196,11 +203,24 @@ export function registerPublicExperienceRoutes(app, db) {
         if (!impression || impression.siteId !== site.id || impression.experienceId !== experience.id)
             return reply.code(404).send({ error: "impression_not_found" });
         const now = new Date();
-        await db.update(experienceImpressions).set({
+        const impressionUpdate = {
             ...(parsed.data.event === "dismissed" ? { dismissedAt: now } : {}),
             ...(parsed.data.event === "completed" ? { completedAt: now } : {}),
             ...(parsed.data.event === "action" ? { metadata: { action: parsed.data.action } } : {}),
-        }).where(eq(experienceImpressions.id, impression.id));
+        };
+        if (Object.keys(impressionUpdate).length)
+            await db.update(experienceImpressions).set(impressionUpdate).where(eq(experienceImpressions.id, impression.id));
+        const duplicate = eventType === "guide_step_shown"
+            ? (await db.select({ id: experienceEvents.id }).from(experienceEvents).where(and(eq(experienceEvents.impressionId, impression.id), eq(experienceEvents.eventType, eventType), eq(experienceEvents.stepId, parsed.data.stepId))).limit(1))[0]
+            : null;
+        if (!duplicate)
+            await db.insert(experienceEvents).values({
+                siteId: site.id, experienceId: experience.id, versionId: version.id, impressionId: impression.id,
+                eventType, stepId: parsed.data.stepId ?? null, stepIndex: parsed.data.stepIndex ?? null,
+                anonymousId: parsed.data.anonymousId ?? impression.anonymousId, trackedUserId: impression.trackedUserId,
+                sessionId: parsed.data.sessionId ?? impression.sessionId, pageViewId: parsed.data.pageViewId ?? impression.pageViewId,
+                durationMs: parsed.data.durationMs ?? null, action: parsed.data.action ?? null, timestamp: new Date(parsed.data.timestamp),
+            });
         return reply.code(204).send();
     });
     app.post("/public/sites/:siteId/survey-responses", async (request, reply) => {
