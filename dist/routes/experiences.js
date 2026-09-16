@@ -4,6 +4,7 @@ import { experienceEditorSessions, experiences, experienceVersions, pageDefiniti
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
+import { guideStepRequiresTarget } from "../lib/experiences/types.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
 async function loadSiteInOrg(db, siteId, orgId) {
@@ -60,7 +61,7 @@ function targeting(pageRules) {
 function initialDefinition(kind, widgetType, pageRules) {
     const content = { heading: kind === "guide" ? "Welcome" : "A helpful message", body: "Add a concise message for your visitors." };
     if (kind === "guide") {
-        return { steps: [{ id: "step_1", content, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } }], design: DEFAULT_DESIGN, targeting: targeting(pageRules) };
+        return { steps: [{ id: "step_1", pattern: "anchored_card", content, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } }], design: DEFAULT_DESIGN, targeting: targeting(pageRules) };
     }
     const definition = {
         content,
@@ -145,7 +146,7 @@ async function validateReferences(db, siteId, definition) {
 }
 function validatePublishRequirements(kind, widgetType, definition) {
     if (kind === "guide") {
-        if (!("steps" in definition) || definition.steps.some((step) => !step.target))
+        if (!("steps" in definition) || definition.steps.some((step) => guideStepRequiresTarget(step) && !step.target))
             return "target_required";
     }
     else if ((widgetType === "anchored_card" || widgetType === "hotspot") && (!("content" in definition) || !definition.target)) {

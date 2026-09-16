@@ -89,12 +89,18 @@ export interface ExperienceTargeting {
 
 export interface GuideStep {
   id: string;
+  pattern?: GuideStepPattern;
   content: ExperienceContent;
   builder?: WidgetBuilderState;
+  size?: ExperienceSize;
   advance?: { type: "button" } | { type: "element_click" } | { type: "element_hover"; durationMs?: number } | { type: "custom_event"; eventName: string } | { type: "route"; pageRules: PageRule[] };
   target?: ExperienceTarget;
   behavior: Pick<ExperienceBehavior, "placement" | "alignment" | "offset" | "dismissible">;
 }
+
+export type GuideStepPattern = "anchored_card" | "modal";
+export function getGuideStepPattern(step: Pick<GuideStep, "pattern">): GuideStepPattern { return step.pattern ?? "anchored_card"; }
+export function guideStepRequiresTarget(step: Pick<GuideStep, "pattern">): boolean { return getGuideStepPattern(step) === "anchored_card"; }
 
 export interface SurveyOption { id: string; label: string }
 export type SurveyQuestion =

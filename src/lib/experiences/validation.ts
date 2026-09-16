@@ -213,8 +213,10 @@ export const surveyConfigSchema = z.object({
 
 const guideStepSchema = z.object({
   id: z.string().min(1).max(64),
+  pattern: z.enum(["anchored_card", "modal"]).optional(),
   content: contentSchema,
   builder: builderSchema.optional(),
+  size: sizeSchema.optional(),
   advance: z.discriminatedUnion("type", [
     z.object({ type: z.literal("button") }).strict(),
     z.object({ type: z.literal("element_click") }).strict(),
@@ -224,6 +226,8 @@ const guideStepSchema = z.object({
   ]).optional(),
   target: targetSchema.optional(),
   behavior: behaviorSchema.pick({ placement: true, alignment: true, offset: true, dismissible: true }),
+}).superRefine((step, ctx) => {
+  if (step.pattern === "modal" && (step.advance?.type === "element_click" || step.advance?.type === "element_hover")) ctx.addIssue({ code: "custom", path: ["advance"], message: "modal guide steps cannot advance from a DOM target" });
 });
 
 export const guideDefinitionSchema = z.object({

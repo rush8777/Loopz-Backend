@@ -79,8 +79,11 @@ describe("visual experiences", () => {
     expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.steps[0]).toMatchObject({ builder: { html: expect.stringContaining("First builder") }, advance: { type: "element_hover", durationMs: 500 }, target: { targetContext: { pagePath: "/dashboard" } } });
     definition.steps[0].builder.css = "body{color:red}"; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } })).statusCode).toBe(400); definition.steps[0].builder.css = ".movecues-widget{color:#111}";
     expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).json().error).toBe("target_required");
-    definition.steps[1].target = { primarySelector: "#second", fallbackSelectors: ["[data-step=second]"], reliability: "reliable" };
-    await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
+    const invalidPattern = structuredClone(definition); invalidPattern.steps[1].pattern = "slideout";
+    expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition: invalidPattern } })).statusCode).toBe(400);
+    definition.steps[1].pattern = "modal";
+    const modalSaved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
+    expect(modalSaved.statusCode).toBe(200); expect(modalSaved.json().draftVersion.definition.steps[1]).toMatchObject({ pattern: "modal" }); expect(modalSaved.json().draftVersion.definition.steps[1]).not.toHaveProperty("target");
     expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
   });
 

@@ -6,7 +6,7 @@ import { experienceEditorSessions, experiences, experienceVersions, pageDefiniti
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
-import type { ExperienceDefinition, ExperienceKind, ExperienceTargeting, WidgetType } from "../lib/experiences/types.js";
+import { guideStepRequiresTarget, type ExperienceDefinition, type ExperienceKind, type ExperienceTargeting, type WidgetType } from "../lib/experiences/types.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import type { PageRule } from "../lib/pages/types.js";
 
@@ -68,7 +68,7 @@ function targeting(pageRules: PageRule[]): ExperienceTargeting {
 function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, pageRules: PageRule[]): ExperienceDefinition {
   const content = { heading: kind === "guide" ? "Welcome" : "A helpful message", body: "Add a concise message for your visitors." };
   if (kind === "guide") {
-    return { steps: [{ id: "step_1", content, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } }], design: DEFAULT_DESIGN, targeting: targeting(pageRules) };
+    return { steps: [{ id: "step_1", pattern: "anchored_card", content, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } }], design: DEFAULT_DESIGN, targeting: targeting(pageRules) };
   }
   const definition: ExperienceDefinition = {
     content,
@@ -150,7 +150,7 @@ async function validateReferences(db: Db, siteId: string, definition: Experience
 
 function validatePublishRequirements(kind: ExperienceKind, widgetType: WidgetType | null, definition: ExperienceDefinition): string | null {
   if (kind === "guide") {
-    if (!("steps" in definition) || definition.steps.some((step) => !step.target)) return "target_required";
+    if (!("steps" in definition) || definition.steps.some((step) => guideStepRequiresTarget(step) && !step.target)) return "target_required";
   } else if ((widgetType === "anchored_card" || widgetType === "hotspot") && (!("content" in definition) || !definition.target)) {
     return "target_required";
   }
