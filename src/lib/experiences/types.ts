@@ -53,8 +53,15 @@ export interface WidgetBuilderState {
   css: string;
 }
 
+export type ExperienceLayer =
+  | { mode: "auto" }
+  | { mode: "relative"; relation: "above" | "below"; target: ExperienceTarget }
+  | { mode: "always_on_top" }
+  | { mode: "custom"; zIndex: number };
+
 export interface ExperienceBehavior {
   dismissible: boolean;
+  layer?: ExperienceLayer;
   zIndex?: number;
   placement?: "auto" | "top" | "right" | "bottom" | "left";
   alignment?: "start" | "center" | "end";
@@ -127,6 +134,7 @@ export interface WidgetExperienceDefinition {
 export interface GuideExperienceDefinition {
   steps: GuideStep[];
   design: ExperienceDesign;
+  behavior?: { layer?: ExperienceLayer };
   targeting: ExperienceTargeting;
 }
 
