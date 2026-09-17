@@ -2,3 +2,6 @@ node_modules/
 *.log
 dev.db*
 *.env
+dev.db
+dev.db-shm
+dev.db-wal
