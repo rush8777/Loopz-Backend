@@ -63,13 +63,14 @@ function targeting(pageRules) {
 function initialDefinition(kind, widgetType, pageRules) {
     const content = { heading: kind === "guide" ? "Welcome" : "A helpful message", body: "Add a concise message for your visitors." };
     if (kind === "guide") {
-        return { steps: [{ id: "step_1", pattern: "anchored_card", content, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } }], design: DEFAULT_DESIGN, targeting: targeting(pageRules) };
+        return { steps: [{ id: "step_1", pattern: "anchored_card", content, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } }], design: DEFAULT_DESIGN, behavior: { layer: { mode: "auto" } }, targeting: targeting(pageRules) };
     }
     const definition = {
         content,
         design: { ...DEFAULT_DESIGN, size: defaultWidgetSize(widgetType) },
         behavior: {
             dismissible: true,
+            layer: { mode: "auto" },
             ...(widgetType === "toast" ? { toastPosition: "bottom-right", autoDismissMs: null } : {}),
             ...(widgetType === "cursor_follow" ? { cursorOffset: { x: 16, y: 16 } } : {}),
             ...(widgetType === "anchored_card" || widgetType === "hotspot" ? { placement: "auto", alignment: "center", offset: 8 } : {}),

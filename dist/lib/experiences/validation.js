@@ -109,8 +109,15 @@ const builderShape = {
 };
 const builderSchema = z.object({ ...builderShape, html: z.string().max(500_000).refine(value => builderHtmlIsSafe(value), "unsafe builder HTML") }).strict();
 const surveyBuilderSchema = z.object({ ...builderShape, html: z.string().max(500_000).refine(value => builderHtmlIsSafe(value, true), "unsafe survey builder HTML") }).strict();
+const layerSchema = z.discriminatedUnion("mode", [
+    z.object({ mode: z.literal("auto") }).strict(),
+    z.object({ mode: z.literal("relative"), relation: z.enum(["above", "below"]), target: targetSchema }).strict(),
+    z.object({ mode: z.literal("always_on_top") }).strict(),
+    z.object({ mode: z.literal("custom"), zIndex: z.number().int().min(1).max(2147483647) }).strict(),
+]);
 const behaviorSchema = z.object({
     dismissible: z.boolean(),
+    layer: layerSchema.optional(),
     zIndex: z.number().int().min(1).max(2147483647).optional(),
     placement: z.enum(["auto", "top", "right", "bottom", "left"]).optional(),
     alignment: z.enum(["start", "center", "end"]).optional(),
@@ -243,6 +250,7 @@ const guideStepSchema = z.object({
 export const guideDefinitionSchema = z.object({
     steps: z.array(guideStepSchema).min(1).max(20),
     design: designSchema,
+    behavior: z.object({ layer: layerSchema.optional() }).strict().optional(),
     targeting: targetingSchema,
 }).strict();
 export const createExperienceSchema = z.object({

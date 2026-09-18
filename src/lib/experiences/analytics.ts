@@ -29,7 +29,13 @@ export async function getExperienceAnalytics(db: Db, siteId: string, experienceI
   const questionResults = await aggregateQuestions(db, experience.publishedVersionId, responses);
   const trend = [...new Set(impressions.map(row => row.shownAt.toISOString().slice(0, 10)))].sort().map(date => {
     const dailyImpressions = impressions.filter(row => row.shownAt.toISOString().startsWith(date)); const dailyResponses = responses.filter(row => row.startedAt.toISOString().startsWith(date));
-    return { date, usersSeen: new Set(dailyImpressions.map(identity)).size, completed: new Set(dailyImpressions.filter(row => row.completedAt).map(identity)).size, dismissed: new Set(dailyImpressions.filter(row => row.dismissedAt).map(identity)).size, submitted: new Set(dailyResponses.filter(row => row.submittedAt).map(identity)).size };
+    const dailyEvents = events.filter(row => row.timestamp.toISOString().startsWith(date));
+    const interacted = experience.widgetType === "survey"
+      ? new Set(dailyResponses.map(identity)).size
+      : experience.kind === "guide"
+        ? uniqueEventUsers(dailyEvents, "guide_step_shown")
+        : uniqueEventUsers(dailyEvents, "widget_interacted");
+    return { date, usersSeen: new Set(dailyImpressions.map(identity)).size, interacted, completed: new Set(dailyImpressions.filter(row => row.completedAt).map(identity)).size, dismissed: new Set(dailyImpressions.filter(row => row.dismissedAt).map(identity)).size, submitted: new Set(dailyResponses.filter(row => row.submittedAt).map(identity)).size };
   });
   return {
     experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType },
