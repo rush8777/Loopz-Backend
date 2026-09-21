@@ -62,6 +62,7 @@ const rangeQuerySchema = z.object({
     since: z.coerce.date().optional(),
     until: z.coerce.date().optional(),
     segmentId: z.string().min(1).max(64).optional(),
+    conversionWindowMinutes: z.coerce.number().int().min(60).max(90 * 24 * 60).optional(),
 });
 const stepUsersQuerySchema = rangeQuerySchema.extend({
     limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -153,7 +154,7 @@ export function registerFunnelRoutes(app, db) {
         if (!parsed.success)
             return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
         const range = resolveRange(parsed.data.since, parsed.data.until);
-        const result = await evaluateFunnel(db, site.id, row.steps, range, row.conversionWindowMinutes, {
+        const result = await evaluateFunnel(db, site.id, row.steps, range, parsed.data.conversionWindowMinutes ?? row.conversionWindowMinutes, {
             segmentId: parsed.data.segmentId,
         });
         return reply.send({ ...result, since: range.since.toISOString(), until: range.until.toISOString() });
@@ -174,7 +175,7 @@ export function registerFunnelRoutes(app, db) {
         if (!parsed.success)
             return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
         const range = resolveRange(parsed.data.since, parsed.data.until);
-        const { users, total } = await getFunnelStepUsers(db, site.id, row.steps, range, row.conversionWindowMinutes, index, {
+        const { users, total } = await getFunnelStepUsers(db, site.id, row.steps, range, parsed.data.conversionWindowMinutes ?? row.conversionWindowMinutes, index, {
             segmentId: parsed.data.segmentId,
             limit: parsed.data.limit,
             offset: parsed.data.offset,
