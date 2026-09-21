@@ -1,7 +1,6 @@
 node_modules/
 *.log
-dev.db*
 *.env
-dev.db
-dev.db-shm
-dev.db-wal
+
+# Local SQLite database and runtime sidecar files
+dev.db*
