@@ -66,6 +66,7 @@ export interface ExperienceBehavior {
   placement?: "auto" | "top" | "right" | "bottom" | "left";
   alignment?: "start" | "center" | "end";
   offset?: number;
+  pointer?: { enabled?: boolean; size?: number };
   toastPosition?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
   autoDismissMs?: number | null;
   cursorOffset?: { x: number; y: number };
@@ -102,7 +103,7 @@ export interface GuideStep {
   size?: ExperienceSize;
   advance?: { type: "button" } | { type: "element_click" } | { type: "element_hover"; durationMs?: number } | { type: "custom_event"; eventName: string } | { type: "route"; pageRules: PageRule[] };
   target?: ExperienceTarget;
-  behavior: Pick<ExperienceBehavior, "placement" | "alignment" | "offset" | "dismissible">;
+  behavior: Pick<ExperienceBehavior, "placement" | "alignment" | "offset" | "pointer" | "dismissible">;
 }
 
 export type GuideStepPattern = "anchored_card" | "modal";
