@@ -261,7 +261,7 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
     const parsed = updateDraftSchema.safeParse(request.body);
     if (!parsed.success || parsed.data.definition === undefined) return reply.code(400).send({ error: "invalid_body" });
     const definition = definitionSchemaFor(experience.kind as ExperienceKind, experience.widgetType).safeParse(parsed.data.definition);
-    if (!definition.success) return reply.code(400).send({ error: "invalid_definition", details: definition.error.flatten() });
+    if (!definition.success) return reply.code(400).send({ error: "invalid_definition", details: { ...definition.error.flatten(), issues: definition.error.issues } });
     if (experience.kind === "widget" && experience.widgetType && !widgetSizeIsValid(experience.widgetType as WidgetType, definition.data)) return reply.code(400).send({ error: "invalid_widget_size" });
     const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, experience.id));
     const draft = versions.find((item) => item.state === "draft");

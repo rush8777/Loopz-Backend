@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { builderCssIsSafe, builderHtmlIsSafe } from "./builderContentContract.js";
 import { pageRuleSchema } from "../pages/validation.js";
 
 const selectorSchema = z.string().trim().min(1).max(1000);
@@ -48,54 +49,11 @@ const designSchema = z.object({
   }),
 });
 
-function builderCssIsSafe(value: string): boolean {
-  const css = value.replace(/\/\*[\s\S]*?\*\//g, "");
-  if (/@import|expression\s*\(|javascript\s*:|behavior\s*:|-moz-binding/i.test(css)) return false;
-  for (const match of css.matchAll(/([^{}]+)\{/g)) {
-    const prelude = match[1].trim();
-    if (!prelude || prelude.startsWith("@")) continue;
-    if (prelude.split(",").some(selector => !selector.trim().includes(".movecues-widget"))) return false;
-  }
-  return true;
-}
-
 function builderProjectValueIsSafe(value: unknown): boolean {
   if (typeof value === "string") return !/<\s*script\b|\son[a-z]+\s*=|javascript\s*:/i.test(value);
   if (Array.isArray(value)) return value.every(builderProjectValueIsSafe);
   if (!value || typeof value !== "object") return true;
   return Object.entries(value).every(([key, nested]) => !/^on[a-z]+$/i.test(key) && !/^script(?:-|$)/i.test(key) && builderProjectValueIsSafe(nested));
-}
-
-const surveyHtmlTags = new Set(["div", "section", "h1", "h2", "h3", "h4", "p", "span", "br", "button", "img", "hr", "label", "input", "textarea"]);
-const surveyHtmlAttributes = new Set(["class", "id", "title", "role", "aria-label", "aria-live", "aria-hidden", "aria-pressed", "alt", "src", "width", "height", "type", "placeholder", "maxlength", "data-movecues-action-id", "data-movecues-content", "data-movecues-widget-type", "data-movecues-question-id", "data-movecues-question-type", "data-movecues-question-input", "data-movecues-option-id", "data-movecues-survey-action", "data-movecues-survey-controls", "data-movecues-survey-progress", "data-movecues-survey-progress-bar", "data-movecues-survey-step-id"]);
-
-function surveyHtmlUsesAllowlist(value: string): boolean {
-  for (const tag of value.matchAll(/<\s*([a-z][\w-]*)\b([^>]*)>/gi)) {
-    if (!surveyHtmlTags.has(tag[1].toLowerCase())) return false;
-    let attributes = tag[2].trim();
-    while (attributes && attributes !== "/") {
-      const match = /^([^\s=/>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?\s*/.exec(attributes);
-      if (!match || !surveyHtmlAttributes.has(match[1].toLowerCase())) return false;
-      attributes = attributes.slice(match[0].length).trim();
-    }
-  }
-  return true;
-}
-
-function builderHtmlIsSafe(value: string, allowSurveyInputs = false): boolean {
-  const blocked = allowSurveyInputs ? "script|style|iframe|object|embed|form|select|video|audio" : "script|style|iframe|object|embed|form|input|textarea|select|video|audio";
-  if (new RegExp(`<\\s*(${blocked})\\b|\\son[a-z]+\\s*=|javascript\\s*:`, "i").test(value)) return false;
-  if (!allowSurveyInputs) return true;
-  if (!surveyHtmlUsesAllowlist(value)) return false;
-  for (const match of value.matchAll(/<\s*(input|textarea)\b([^>]*)>/gi)) {
-    const attributes = match[2];
-    if (/\son[a-z]+\s*=|javascript\s*:/i.test(attributes)) return false;
-    if (match[1].toLowerCase() === "input") {
-      const type = /\btype\s*=\s*["']?([^\s"'>]+)/i.exec(attributes)?.[1]?.toLowerCase() ?? "text";
-      if (!["text", "radio", "checkbox", "number"].includes(type)) return false;
-    }
-  }
-  return true;
 }
 
 const builderShape = {

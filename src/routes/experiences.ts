@@ -253,7 +253,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!draft) return reply.code(409).send({ error: "draft_not_found" });
     if (parsed.data.definition !== undefined) {
       const definition = definitionSchemaFor(row.kind as ExperienceKind, row.widgetType).safeParse(parsed.data.definition);
-      if (!definition.success) return reply.code(400).send({ error: "invalid_definition", details: definition.error.flatten() });
+      if (!definition.success) return reply.code(400).send({ error: "invalid_definition", details: { ...definition.error.flatten(), issues: definition.error.issues } });
       if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType as WidgetType, definition.data)) return reply.code(400).send({ error: "invalid_widget_size" });
       const referenceError = await validateReferences(db, site.id, definition.data);
       if (referenceError) return reply.code(400).send({ error: referenceError });
@@ -283,7 +283,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const draft = versions.find((version) => version.state === "draft");
     if (!draft) return reply.code(409).send({ error: "draft_not_found" });
     const checked = definitionSchemaFor(row.kind as ExperienceKind, row.widgetType).safeParse(draft.definition);
-    if (!checked.success) return reply.code(400).send({ error: "invalid_definition", details: checked.error.flatten() });
+    if (!checked.success) return reply.code(400).send({ error: "invalid_definition", details: { ...checked.error.flatten(), issues: checked.error.issues } });
     if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType as WidgetType, checked.data)) return reply.code(400).send({ error: "invalid_widget_size" });
     const requirementError = validatePublishRequirements(row.kind as ExperienceKind, row.widgetType as WidgetType | null, checked.data);
     if (requirementError) return reply.code(400).send({ error: requirementError });

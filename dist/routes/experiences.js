@@ -275,7 +275,7 @@ export function registerExperienceRoutes(app, db) {
         if (parsed.data.definition !== undefined) {
             const definition = definitionSchemaFor(row.kind, row.widgetType).safeParse(parsed.data.definition);
             if (!definition.success)
-                return reply.code(400).send({ error: "invalid_definition", details: definition.error.flatten() });
+                return reply.code(400).send({ error: "invalid_definition", details: { ...definition.error.flatten(), issues: definition.error.issues } });
             if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType, definition.data))
                 return reply.code(400).send({ error: "invalid_widget_size" });
             const referenceError = await validateReferences(db, site.id, definition.data);
@@ -311,7 +311,7 @@ export function registerExperienceRoutes(app, db) {
             return reply.code(409).send({ error: "draft_not_found" });
         const checked = definitionSchemaFor(row.kind, row.widgetType).safeParse(draft.definition);
         if (!checked.success)
-            return reply.code(400).send({ error: "invalid_definition", details: checked.error.flatten() });
+            return reply.code(400).send({ error: "invalid_definition", details: { ...checked.error.flatten(), issues: checked.error.issues } });
         if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType, checked.data))
             return reply.code(400).send({ error: "invalid_widget_size" });
         const requirementError = validatePublishRequirements(row.kind, row.widgetType, checked.data);
