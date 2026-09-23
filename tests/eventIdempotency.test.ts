@@ -138,7 +138,7 @@ describe("public event ingestion - pageViewId persistence", () => {
   });
   afterEach(() => ctx.cleanup());
 
-  it("persists the SDK-sent pageViewId on every behavioral event type, unmodified", async () => {
+  it("persists pageViewId on allowed event types while dropping legacy hover/cursor rows", async () => {
     const { site } = await setupSite(ctx.app);
     const batch = {
       sessionId: "sess_pv_types",
@@ -159,9 +159,9 @@ describe("public event ingestion - pageViewId persistence", () => {
       .where(and(eq(sessionEvents.siteId, site.id), eq(sessionEvents.sessionId, "sess_pv_types")))
       .orderBy(asc(sessionEvents.timestamp));
 
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(3);
     expect(rows.every((r) => r.pageViewId === "pv_a")).toBe(true);
-    expect(rows.map((r) => r.type)).toEqual(["page_view", "click", "hover", "scroll", "cursor"]);
+    expect(rows.map((r) => r.type)).toEqual(["page_view", "click", "scroll"]);
   });
 
   it("associates each event with the pageViewId active when it was captured, per event - not the session's latest", async () => {

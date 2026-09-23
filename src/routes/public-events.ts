@@ -6,6 +6,7 @@ import { trackEventsBodySchema } from "../lib/patterns/validation.js";
 import type { IncomingEvent } from "../lib/patterns/event.js";
 import { resolveIdentity } from "../lib/identity/resolveIdentity.js";
 import { recordSessionStart } from "../lib/identity/environmentContext.js";
+import { shouldPersistSessionEvent } from "../lib/mvpPolicy.js";
 
 /**
  * Public, unauthenticated (same trust model as /public/config - see the
@@ -94,6 +95,9 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
         await recordSessionStart(db, { siteId: site.id, sessionId, anonymousId: event.anonymousId, timestamp: event.timestamp, browserName: event.browserName, browserVersion: event.browserVersion, osName: event.osName, osVersion: event.osVersion, deviceType: event.deviceType, language: event.language, timezone: event.timezone, screenWidth: event.screenWidth, screenHeight: event.screenHeight, referrer: event.referrer });
         continue;
       }
+      // Keep legacy cursor/hover values in validation so a mixed batch stays
+      // valid, then discard only the high-volume rows under the MVP1 policy.
+      if (!shouldPersistSessionEvent(event.type)) continue;
       const e = event as IncomingEvent & { anonymousId?: string; path?: string; eventId?: string; pageViewId?: string };
       await db
         .insert(sessionEvents)

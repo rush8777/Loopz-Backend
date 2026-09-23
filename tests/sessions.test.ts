@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTestApp, signup } from "./helpers.js";
+import { sessionReplayEvents } from "../src/db/schema.js";
 
 async function setupSite(app: Awaited<ReturnType<typeof createTestApp>>["app"]) {
   const owner = await signup(app);
@@ -171,22 +172,13 @@ describe("rrweb replay ingestion + retrieval", () => {
   });
   afterEach(() => ctx.cleanup());
 
-  it("stores rrweb events and serves the FullSnapshot for heatmap rendering", async () => {
+  it("continues serving historical rrweb data without accepting new ingestion", async () => {
     const { owner, site } = await setupSite(ctx.app);
-
-    const ingest = await ctx.app.inject({
-      method: "POST",
-      url: `/public/sites/${site.siteId}/replay`,
-      payload: {
-        sessionId: "sess_replay_1",
-        events: [
-          { type: 4, timestamp: 0, data: { href: "https://example.com" } }, // Meta
-          { type: 2, timestamp: 10, data: { node: { tagName: "html" } } }, // FullSnapshot
-          { type: 3, timestamp: 500, data: { source: 0 } }, // IncrementalSnapshot
-        ],
-      },
-    });
-    expect(ingest.statusCode).toBe(204);
+    await ctx.db.insert(sessionReplayEvents).values([
+      { siteId: site.id, sessionId: "sess_replay_1", seq: 0, rrwebType: 4, timestamp: new Date(0), data: { href: "https://example.com" } },
+      { siteId: site.id, sessionId: "sess_replay_1", seq: 1, rrwebType: 2, timestamp: new Date(10), data: { node: { tagName: "html" } } },
+      { siteId: site.id, sessionId: "sess_replay_1", seq: 2, rrwebType: 3, timestamp: new Date(500), data: { source: 0 } },
+    ]);
 
     const snapshot = await ctx.app.inject({
       method: "GET",
@@ -205,7 +197,7 @@ describe("rrweb replay ingestion + retrieval", () => {
     expect(replay.json().events.map((e: { type: number }) => e.type)).toEqual([4, 2, 3]);
   });
 
-  it("session list reflects hasReplay correctly once replay data exists", async () => {
+  it("session list does not claim replay when MVP1 ingestion drops it", async () => {
     const { owner, site } = await setupSite(ctx.app);
     await ctx.app.inject({
       method: "POST",
@@ -223,7 +215,7 @@ describe("rrweb replay ingestion + retrieval", () => {
       url: `/orgs/${owner.org.id}/sites/${site.id}/sessions`,
       headers: { authorization: `Bearer ${owner.accessToken}` },
     });
-    expect(list.json().sessions[0].hasReplay).toBe(true);
+    expect(list.json().sessions[0].hasReplay).toBe(false);
   });
 
   it("404s for a snapshot request when no replay data was ever sent", async () => {

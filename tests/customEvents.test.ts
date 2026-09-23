@@ -170,7 +170,7 @@ describe("custom event persistence and retrieval", () => {
     expect(event.durationMs).toBeNull();
   });
 
-  it("existing event types (page_view, click, hover, scroll, cursor) continue to persist and serialize exactly as before", async () => {
+  it("normal event types persist while legacy hover/cursor values are accepted and dropped", async () => {
     const { owner, site } = await setupSite(ctx.app);
     await ctx.app.inject({
       method: "POST",
@@ -194,8 +194,8 @@ describe("custom event persistence and retrieval", () => {
     });
     expect(detail.statusCode).toBe(200);
     const events = detail.json().events;
-    expect(events).toHaveLength(5);
-    expect(events.map((e: { type: string }) => e.type)).toEqual(["page_view", "click", "hover", "scroll", "cursor"]);
+    expect(events).toHaveLength(3);
+    expect(events.map((e: { type: string }) => e.type)).toEqual(["page_view", "click", "scroll"]);
     expect(events[0].pagePath).toBe("/pricing");
     expect(events[0].name).toBeNull();
     expect(events[0].properties).toBeNull();

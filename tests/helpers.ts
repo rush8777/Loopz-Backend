@@ -13,6 +13,11 @@ export function createTestDb(): { db: Db; cleanup: () => void } {
   return {
     db,
     cleanup: () => {
+      // better-sqlite3 keeps the file locked on Windows until the connection
+      // closes. Make cleanup self-contained for suites that do not explicitly
+      // close the Drizzle client before removing their temporary database.
+      const client = (db as unknown as { $client: { open: boolean; close(): void } }).$client;
+      if (client.open) client.close();
       for (const suffix of ["", "-wal", "-shm"]) {
         if (fs.existsSync(file + suffix)) fs.unlinkSync(file + suffix);
       }

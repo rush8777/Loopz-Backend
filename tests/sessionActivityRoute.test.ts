@@ -43,7 +43,7 @@ describe("session activity endpoint", () => {
     expect(activity.statusCode).toBe(200);
     const body = activity.json();
     expect(body.counts).toEqual({ pageVisits: 1, clicks: 1, customEvents: 1 });
-    expect(body.coverage).toMatchObject({ complete: true, cursorSampleCount: 100 });
+    expect(body.coverage).toMatchObject({ complete: true, cursorSampleCount: 0 });
     expect(body.pages[0]).toMatchObject({ pageViewId: "pv_1", path: "/pricing", deepestScrollPercent: 78 });
     expect(body.pages[0].episodes).toEqual([
       expect.objectContaining({
@@ -57,23 +57,21 @@ describe("session activity endpoint", () => {
     expect(body.pages[0].episodes[0].items).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "click" }),
       expect.objectContaining({ kind: "custom", name: "checkout_started" }),
-      expect.objectContaining({ kind: "long_hover" }),
     ]));
     expect(body.pages[0].items).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "click", element: expect.objectContaining({ label: "Start trial" }) }),
       expect.objectContaining({ kind: "custom", name: "checkout_started", properties: { plan: "pro" } }),
-      expect.objectContaining({ kind: "long_hover", durationMs: 20_000 }),
     ]));
     expect(body.pages[0].items.some((item: { kind: string }) => item.kind === "cursor")).toBe(false);
 
     const raw = await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites/${site.id}/sessions/sess_activity`, headers });
     expect(raw.statusCode).toBe(200);
-    expect(raw.json().events).toHaveLength(105);
-    expect(raw.json().events.some((event: { type: string; x: number }) => event.type === "cursor" && event.x === 25)).toBe(true);
+    expect(raw.json().events).toHaveLength(4);
+    expect(raw.json().events.some((event: { type: string }) => event.type === "cursor" || event.type === "hover")).toBe(false);
 
     const list = await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites/${site.id}/sessions`, headers });
     expect(list.json().sessions[0]).toMatchObject({ pageVisitCount: 1, clickCount: 1, customEventCount: 1 });
-    expect(list.json().sessions[0].eventCount).toBe(105);
+    expect(list.json().sessions[0].eventCount).toBe(4);
   });
 
   it("does not expose another organization's session", async () => {

@@ -9,6 +9,7 @@ import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { classifyHeatmapDevice } from "../lib/heatmaps/deviceClass.js";
 import { matchesRules } from "../lib/pages/pageMatcher.js";
 import type { PageRule } from "../lib/pages/types.js";
+import { MVP1_STORAGE_POLICY } from "../lib/mvpPolicy.js";
 
 const deviceSchema = z.enum(["desktop", "tablet", "mobile"]);
 const layerSchema = z.enum(["click", "hover", "cursor", "scroll", "rage_click"]);
@@ -110,6 +111,7 @@ export function registerHeatmapRoutes(app: FastifyInstance, db: Db) {
 
   app.post("/orgs/:orgId/sites/:siteId/pages/:pageId/heatmap/capture-request", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
     const { siteId, pageId } = request.params as { siteId: string; pageId: string }, site = await ownSite(db, siteId, request.membership!.orgId); if (!site) return reply.code(404).send({ error: "site_not_found" });
+    if (!MVP1_STORAGE_POLICY.heatmaps) return reply.code(409).send({ error: "heatmaps_unavailable" });
     const body = z.object({ stateId: z.string().default("default"), device: deviceSchema, targetUrl: z.string().url().max(4000).optional() }).safeParse(request.body); if (!body.success) return reply.code(400).send({ error: "invalid_body" });
     const [page] = await db.select().from(pageDefinitions).where(and(eq(pageDefinitions.id, pageId), eq(pageDefinitions.siteId, site.id))).limit(1); if (!page || !page.heatmapEnabled) return reply.code(409).send({ error: "heatmap_disabled" });
     const stateId = body.data.stateId === "default" ? null : body.data.stateId; if (stateId) { const [state] = await db.select().from(pageHeatmapStates).where(and(eq(pageHeatmapStates.id, stateId), eq(pageHeatmapStates.siteId, site.id), eq(pageHeatmapStates.pageDefinitionId, page.id))).limit(1); if (!state) return reply.code(404).send({ error: "state_not_found" }); }
@@ -128,6 +130,7 @@ export function registerHeatmapRoutes(app: FastifyInstance, db: Db) {
   app.get("/public/sites/:siteId/heatmap-reference", async (request, reply) => {
     const { siteId } = request.params as { siteId: string }, query = z.object({ path: z.string().min(1).max(2000), device: deviceSchema }).safeParse(request.query); if (!query.success) return reply.code(400).send({ error: "invalid_query" });
     const [site] = await db.select().from(sites).where(eq(sites.publicId, siteId)).limit(1); if (!site) return reply.code(404).send({ error: "site_not_found" });
+    if (!MVP1_STORAGE_POLICY.heatmaps) return reply.send({ capture: null });
     const pages = await db.select().from(pageDefinitions).where(and(eq(pageDefinitions.siteId, site.id), eq(pageDefinitions.heatmapEnabled, true))), page = pages.find((p) => matchesRules(query.data.path, p.rules as PageRule[])); if (!page) return reply.send({ capture: null });
     const snapshots = await db.select().from(heatmapReferenceSnapshots).where(and(eq(heatmapReferenceSnapshots.siteId, site.id), eq(heatmapReferenceSnapshots.pageDefinitionId, page.id), eq(heatmapReferenceSnapshots.deviceClass, query.data.device), isNull(heatmapReferenceSnapshots.pageStateId))); if (currentSnapshot(snapshots, page)) return reply.send({ capture: null });
     const requests = await db.select().from(heatmapCaptureRequests).where(and(eq(heatmapCaptureRequests.siteId, site.id), eq(heatmapCaptureRequests.pageDefinitionId, page.id), eq(heatmapCaptureRequests.deviceClass, query.data.device), isNull(heatmapCaptureRequests.pageStateId))); if (requests.some((r) => !r.usedAt && r.expiresAt > new Date())) return reply.send({ capture: null });
@@ -135,6 +138,7 @@ export function registerHeatmapRoutes(app: FastifyInstance, db: Db) {
   });
   app.get("/public/sites/:siteId/heatmap-captures/:token", async (request, reply) => {
     const { siteId, token } = request.params as { siteId: string; token: string }, [site] = await db.select().from(sites).where(eq(sites.publicId, siteId)).limit(1); if (!site) return reply.code(404).send({ error: "capture_not_found" });
+    if (!MVP1_STORAGE_POLICY.heatmaps) return reply.code(404).send({ error: "capture_not_found" });
     const [capture] = await db.select().from(heatmapCaptureRequests).where(and(eq(heatmapCaptureRequests.token, token), eq(heatmapCaptureRequests.siteId, site.id))).limit(1); if (!capture || capture.usedAt || capture.expiresAt < new Date()) return reply.code(404).send({ error: "capture_not_found" });
     const [page] = await db.select().from(pageDefinitions).where(and(eq(pageDefinitions.id, capture.pageDefinitionId), eq(pageDefinitions.siteId, site.id))).limit(1); if (!page) return reply.code(404).send({ error: "capture_not_found" });
     const state = capture.pageStateId ? (await db.select().from(pageHeatmapStates).where(and(eq(pageHeatmapStates.id, capture.pageStateId), eq(pageHeatmapStates.siteId, site.id), eq(pageHeatmapStates.pageDefinitionId, page.id))).limit(1))[0] : null;
@@ -142,6 +146,7 @@ export function registerHeatmapRoutes(app: FastifyInstance, db: Db) {
   });
   app.post("/public/sites/:siteId/heatmap-snapshots/:token", { bodyLimit: 8_500_000 }, async (request, reply) => {
     const { siteId, token } = request.params as { siteId: string; token: string }, [site] = await db.select().from(sites).where(eq(sites.publicId, siteId)).limit(1); if (!site) return reply.code(404).send({ error: "site_not_found" });
+    if (!MVP1_STORAGE_POLICY.heatmaps) return reply.code(204).send();
     const [capture] = await db.select().from(heatmapCaptureRequests).where(and(eq(heatmapCaptureRequests.token, token), eq(heatmapCaptureRequests.siteId, site.id))).limit(1); if (!capture || capture.usedAt || capture.expiresAt < new Date()) return reply.code(404).send({ error: "capture_not_found" });
     const body = snapshotSchema.safeParse(request.body); if (!body.success || body.data.deviceClass !== capture.deviceClass) return reply.code(400).send({ error: "invalid_snapshot" });
     const [page] = await db.select().from(pageDefinitions).where(and(eq(pageDefinitions.id, capture.pageDefinitionId), eq(pageDefinitions.siteId, site.id))).limit(1); if (!page || !matchesRules(body.data.pagePath, page.rules as PageRule[])) return reply.code(400).send({ error: "page_path_mismatch" });

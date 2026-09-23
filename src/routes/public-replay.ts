@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { sites, sessionReplayEvents } from "../db/schema.js";
+import { MVP1_STORAGE_POLICY } from "../lib/mvpPolicy.js";
 import { trackReplayBodySchema } from "../lib/patterns/validation.js";
 
 /**
@@ -27,16 +28,17 @@ export function registerPublicReplayRoutes(app: FastifyInstance, db: Db) {
       return reply.code(404).send({ error: "site_not_found" });
     }
 
+    // Acknowledge and drop so cached SDKs treat delivery as successful and do
+    // not retry raw rrweb payloads. The route remains for wire compatibility.
+    if (!MVP1_STORAGE_POLICY.sessionReplay) return reply.code(204).send();
+
     const parsed = trackReplayBodySchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
     }
     const { sessionId, events } = parsed.data;
 
-    // seq is assigned server-side by arrival order, offset by how many
-    // replay events this session already has. Correct as long as
-    // batches from one session arrive in order, which holds for a
-    // single browser tab's sequential fetches.
+    // Kept dormant for MVP2: seq is assigned server-side by arrival order.
     const existing = await db
       .select({ id: sessionReplayEvents.id })
       .from(sessionReplayEvents)

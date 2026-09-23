@@ -64,18 +64,13 @@ describe("Page heatmaps", () => {
     expect((await heatmap(ctx.app, owner, site.id, page.id, "stateId=default&device=mobile&layer=click")).json().points).toEqual([{ x: 20, y: 80, count: 1 }]);
   });
 
-  it("captures a manually opened modal reference without any rrweb data", async () => {
+  it("blocks manual reference capture creation during MVP1", async () => {
     const { owner, site } = await setupSite(ctx.app);
     const page = await createPage(ctx.app, owner, site.id, "/dashboard");
     const state = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/pages/${page.id}/heatmap/states`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { name: "Notifications Drawer", selector: "[data-drawer=notifications]" } })).json();
     const request = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/pages/${page.id}/heatmap/capture-request`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { stateId: state.id, device: "desktop", targetUrl: "https://customer.example/dashboard" } });
-    expect(request.statusCode).toBe(201);
-    const token = new URL(request.json().captureUrl).searchParams.get("__movecues_heatmap_capture");
-    expect(request.json()).not.toHaveProperty("command");
-    const upload = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/heatmap-snapshots/${token}`, payload: { pagePath: "/dashboard", deviceClass: "desktop", viewportWidth: 1440, viewportHeight: 900, documentWidth: 1440, documentHeight: 2400, imageDataUrl: "data:image/webp;base64,AAAA" } });
-    expect(upload.statusCode).toBe(201);
-    const result = await heatmap(ctx.app, owner, site.id, page.id, `stateId=${state.id}&device=desktop&layer=click`);
-    expect(result.json().snapshot).toMatchObject({ pagePath: "/dashboard", documentHeight: 2400, imageDataUrl: "data:image/webp;base64,AAAA" });
+    expect(request.statusCode).toBe(409);
+    expect(request.json()).toEqual({ error: "heatmaps_unavailable" });
   });
 
   it("filters every metric by date and computes top clicks, unique-session scroll reach, and rage clicks", async () => {
@@ -102,15 +97,12 @@ describe("Page heatmaps", () => {
     expect(excluded.metrics.visits).toBe(0);
   });
 
-  it("issues one automatic reference instruction and stops after capture", async () => {
+  it("does not issue automatic reference instructions during MVP1", async () => {
     const { owner, site } = await setupSite(ctx.app);
     await createPage(ctx.app, owner, site.id, "/auto");
     const instruction = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/heatmap-reference?path=%2Fauto&device=desktop` });
     expect(instruction.statusCode).toBe(200);
-    const token = instruction.json().capture.token;
-    const upload = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/heatmap-snapshots/${token}`, payload: { pagePath: "/auto", deviceClass: "desktop", viewportWidth: 1440, viewportHeight: 900, documentWidth: 1440, documentHeight: 2000, imageDataUrl: "data:image/webp;base64,AAAA" } });
-    expect(upload.statusCode).toBe(201);
-    expect((await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/heatmap-reference?path=%2Fauto&device=desktop` })).json()).toEqual({ capture: null });
+    expect(instruction.json()).toEqual({ capture: null });
   });
 
   it("keeps disabled Pages inactive and enforces site/org isolation", async () => {
