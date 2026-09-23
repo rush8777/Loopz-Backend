@@ -6,6 +6,7 @@ import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { classifyHeatmapDevice } from "../lib/heatmaps/deviceClass.js";
 import { matchesRules } from "../lib/pages/pageMatcher.js";
+import { MVP1_STORAGE_POLICY } from "../lib/mvpPolicy.js";
 const deviceSchema = z.enum(["desktop", "tablet", "mobile"]);
 const layerSchema = z.enum(["click", "hover", "cursor", "scroll", "rage_click"]);
 const dateSchema = z.object({ from: z.string().datetime().optional(), to: z.string().datetime().optional() });
@@ -154,6 +155,8 @@ export function registerHeatmapRoutes(app, db) {
         const { siteId, pageId } = request.params, site = await ownSite(db, siteId, request.membership.orgId);
         if (!site)
             return reply.code(404).send({ error: "site_not_found" });
+        if (!MVP1_STORAGE_POLICY.heatmaps)
+            return reply.code(409).send({ error: "heatmaps_unavailable" });
         const body = z.object({ stateId: z.string().default("default"), device: deviceSchema, targetUrl: z.string().url().max(4000).optional() }).safeParse(request.body);
         if (!body.success)
             return reply.code(400).send({ error: "invalid_body" });
@@ -194,6 +197,8 @@ export function registerHeatmapRoutes(app, db) {
         const [site] = await db.select().from(sites).where(eq(sites.publicId, siteId)).limit(1);
         if (!site)
             return reply.code(404).send({ error: "site_not_found" });
+        if (!MVP1_STORAGE_POLICY.heatmaps)
+            return reply.send({ capture: null });
         const pages = await db.select().from(pageDefinitions).where(and(eq(pageDefinitions.siteId, site.id), eq(pageDefinitions.heatmapEnabled, true))), page = pages.find((p) => matchesRules(query.data.path, p.rules));
         if (!page)
             return reply.send({ capture: null });
@@ -210,6 +215,8 @@ export function registerHeatmapRoutes(app, db) {
         const { siteId, token } = request.params, [site] = await db.select().from(sites).where(eq(sites.publicId, siteId)).limit(1);
         if (!site)
             return reply.code(404).send({ error: "capture_not_found" });
+        if (!MVP1_STORAGE_POLICY.heatmaps)
+            return reply.code(404).send({ error: "capture_not_found" });
         const [capture] = await db.select().from(heatmapCaptureRequests).where(and(eq(heatmapCaptureRequests.token, token), eq(heatmapCaptureRequests.siteId, site.id))).limit(1);
         if (!capture || capture.usedAt || capture.expiresAt < new Date())
             return reply.code(404).send({ error: "capture_not_found" });
@@ -223,6 +230,8 @@ export function registerHeatmapRoutes(app, db) {
         const { siteId, token } = request.params, [site] = await db.select().from(sites).where(eq(sites.publicId, siteId)).limit(1);
         if (!site)
             return reply.code(404).send({ error: "site_not_found" });
+        if (!MVP1_STORAGE_POLICY.heatmaps)
+            return reply.code(204).send();
         const [capture] = await db.select().from(heatmapCaptureRequests).where(and(eq(heatmapCaptureRequests.token, token), eq(heatmapCaptureRequests.siteId, site.id))).limit(1);
         if (!capture || capture.usedAt || capture.expiresAt < new Date())
             return reply.code(404).send({ error: "capture_not_found" });

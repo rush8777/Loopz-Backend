@@ -3,6 +3,7 @@ import { sites, sessionEvents, trackedUserAliases } from "../db/schema.js";
 import { trackEventsBodySchema } from "../lib/patterns/validation.js";
 import { resolveIdentity } from "../lib/identity/resolveIdentity.js";
 import { recordSessionStart } from "../lib/identity/environmentContext.js";
+import { shouldPersistSessionEvent } from "../lib/mvpPolicy.js";
 /**
  * Public, unauthenticated (same trust model as /public/config - see the
  * comment there) endpoint the SDK calls as event batches are ready to
@@ -91,6 +92,10 @@ export function registerPublicEventsRoutes(app, db) {
                 await recordSessionStart(db, { siteId: site.id, sessionId, anonymousId: event.anonymousId, timestamp: event.timestamp, browserName: event.browserName, browserVersion: event.browserVersion, osName: event.osName, osVersion: event.osVersion, deviceType: event.deviceType, language: event.language, timezone: event.timezone, screenWidth: event.screenWidth, screenHeight: event.screenHeight, referrer: event.referrer });
                 continue;
             }
+            // Keep legacy cursor/hover values in validation so a mixed batch stays
+            // valid, then discard only the high-volume rows under the MVP1 policy.
+            if (!shouldPersistSessionEvent(event.type))
+                continue;
             const e = event;
             await db
                 .insert(sessionEvents)

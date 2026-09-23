@@ -59,7 +59,23 @@ export interface PageCondition {
   timeWindow?: SegmentTimeWindow;
 }
 
-export type SegmentCondition = EventCondition | UserPropertyCondition | PageCondition;
+export type FunnelCohortDateRange =
+  | { type: "relative"; days: number }
+  | { type: "today" }
+  | { type: "absolute"; since: string; until: string };
+
+/** A dynamic cohort produced by the saved Funnel's ordered progression
+ * matcher. It deliberately stores the analysis scope rather than user IDs. */
+export interface FunnelCohortCondition {
+  type: "funnel_cohort";
+  funnelId: string;
+  stepIndex: number;
+  cohort: "reached" | "dropped_after";
+  conversionWindowMinutes: number;
+  dateRange: FunnelCohortDateRange;
+}
+
+export type SegmentCondition = EventCondition | UserPropertyCondition | PageCondition | FunnelCohortCondition;
 
 export type SegmentLogic = "and" | "or";
 

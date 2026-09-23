@@ -46,7 +46,22 @@ const pageConditionSchema = z.object({
   timeWindow: timeWindowSchema.optional(),
 });
 
-const conditionSchema = z.discriminatedUnion("type", [eventConditionSchema, userPropertyConditionSchema, pageConditionSchema]);
+const funnelCohortDateRangeSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("relative"), days: z.number().int().min(1).max(365) }),
+  z.object({ type: z.literal("today") }),
+  z.object({ type: z.literal("absolute"), since: z.string().datetime(), until: z.string().datetime() }).refine((range) => new Date(range.since) <= new Date(range.until), { message: "since must not be after until", path: ["until"] }),
+]);
+
+const funnelCohortConditionSchema = z.object({
+  type: z.literal("funnel_cohort"),
+  funnelId: z.string().min(1).max(64),
+  stepIndex: z.number().int().min(0).max(99),
+  cohort: z.enum(["reached", "dropped_after"]),
+  conversionWindowMinutes: z.number().int().min(60).max(90 * 24 * 60),
+  dateRange: funnelCohortDateRangeSchema,
+});
+
+const conditionSchema = z.discriminatedUnion("type", [eventConditionSchema, userPropertyConditionSchema, pageConditionSchema, funnelCohortConditionSchema]);
 
 /**
  * Recursive group schema - `z.lazy` because a group's `conditions`

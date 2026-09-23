@@ -1,10 +1,10 @@
 import { and, eq, gte, inArray } from "drizzle-orm";
-import { sessionEvents, trackedUsers, trackedUserProperties, pageDefinitions } from "../../db/schema.js";
-import { matchesRules } from "../pages/pageMatcher.js";
-import { loadPagePathStats } from "../pages/pageAggregation.js";
+import { sessionEvents, trackedUsers, trackedUserProperties, funnels } from "../../db/schema.js";
 import { hydrateIdentities } from "../identity/hydrate.js";
 import { isGroup } from "./types.js";
 import { canonicalIdentityExpr } from "../analytics/identity.js";
+import { resolveMatchedPagePaths } from "../pages/resolveMatchedPagePaths.js";
+import { computeFunnelProgression } from "../funnels/progression.js";
 const identityExpr = canonicalIdentityExpr;
 function windowSince(window) {
     if (!window)
@@ -126,13 +126,7 @@ async function resolvePropertyCondition(db, siteId, c) {
 // ---------------------------------------------------------------------------
 // Condition C: page visited
 /** Resolves a Page's rules (task brief section 3C: reuse the page-definition system, not a second page-tracking model) to the concrete pagePaths currently matching it - same pattern routes/pages.ts already uses for its own metrics. Exported for lib/funnels/evaluator.ts's page steps, so both features resolve a Page reference identically. */
-export async function resolveMatchedPagePaths(db, siteId, pageId) {
-    const [page] = await db.select().from(pageDefinitions).where(eq(pageDefinitions.id, pageId)).limit(1);
-    if (!page || page.siteId !== siteId)
-        return null; // dangling/cross-site reference - treated as "matches nobody" by the caller
-    const pathStats = await loadPagePathStats(db, siteId);
-    return pathStats.map((p) => p.pagePath).filter((p) => matchesRules(p, page.rules));
-}
+export { resolveMatchedPagePaths } from "../pages/resolveMatchedPagePaths.js";
 async function resolvePageCondition(db, siteId, c, universe) {
     const matchedPaths = await resolveMatchedPagePaths(db, siteId, c.pageId);
     if (matchedPaths === null || matchedPaths.length === 0) {
@@ -156,6 +150,32 @@ async function resolvePageCondition(db, siteId, c, universe) {
             notVisited.add(id);
     return notVisited;
 }
+function resolveFunnelCohortRange(range) {
+    const until = new Date();
+    if (range.type === "absolute")
+        return { since: new Date(range.since), until: new Date(range.until) };
+    if (range.type === "today") {
+        const since = new Date(until);
+        since.setHours(0, 0, 0, 0);
+        return { since, until };
+    }
+    return { since: new Date(until.getTime() - range.days * 24 * 60 * 60 * 1000), until };
+}
+/** Resolves a Funnel cohort through the shared ordered progression matcher.
+ * Invalid or cross-site funnel references deliberately match nobody; a
+ * segment can therefore never leak membership from another site. */
+async function resolveFunnelCohortCondition(db, siteId, c) {
+    const [funnel] = await db.select().from(funnels).where(eq(funnels.id, c.funnelId)).limit(1);
+    if (!funnel || funnel.siteId !== siteId)
+        return new Set();
+    const steps = funnel.steps;
+    if (c.stepIndex >= steps.length || (c.cohort === "dropped_after" && c.stepIndex >= steps.length - 1))
+        return new Set();
+    const progression = await computeFunnelProgression(db, siteId, steps, resolveFunnelCohortRange(c.dateRange), c.conversionWindowMinutes);
+    return new Set(progression
+        .filter((row) => row.stepTimestamps[c.stepIndex] !== null && (c.cohort === "reached" || row.stepTimestamps[c.stepIndex + 1] === null))
+        .map((row) => row.identity));
+}
 // ---------------------------------------------------------------------------
 // Group combination
 async function resolveCondition(db, siteId, c, universe) {
@@ -166,6 +186,8 @@ async function resolveCondition(db, siteId, c, universe) {
             return resolvePropertyCondition(db, siteId, c);
         case "page":
             return resolvePageCondition(db, siteId, c, universe);
+        case "funnel_cohort":
+            return resolveFunnelCohortCondition(db, siteId, c);
     }
 }
 function intersect(sets) {

@@ -1,12 +1,13 @@
-import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { sessionEvents, pageDefinitions, segments as segmentsTable } from "../../db/schema.js";
-import { resolveMatchedPagePaths, evaluateSegment } from "../segments/evaluator.js";
+import { pageDefinitions, segments as segmentsTable } from "../../db/schema.js";
+import { evaluateSegment } from "../segments/evaluator.js";
 import type { SegmentDefinition } from "../segments/types.js";
 import { hydrateIdentities, type IdentitySummary, type IdentityKey } from "../identity/hydrate.js";
 import type { FunnelStep } from "./types.js";
 import { funnelStepLabel } from "./types.js";
 import { canonicalIdentityExpr } from "../analytics/identity.js";
+import { computeFunnelProgression, type DateRangeRequired, type FunnelProgressionRow } from "./progression.js";
 
 /**
  * The Funnel Evaluation Engine (task brief section 20) -
@@ -31,11 +32,6 @@ import { canonicalIdentityExpr } from "../analytics/identity.js";
  * recomputes progression from current session_events data.
  */
 
-export interface DateRangeRequired {
-  since: Date;
-  until: Date;
-}
-
 const identityExpr = canonicalIdentityExpr;
 
 // Defensive cap on rows pulled per step for in-memory sequence matching -
@@ -44,100 +40,8 @@ const identityExpr = canonicalIdentityExpr;
 // logic into SQL (window functions); V1 keeps this in JS for clarity, and
 // this cap is the honest acknowledgment of that tradeoff (see the
 // "Performance" note in the final report).
-const MAX_ROWS_PER_STEP = 50_000;
-
-/** Every (identity, timestamp) pair for one funnel step within [since, until], as a per-identity sorted-ascending timestamp list - the raw material computeFunnelProgression sequence-matches against. */
-async function fetchStepTimestamps(db: Db, siteId: string, step: FunnelStep, since: Date, until: Date): Promise<Map<IdentityKey, number[]>> {
-  const result = new Map<IdentityKey, number[]>();
-
-  const baseConditions = [eq(sessionEvents.siteId, siteId), gte(sessionEvents.timestamp, since), lte(sessionEvents.timestamp, until)];
-
-  if (step.type === "event") {
-    baseConditions.push(eq(sessionEvents.type, "custom"), eq(sessionEvents.eventName, step.eventName));
-  } else {
-    const matchedPaths = await resolveMatchedPagePaths(db, siteId, step.pageId);
-    if (!matchedPaths || matchedPaths.length === 0) return result; // dangling/cross-site page reference or a Page nothing currently matches
-    baseConditions.push(eq(sessionEvents.type, "page_view"), inArray(sessionEvents.pagePath, matchedPaths));
-  }
-
-  const rows = await db
-    .select({ identity: identityExpr, timestamp: sessionEvents.timestamp })
-    .from(sessionEvents)
-    .where(and(...baseConditions))
-    .orderBy(sessionEvents.timestamp)
-    .limit(MAX_ROWS_PER_STEP);
-
-  for (const r of rows) {
-    if (!r.identity) continue;
-    const arr = result.get(r.identity);
-    if (arr) arr.push(r.timestamp.getTime());
-    else result.set(r.identity, [r.timestamp.getTime()]);
-  }
-  return result;
-}
-
-export interface FunnelProgressionRow {
-  identity: IdentityKey;
-  /** One entry per step, same length/order as `steps`. `stepTimestamps[0]` is always set (it's what put this identity in the progression at all); a later `null` means the funnel broke at that step and every entry after it is also `null` - drop-off is terminal, matching task brief section 5's ordering requirement. */
-  stepTimestamps: (number | null)[];
-}
-
-/**
- * Sequence-matches each candidate identity through `steps` in order.
- * A step N timestamp must be strictly after step N-1's timestamp and
- * within `windowMinutes` of the *first* step's timestamp (task brief
- * section 9: the window is "relative to the funnel journey", i.e.
- * anchored to when the user entered the funnel, not re-armed at every
- * step) - this is a documented V1 semantic, consistent with how most
- * funnel tools define a single conversion window per funnel.
- */
-export async function computeFunnelProgression(
-  db: Db,
-  siteId: string,
-  steps: FunnelStep[],
-  range: DateRangeRequired,
-  windowMinutes: number,
-  allowedIdentities?: Set<IdentityKey>
-): Promise<FunnelProgressionRow[]> {
-  if (steps.length === 0) return [];
-  const windowMs = windowMinutes * 60 * 1000;
-
-  const firstStepMap = await fetchStepTimestamps(db, siteId, steps[0], range.since, range.until);
-  // Later steps may complete after `until` if they're still inside the
-  // conversion window - so their query range is widened accordingly.
-  const laterStepMaps = await Promise.all(
-    steps.slice(1).map((s) => fetchStepTimestamps(db, siteId, s, range.since, new Date(range.until.getTime() + windowMs)))
-  );
-
-  const results: FunnelProgressionRow[] = [];
-  for (const [identity, timestamps] of firstStepMap) {
-    if (allowedIdentities && !allowedIdentities.has(identity)) continue;
-
-    const anchor = timestamps[0]; // earliest step-1 occurrence in range
-    const stepTimestamps: (number | null)[] = [anchor];
-    let cursor = anchor;
-    let broken = false;
-
-    for (const stepMap of laterStepMaps) {
-      if (broken) {
-        stepTimestamps.push(null);
-        continue;
-      }
-      const candidates = stepMap.get(identity);
-      const next = candidates?.find((ts) => ts > cursor && ts <= anchor + windowMs);
-      if (next === undefined) {
-        broken = true;
-        stepTimestamps.push(null);
-      } else {
-        stepTimestamps.push(next);
-        cursor = next;
-      }
-    }
-
-    results.push({ identity, stepTimestamps });
-  }
-  return results;
-}
+export { computeFunnelProgression } from "./progression.js";
+export type { DateRangeRequired, FunnelProgressionRow } from "./progression.js";
 
 // ---------------------------------------------------------------------------
 // Summary (task brief sections 6, 10, 16)

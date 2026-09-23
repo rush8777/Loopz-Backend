@@ -617,3 +617,66 @@ describe("Segment evaluation - identity resolution", () => {
     expect(members.json().members[0]).toMatchObject({ identityType: "identified", externalUserId: "merged_user" });
   });
 });
+
+describe("Segment evaluation - funnel cohorts", () => {
+  let ctx: Awaited<ReturnType<typeof createTestApp>>;
+  beforeEach(async () => { ctx = await createTestApp(); });
+  afterEach(() => ctx.cleanup());
+
+  async function createFunnel(owner: Awaited<ReturnType<typeof signup>>, site: { id: string }, eventNames: string[]) {
+    const res = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/funnels`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { name: "Activation", steps: eventNames.map((eventName) => ({ type: "event", eventName })) } });
+    expect(res.statusCode).toBe(201);
+    return res.json();
+  }
+  function definition(funnelId: string, stepIndex: number, cohort: "reached" | "dropped_after", conversionWindowMinutes = 60) {
+    const until = new Date();
+    return { logic: "and" as const, conditions: [{ type: "funnel_cohort" as const, funnelId, stepIndex, cohort, conversionWindowMinutes, dateRange: { type: "absolute" as const, since: new Date(until.getTime() - 3 * 60 * 60 * 1000).toISOString(), until: until.toISOString() } }] };
+  }
+  async function preview(owner: Awaited<ReturnType<typeof signup>>, site: { id: string }, segmentDefinition: unknown) {
+    return ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/segments/preview`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition: segmentDefinition } });
+  }
+
+  it("uses ordered funnel progression for reached, drop-off, and final completed cohorts", async () => {
+    const { owner, site } = await setupSite(ctx.app);
+    const now = Date.now() - 30_000;
+    for (const user of ["completed", "dropped", "reverse", "late"]) await identify(ctx.app, site.siteId, `anon_${user}`, user, {}, now - 1_000);
+    await customEvent(ctx.app, site.siteId, "anon_completed", "opened", now);
+    await customEvent(ctx.app, site.siteId, "anon_completed", "activated", now + 1_000);
+    await customEvent(ctx.app, site.siteId, "anon_dropped", "opened", now);
+    // Reverse order must not count as a conversion.
+    await customEvent(ctx.app, site.siteId, "anon_reverse", "activated", now);
+    await customEvent(ctx.app, site.siteId, "anon_reverse", "opened", now + 1_000);
+    // A later ordered event outside the saved conversion window is a drop-off.
+    await customEvent(ctx.app, site.siteId, "anon_late", "opened", now);
+    await customEvent(ctx.app, site.siteId, "anon_late", "activated", now + 61 * 60 * 1000);
+    const funnel = await createFunnel(owner, site, ["opened", "activated"]);
+
+    expect((await preview(owner, site, definition(funnel.id, 0, "reached"))).json().audienceCount).toBe(4);
+    expect((await preview(owner, site, definition(funnel.id, 0, "dropped_after"))).json().audienceCount).toBe(3);
+    expect((await preview(owner, site, definition(funnel.id, 1, "reached"))).json().audienceCount).toBe(1);
+  });
+
+  it("intersects a funnel cohort with the current segment definition and evaluates every matching user", async () => {
+    const { owner, site } = await setupSite(ctx.app);
+    const now = Date.now() - 10_000;
+    for (let i = 0; i < 30; i++) {
+      await identify(ctx.app, site.siteId, `anon_${i}`, `user_${i}`, { plan: i % 2 ? "free" : "pro" }, now - 1_000);
+      await customEvent(ctx.app, site.siteId, `anon_${i}`, "opened", now + i);
+    }
+    const funnel = await createFunnel(owner, site, ["opened"]);
+    const cohort = definition(funnel.id, 0, "reached").conditions[0];
+    const filtered = { logic: "and" as const, conditions: [{ type: "user_property" as const, propertyName: "plan", operator: "equals" as const, value: "free" }, cohort] };
+    // This is intentionally not sourced from Funnel step-user pagination (25): all 30 are evaluated, then the current audience is ANDed.
+    expect((await preview(owner, site, definition(funnel.id, 0, "reached"))).json().audienceCount).toBe(30);
+    expect((await preview(owner, site, filtered)).json().audienceCount).toBe(15);
+  });
+
+  it("matches nobody for invalid or cross-site funnel references", async () => {
+    const { owner, site } = await setupSite(ctx.app, "Segment site");
+    const { owner: otherOwner, site: otherSite } = await setupSite(ctx.app, "Other site");
+    await customEvent(ctx.app, otherSite.siteId, "anon_other", "opened", Date.now() - 1_000);
+    const otherFunnel = await createFunnel(otherOwner, otherSite, ["opened"]);
+    expect((await preview(owner, site, definition(otherFunnel.id, 0, "reached"))).json().audienceCount).toBe(0);
+    expect((await preview(owner, site, definition("missing_funnel", 0, "reached"))).json().audienceCount).toBe(0);
+  });
+});
