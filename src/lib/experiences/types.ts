@@ -51,6 +51,7 @@ export interface WidgetBuilderState {
   projectData: Record<string, unknown>;
   html: string;
   css: string;
+  canvas?: { zoom: number; panX: number; panY: number };
 }
 
 export type ExperienceLayer =

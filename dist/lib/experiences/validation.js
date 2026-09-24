@@ -58,6 +58,7 @@ const builderShape = {
     version: z.literal(1),
     projectData: z.record(z.string(), z.unknown()).refine(builderProjectValueIsSafe, "unsafe builder project data"),
     css: z.string().max(250_000).refine(builderCssIsSafe, "builder CSS must be safe and scoped under .movecues-widget"),
+    canvas: z.object({ zoom: z.number().finite().min(25).max(200), panX: z.number().finite(), panY: z.number().finite() }).strict().optional(),
 };
 const builderSchema = z.object({ ...builderShape, html: z.string().max(500_000).refine(value => builderHtmlIsSafe(value), "unsafe builder HTML") }).strict();
 const surveyBuilderSchema = z.object({ ...builderShape, html: z.string().max(500_000).refine(value => builderHtmlIsSafe(value, true), "unsafe survey builder HTML") }).strict();
