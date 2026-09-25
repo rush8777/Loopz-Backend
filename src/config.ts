@@ -5,6 +5,7 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(16, "JWT_SECRET must be at least 16 characters").default("dev-only-insecure-secret-change-me"),
   PORT: z.coerce.number().int().positive().default(3000),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  DASHBOARD_URL: z.string().url().default("http://localhost:5173"),
 });
 
 export const env = envSchema.parse(process.env);

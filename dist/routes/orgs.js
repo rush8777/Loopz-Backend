@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { eq } from "drizzle-orm";
-import { organizations, memberships, sites, users, auditLogs } from "../db/schema.js";
+import { and, eq, max, sql } from "drizzle-orm";
+import { organizations, memberships, sites, users, auditLogs, sessionEvents } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { generateSitePublicId } from "../lib/ids.js";
@@ -19,14 +19,19 @@ const domainSchema = z
     }
 }, "domain must be an http(s) origin, without a path");
 const createSiteSchema = z.object({
-    name: z.string().min(1).max(200),
+    name: z.string().trim().min(1).max(200),
     domain: domainSchema.optional(),
 });
-const updateSiteSchema = z.object({
-    domain: domainSchema.nullable(),
-});
+const updateSiteSchema = z
+    .object({
+    name: z.string().trim().min(1).max(200).optional(),
+    domain: domainSchema.nullable().optional(),
+})
+    .refine((value) => value.name !== undefined || value.domain !== undefined, "at least one field is required");
+const updateOrganizationSchema = z.object({ name: z.string().trim().min(1).max(200) });
+const updateMemberSchema = z.object({ role: z.enum(["ADMIN", "MEMBER", "VIEWER"]) });
 const addMemberSchema = z.object({
-    email: z.string().email(),
+    email: z.string().trim().email(),
     role: z.enum(["ADMIN", "MEMBER", "VIEWER"]), // adding another OWNER goes through a separate, deliberately harder-to-reach flow
 });
 // Publishable, non-sensitive subset of Site config that ships to the
@@ -49,9 +54,29 @@ export function registerOrgRoutes(app, db) {
             .where(eq(memberships.userId, request.user.id));
         return reply.send({ organizations: rows });
     });
+    app.patch("/orgs/:orgId", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+        const parsed = updateOrganizationSchema.safeParse(request.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+        const orgId = request.membership.orgId;
+        const [organization] = await db
+            .update(organizations)
+            .set({ name: parsed.data.name, updatedAt: new Date() })
+            .where(eq(organizations.id, orgId))
+            .returning();
+        if (!organization)
+            return reply.code(404).send({ error: "org_not_found" });
+        await db.insert(auditLogs).values({
+            orgId,
+            userId: request.user.id,
+            action: "organization.updated",
+            detail: { name: organization.name },
+        });
+        return reply.send({ orgId: organization.id, name: organization.name, role: request.membership.role });
+    });
     app.get("/orgs/:orgId/members", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
         const rows = await db
-            .select({ userId: users.id, email: users.email, name: users.name, role: memberships.role })
+            .select({ userId: users.id, email: users.email, name: users.name, role: memberships.role, joinedAt: memberships.createdAt })
             .from(memberships)
             .innerJoin(users, eq(memberships.userId, users.id))
             .where(eq(memberships.orgId, request.membership.orgId));
@@ -62,9 +87,10 @@ export function registerOrgRoutes(app, db) {
         if (!parsed.success) {
             return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
         }
-        const { email, role } = parsed.data;
+        const email = parsed.data.email.trim().toLowerCase();
+        const { role } = parsed.data;
         const orgId = request.membership.orgId;
-        const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+        const [user] = await db.select().from(users).where(sql `lower(${users.email}) = ${email}`).limit(1);
         if (!user) {
             // No invite-by-email-to-unregistered-user flow yet - that's a
             // reasonable v2 (send an email, create a pending invite row).
@@ -73,9 +99,9 @@ export function registerOrgRoutes(app, db) {
         const [existing] = await db
             .select()
             .from(memberships)
-            .where(eq(memberships.userId, user.id))
+            .where(and(eq(memberships.userId, user.id), eq(memberships.orgId, orgId)))
             .limit(1);
-        if (existing && existing.orgId === orgId) {
+        if (existing) {
             return reply.code(409).send({ error: "already_a_member" });
         }
         await db.insert(memberships).values({ userId: user.id, orgId, role });
@@ -86,6 +112,59 @@ export function registerOrgRoutes(app, db) {
             detail: { targetUserId: user.id, role },
         });
         return reply.code(201).send({ userId: user.id, email: user.email, role });
+    });
+    app.patch("/orgs/:orgId/members/:userId", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+        const parsed = updateMemberSchema.safeParse(request.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+        const { userId } = request.params;
+        const orgId = request.membership.orgId;
+        const [membership] = await db
+            .select()
+            .from(memberships)
+            .where(and(eq(memberships.userId, userId), eq(memberships.orgId, orgId)))
+            .limit(1);
+        if (!membership)
+            return reply.code(404).send({ error: "member_not_found" });
+        if (membership.role === "OWNER")
+            return reply.code(409).send({ error: "owner_membership_locked" });
+        if (userId === request.user.id)
+            return reply.code(409).send({ error: "cannot_modify_self" });
+        const [updated] = await db
+            .update(memberships)
+            .set({ role: parsed.data.role })
+            .where(eq(memberships.id, membership.id))
+            .returning();
+        await db.insert(auditLogs).values({
+            orgId,
+            userId: request.user.id,
+            action: "member.role_updated",
+            detail: { targetUserId: userId, previousRole: membership.role, role: updated.role },
+        });
+        return reply.send({ userId, role: updated.role });
+    });
+    app.delete("/orgs/:orgId/members/:userId", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+        const { userId } = request.params;
+        const orgId = request.membership.orgId;
+        const [membership] = await db
+            .select()
+            .from(memberships)
+            .where(and(eq(memberships.userId, userId), eq(memberships.orgId, orgId)))
+            .limit(1);
+        if (!membership)
+            return reply.code(404).send({ error: "member_not_found" });
+        if (membership.role === "OWNER")
+            return reply.code(409).send({ error: "owner_membership_locked" });
+        if (userId === request.user.id)
+            return reply.code(409).send({ error: "cannot_remove_self" });
+        await db.delete(memberships).where(eq(memberships.id, membership.id));
+        await db.insert(auditLogs).values({
+            orgId,
+            userId: request.user.id,
+            action: "member.removed",
+            detail: { targetUserId: userId, role: membership.role },
+        });
+        return reply.code(204).send();
     });
     app.get("/orgs/:orgId/sites", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
         const rows = await db.select().from(sites).where(eq(sites.orgId, request.membership.orgId));
@@ -127,13 +206,39 @@ export function registerOrgRoutes(app, db) {
         const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
         if (!site || site.orgId !== request.membership.orgId)
             return reply.code(404).send({ error: "site_not_found" });
+        const updates = {
+            ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+            ...(parsed.data.domain !== undefined ? { domain: parsed.data.domain } : {}),
+            updatedAt: new Date(),
+        };
         const [updated] = await db
             .update(sites)
-            .set({ domain: parsed.data.domain, updatedAt: new Date() })
+            .set(updates)
             .where(eq(sites.id, site.id))
             .returning();
-        await db.insert(auditLogs).values({ orgId: site.orgId, userId: request.user.id, action: "site.domain_updated", detail: { siteId: site.publicId, domain: updated.domain } });
+        await db.insert(auditLogs).values({
+            orgId: site.orgId,
+            userId: request.user.id,
+            action: "site.updated",
+            detail: { siteId: site.publicId, name: updated.name, domain: updated.domain },
+        });
         return reply.send({ id: updated.id, siteId: updated.publicId, name: updated.name, domain: updated.domain });
+    });
+    app.get("/orgs/:orgId/sites/:siteId/status", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
+        const { siteId } = request.params;
+        const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
+        if (!site || site.orgId !== request.membership.orgId)
+            return reply.code(404).send({ error: "site_not_found" });
+        const [eventStatus] = await db
+            .select({ lastEventAt: max(sessionEvents.timestamp) })
+            .from(sessionEvents)
+            .where(eq(sessionEvents.siteId, site.id));
+        return reply.send({
+            hasReceivedEvents: Boolean(eventStatus?.lastEventAt),
+            lastEventAt: eventStatus?.lastEventAt ?? null,
+            siteId: site.publicId,
+            domain: site.domain,
+        });
     });
     // The write side of Site.publicConfig - the ONLY way this JSON blob
     // gets mutated. Deliberately parsed through publicConfigSchema (an

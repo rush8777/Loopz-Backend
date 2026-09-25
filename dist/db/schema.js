@@ -55,7 +55,32 @@ export const memberships = sqliteTable("memberships", {
     createdAt: integer("created_at", { mode: "timestamp_ms" })
         .notNull()
         .default(sql `(unixepoch('now') * 1000)`),
-});
+}, (table) => [uniqueIndex("memberships_user_org_uidx").on(table.userId, table.orgId)]);
+/** Pending invitations are separate from memberships until they are accepted. */
+export const organizationInvitations = sqliteTable("organization_invitations", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("inv")),
+    orgId: text("org_id")
+        .notNull()
+        .references(() => organizations.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: text("role").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    invitedByUserId: text("invited_by_user_id")
+        .notNull()
+        .references(() => users.id, { onDelete: "restrict" }),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    acceptedAt: integer("accepted_at", { mode: "timestamp_ms" }),
+    revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+        .notNull()
+        .default(sql `(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+        .notNull()
+        .default(sql `(unixepoch('now') * 1000)`),
+}, (table) => [
+    index("organization_invitations_org_email_idx").on(table.orgId, table.email),
+    index("organization_invitations_org_created_idx").on(table.orgId, table.createdAt),
+]);
 /**
  * One site = one tracked property = one `siteId` the SDK is configured
  * with. publicId is what actually ships in customer-facing SDK config

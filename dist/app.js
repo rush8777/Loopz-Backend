@@ -25,6 +25,7 @@ import { registerPublicExperienceRoutes } from "./routes/public-experiences.js";
 import { registerPublicChecklistRoutes } from "./routes/public-checklists.js";
 import { registerDashboardRoutes } from "./routes/dashboards.js";
 import { registerAnalyticsRoutes } from "./routes/analytics.js";
+import { registerInvitationRoutes } from "./routes/invitations.js";
 export async function buildApp(db) {
     const app = Fastify({ logger: false });
     await app.register(cors, {
@@ -40,6 +41,7 @@ export async function buildApp(db) {
     await app.register(rateLimit, { global: true, max: 300, timeWindow: "1 minute" });
     registerAuthRoutes(app, db);
     registerOrgRoutes(app, db);
+    registerInvitationRoutes(app, db);
     // registerPatternRoutes(app, db);
     // registerAnalysisRoutes(app, db);
     // registerPatternObserverRoutes(app, db);

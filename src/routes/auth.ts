@@ -12,16 +12,17 @@ import {
 } from "../lib/auth.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { env } from "../config.js";
+import { normalizeEmail } from "../lib/invitations.js";
 
 const signupSchema = z.object({
-  email: z.string().email(),
+  email: z.string().trim().email(),
   password: z.string().min(10, "password must be at least 10 characters"),
   orgName: z.string().min(1).max(200),
   name: z.string().max(200).optional(),
 });
 
 const loginSchema = z.object({
-  email: z.string().email(),
+  email: z.string().trim().email(),
   password: z.string().min(1),
 });
 
@@ -44,7 +45,8 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db) {
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
     }
-    const { email, password, orgName, name } = parsed.data;
+    const { password, orgName, name } = parsed.data;
+    const email = normalizeEmail(parsed.data.email);
 
     const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1);
     if (existing) {
@@ -77,7 +79,8 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db) {
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body" });
     }
-    const { email, password } = parsed.data;
+    const email = normalizeEmail(parsed.data.email);
+    const { password } = parsed.data;
 
     const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
     // Same error for "no such user" and "wrong password" - don't leak which emails are registered.
