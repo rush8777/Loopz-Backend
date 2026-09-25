@@ -27,6 +27,7 @@ import { registerPublicChecklistRoutes } from "./routes/public-checklists.js";
 import { registerDashboardRoutes } from "./routes/dashboards.js";
 import { registerAnalyticsRoutes } from "./routes/analytics.js";
 import { registerInvitationRoutes } from "./routes/invitations.js";
+import { registerPublicSdkVerificationRoutes, registerSdkVerificationRoutes } from "./routes/sdk-verifications.js";
 
 export async function buildApp(db: Db) {
   const app = Fastify({ logger: false });
@@ -63,10 +64,12 @@ export async function buildApp(db: Db) {
   registerExperienceRoutes(app, db);
   registerDashboardRoutes(app, db);
   registerAnalyticsRoutes(app, db);
+  registerSdkVerificationRoutes(app, db);
 
   await app.register(async (publicScope) => {
     await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
     registerPublicConfigRoutes(publicScope, db);
+    registerPublicSdkVerificationRoutes(publicScope, db);
   });
 
   await app.register(async (publicEventsScope) => {

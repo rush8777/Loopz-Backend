@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { sessionEvents } from "../src/db/schema.js";
+import { eq } from "drizzle-orm";
+import { sessionEvents, sites } from "../src/db/schema.js";
 import { createTestApp, signup } from "./helpers.js";
 
 describe("workspace and site settings", () => {
@@ -42,5 +43,56 @@ describe("workspace and site settings", () => {
     const response = await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites/${site.id}/status`, headers: { authorization: `Bearer ${stranger.accessToken}` } });
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({ error: "org_not_found" });
+  });
+
+  it("lets ADMIN+ delete a site and cascades its stored data", async () => {
+    const owner = await signup(ctx.app, { email: "delete-site-owner@example.com" });
+    const created = await ctx.app.inject({
+      method: "POST",
+      url: `/orgs/${owner.org.id}/sites`,
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+      payload: { name: "Disposable site", domain: "https://delete.example.com" },
+    });
+    const site = created.json();
+    await ctx.db.insert(sessionEvents).values({
+      siteId: site.id,
+      sessionId: "session_to_delete",
+      type: "page_view",
+      timestamp: new Date(),
+    });
+
+    const response = await ctx.app.inject({
+      method: "DELETE",
+      url: `/orgs/${owner.org.id}/sites/${site.id}`,
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(await ctx.db.select().from(sites).where(eq(sites.id, site.id))).toHaveLength(0);
+    expect(await ctx.db.select().from(sessionEvents).where(eq(sessionEvents.siteId, site.id))).toHaveLength(0);
+  });
+
+  it("does not let a MEMBER delete a site", async () => {
+    const owner = await signup(ctx.app, { email: "delete-site-owner-two@example.com" });
+    const member = await signup(ctx.app, { email: "delete-site-member@example.com" });
+    await ctx.app.inject({
+      method: "POST",
+      url: `/orgs/${owner.org.id}/members`,
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+      payload: { email: member.user.email, role: "MEMBER" },
+    });
+    const site = (await ctx.app.inject({
+      method: "POST",
+      url: `/orgs/${owner.org.id}/sites`,
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+      payload: { name: "Protected site" },
+    })).json();
+
+    const response = await ctx.app.inject({
+      method: "DELETE",
+      url: `/orgs/${owner.org.id}/sites/${site.id}`,
+      headers: { authorization: `Bearer ${member.accessToken}` },
+    });
+    expect(response.statusCode).toBe(403);
   });
 });

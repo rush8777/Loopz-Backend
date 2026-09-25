@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { sites, pageDefinitions, pageHeatmapStates } from "../db/schema.js";
+import { sites, pageDefinitions, pageHeatmapStates, sdkVerificationChallenges } from "../db/schema.js";
 
 /**
  * The one endpoint in this service with NO authentication at all -
@@ -31,7 +31,22 @@ export function registerPublicConfigRoutes(app: FastifyInstance, db: Db) {
       return reply.code(404).send({ error: "site_not_found" });
     }
 
-    reply.header("Cache-Control", "public, max-age=60");
+    // A pending SDK verification is intentionally short-lived. Never let a
+    // previously cached no-challenge response hide a user-triggered test.
+    reply.header("Cache-Control", "no-store");
+    const now = new Date();
+    const [sdkVerification] = await db
+      .select({ id: sdkVerificationChallenges.id, expiresAt: sdkVerificationChallenges.expiresAt })
+      .from(sdkVerificationChallenges)
+      .where(
+        and(
+          eq(sdkVerificationChallenges.siteId, site.id),
+          isNull(sdkVerificationChallenges.acknowledgedAt),
+          gt(sdkVerificationChallenges.expiresAt, now)
+        )
+      )
+      .orderBy(desc(sdkVerificationChallenges.createdAt))
+      .limit(1);
     const heatmapStates = await db
       .select({ id: pageHeatmapStates.id, selector: pageHeatmapStates.selector })
       .from(pageHeatmapStates)
@@ -41,6 +56,7 @@ export function registerPublicConfigRoutes(app: FastifyInstance, db: Db) {
       siteId: site.publicId,
       config: site.publicConfig,
       heatmapStates,
+      ...(sdkVerification ? { sdkVerification } : {}),
     });
   });
 }

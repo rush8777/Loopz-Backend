@@ -123,6 +123,27 @@ export const sites = sqliteTable("sites", {
 });
 
 /**
+ * Short-lived, user-triggered probes used to prove that the SDK is
+ * executing on a site's product right now. These are deliberately not
+ * heartbeats: a row only exists after a dashboard user starts a test.
+ */
+export const sdkVerificationChallenges = sqliteTable(
+  "sdk_verification_challenges",
+  {
+    id: text("id").primaryKey(),
+    siteId: text("site_id")
+      .notNull()
+      .references(() => sites.id, { onDelete: "cascade" }),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    acknowledgedAt: integer("acknowledged_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(sql`(unixepoch('now') * 1000)`),
+  },
+  (table) => [index("sdk_verification_challenges_site_created_idx").on(table.siteId, table.createdAt)]
+);
+
+/**
  * Refresh token rotation for dashboard sessions. Access tokens are
  * short-lived JWTs (never stored); refresh tokens are stored hashed so
  * a DB read alone can't be used to mint sessions.

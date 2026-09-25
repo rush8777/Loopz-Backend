@@ -273,6 +273,27 @@ export function registerOrgRoutes(app: FastifyInstance, db: Db) {
     }
   );
 
+  app.delete(
+    "/orgs/:orgId/sites/:siteId",
+    { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] },
+    async (request, reply) => {
+      const { siteId } = request.params as { siteId: string };
+      const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
+      if (!site || site.orgId !== request.membership!.orgId) {
+        return reply.code(404).send({ error: "site_not_found" });
+      }
+
+      await db.delete(sites).where(eq(sites.id, site.id));
+      await db.insert(auditLogs).values({
+        orgId: site.orgId,
+        userId: request.user!.id,
+        action: "site.deleted",
+        detail: { siteId: site.publicId, name: site.name },
+      });
+      return reply.code(204).send();
+    }
+  );
+
   app.get(
     "/orgs/:orgId/sites/:siteId/status",
     { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] },
