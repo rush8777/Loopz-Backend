@@ -1,6 +1,7 @@
 import { eq, and, isNull } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { trackedUsers, trackedUserAliases, trackedUserProperties, sessionEvents } from "../../db/schema.js";
+import { claimChecklistProgress } from "../experiences/checklistProgress.js";
 
 export interface IdentifyInput {
   siteId: string; // internal site.id, already resolved from the public siteId
@@ -104,6 +105,7 @@ export async function resolveIdentity(db: Db, input: IdentifyInput): Promise<{ t
         .update(sessionEvents)
         .set({ trackedUserId })
         .where(and(eq(sessionEvents.siteId, siteId), eq(sessionEvents.anonymousId, anonymousId), isNull(sessionEvents.trackedUserId)));
+      await claimChecklistProgress(db, siteId, anonymousId, trackedUserId);
     }
   }
 

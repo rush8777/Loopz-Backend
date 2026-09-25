@@ -1,7 +1,7 @@
 import { and, eq, gte, lte } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { experienceEvents, experienceImpressions, experiences, experienceVersions, surveyResponses } from "../../db/schema.js";
-import type { ExperienceDefinition, SurveyAnswers } from "./types.js";
+import { isChecklistDefinition, type ExperienceDefinition, type SurveyAnswers } from "./types.js";
 
 export interface ExperienceAnalyticsRange { since: Date; until: Date }
 const round = (value: number) => Math.round(value * 10) / 10;
@@ -15,9 +15,9 @@ export async function getExperienceAnalytics(db: Db, siteId: string, experienceI
   const events = await db.select().from(experienceEvents).where(and(eq(experienceEvents.siteId, siteId), eq(experienceEvents.experienceId, experienceId), gte(experienceEvents.timestamp, range.since), lte(experienceEvents.timestamp, range.until)));
   const responses = await db.select().from(surveyResponses).where(and(eq(surveyResponses.siteId, siteId), eq(surveyResponses.experienceId, experienceId), gte(surveyResponses.startedAt, range.since), lte(surveyResponses.startedAt, range.until)));
   const usersSeen = new Set(impressions.map(identity)).size;
-  const completed = new Set(impressions.filter(row => row.completedAt).map(identity)).size;
-  const dismissed = new Set(impressions.filter(row => row.dismissedAt).map(identity)).size;
-  const started = experience.widgetType === "survey" ? new Set(responses.map(identity)).size : experience.kind === "guide" ? uniqueEventUsers(events, "guide_step_shown") : new Set(events.filter(row => row.eventType === "widget_interacted").map(identity)).size;
+  const completed = experience.kind === "checklist" ? uniqueEventUsers(events, "checklist_completed") : new Set(impressions.filter(row => row.completedAt).map(identity)).size;
+  const dismissed = experience.kind === "checklist" ? uniqueEventUsers(events, "checklist_dismissed") : new Set(impressions.filter(row => row.dismissedAt).map(identity)).size;
+  const started = experience.kind === "checklist" ? new Set(events.filter(row => row.eventType === "checklist_item_clicked" || row.eventType === "checklist_item_completed").map(identity)).size : experience.widgetType === "survey" ? new Set(responses.map(identity)).size : experience.kind === "guide" ? uniqueEventUsers(events, "guide_step_shown") : new Set(events.filter(row => row.eventType === "widget_interacted").map(identity)).size;
   const submitted = new Set(responses.filter(row => row.submittedAt).map(identity)).size;
   const abandoned = new Set(responses.filter(row => row.abandonedAt).map(identity)).size;
   const stepIds = [...new Set(events.filter(row => row.stepId).sort((a, b) => (a.stepIndex ?? 0) - (b.stepIndex ?? 0)).map(row => row.stepId!))];
@@ -27,6 +27,7 @@ export async function getExperienceAnalytics(db: Db, siteId: string, experienceI
     return { stepId, stepIndex: rows[0]?.stepIndex ?? 0, usersReached, usersAdvanced, dropOff, dropOffRate: rate(dropOff, usersReached), averageDurationMs: durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : 0 };
   }).sort((a, b) => a.stepIndex - b.stepIndex);
   const questionResults = await aggregateQuestions(db, experience.publishedVersionId, responses);
+  const checklist = experience.kind === "checklist" ? await aggregateChecklist(db, experience.publishedVersionId, events, usersSeen) : null;
   const trend = [...new Set(impressions.map(row => row.shownAt.toISOString().slice(0, 10)))].sort().map(date => {
     const dailyImpressions = impressions.filter(row => row.shownAt.toISOString().startsWith(date)); const dailyResponses = responses.filter(row => row.startedAt.toISOString().startsWith(date));
     const dailyEvents = events.filter(row => row.timestamp.toISOString().startsWith(date));
@@ -34,16 +35,25 @@ export async function getExperienceAnalytics(db: Db, siteId: string, experienceI
       ? new Set(dailyResponses.map(identity)).size
       : experience.kind === "guide"
         ? uniqueEventUsers(dailyEvents, "guide_step_shown")
-        : uniqueEventUsers(dailyEvents, "widget_interacted");
-    return { date, usersSeen: new Set(dailyImpressions.map(identity)).size, interacted, completed: new Set(dailyImpressions.filter(row => row.completedAt).map(identity)).size, dismissed: new Set(dailyImpressions.filter(row => row.dismissedAt).map(identity)).size, submitted: new Set(dailyResponses.filter(row => row.submittedAt).map(identity)).size };
+        : experience.kind === "checklist" ? new Set(dailyEvents.filter(row => row.eventType === "checklist_item_clicked" || row.eventType === "checklist_item_completed").map(identity)).size : uniqueEventUsers(dailyEvents, "widget_interacted");
+    return { date, usersSeen: new Set(dailyImpressions.map(identity)).size, interacted, completed: experience.kind === "checklist" ? uniqueEventUsers(dailyEvents, "checklist_completed") : new Set(dailyImpressions.filter(row => row.completedAt).map(identity)).size, dismissed: experience.kind === "checklist" ? uniqueEventUsers(dailyEvents, "checklist_dismissed") : new Set(dailyImpressions.filter(row => row.dismissedAt).map(identity)).size, submitted: new Set(dailyResponses.filter(row => row.submittedAt).map(identity)).size };
   });
   return {
     experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType },
     summary: { usersSeen, usersStarted: started, completed, dismissed, completionRate: rate(completed, usersSeen) },
     guide: experience.kind === "guide" ? { steps } : null,
     survey: experience.widgetType === "survey" ? { usersSeen, started, submitted, abandoned, responseRate: rate(submitted, usersSeen), questions: questionResults } : null,
+    checklist,
     trend,
   };
+}
+
+async function aggregateChecklist(db: Db, versionId: string | null, events: Array<typeof experienceEvents.$inferSelect>, usersSeen: number) {
+  if (!versionId) return { usersShown: usersSeen, usersOpened: 0, usersStarted: 0, usersCompleted: 0, completionRate: 0, usersDismissed: 0, items: [] };
+  const [version] = await db.select().from(experienceVersions).where(eq(experienceVersions.id, versionId)).limit(1); const definition = version?.definition as ExperienceDefinition | undefined;
+  if (!definition || !isChecklistDefinition(definition)) return null;
+  const opened = uniqueEventUsers(events, "checklist_opened"); const started = new Set(events.filter(row => row.eventType === "checklist_item_clicked" || row.eventType === "checklist_item_completed").map(identity)).size; const completed = uniqueEventUsers(events, "checklist_completed"); const dismissed = uniqueEventUsers(events, "checklist_dismissed");
+  return { usersShown: usersSeen, usersOpened: opened, usersStarted: started, usersCompleted: completed, completionRate: rate(completed, usersSeen), usersDismissed: dismissed, items: definition.items.map((item, index) => { const clicks = new Set(events.filter(row => row.eventType === "checklist_item_clicked" && row.itemId === item.id).map(identity)).size; const completions = new Set(events.filter(row => row.eventType === "checklist_item_completed" && row.itemId === item.id).map(identity)).size; return { itemId: item.id, title: item.title, index, uniqueClicks: clicks, uniqueCompletions: completions, completionRate: rate(completions, usersSeen) }; }) };
 }
 
 export async function listExperienceAnalytics(db: Db, siteId: string, range: ExperienceAnalyticsRange) {

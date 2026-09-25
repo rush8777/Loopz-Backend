@@ -1,6 +1,6 @@
 import type { PageRule } from "../pages/types.js";
 
-export type ExperienceKind = "guide" | "widget";
+export type ExperienceKind = "guide" | "widget" | "checklist";
 export type WidgetType = "anchored_card" | "toast" | "cursor_follow" | "modal" | "slideout" | "hotspot" | "banner" | "survey";
 export type ExperienceStatus = "draft" | "published" | "paused" | "archived";
 
@@ -84,7 +84,7 @@ export interface ExperienceBehavior {
 export interface ExperienceTargeting {
   pageRules: PageRule[];
   audience: { type: "all" } | { type: "segment"; segmentId: string } | { type: "segment_rules"; logic: "all" | "any"; conditions: Array<{ id: string; segmentId: string; operator: "matches" | "not_matches" }> };
-  trigger: { type: "page_load" } | { type: "custom_event"; eventName: string };
+  trigger: { type: "page_load" } | { type: "custom_event"; eventName: string } | { type: "manual" };
   frequency: {
     mode: "once" | "once_per_session" | "every_time";
     cooldownHours?: number;
@@ -94,6 +94,43 @@ export interface ExperienceTargeting {
   interruptPolicy?: "queue" | "interrupt";
   schedule?: { startsAt?: string; endsAt?: string };
   allowedOrigins?: string[];
+}
+
+export type ChecklistTargeting = Pick<ExperienceTargeting, "pageRules" | "audience" | "priority" | "schedule" | "allowedOrigins">;
+
+export type ChecklistItemAction =
+  | { type: "launch_guide"; experienceId: string }
+  | { type: "navigate"; url: string }
+  | { type: "open_url"; url: string }
+  | { type: "none" };
+
+export type ChecklistItemCompletion =
+  | { type: "segment"; segmentId: string }
+  | { type: "guide_completed"; experienceId: string }
+  | { type: "item_clicked" };
+
+export interface ChecklistItem {
+  id: string;
+  title: string;
+  description?: string;
+  action: ChecklistItemAction;
+  completion: ChecklistItemCompletion;
+}
+
+export interface ChecklistExperienceDefinition {
+  title: string;
+  description?: string;
+  items: ChecklistItem[];
+  behavior: {
+    position: "bottom-left" | "bottom-right";
+    order: "any" | "sequential";
+    dismissible: boolean;
+    initialState: "expanded" | "collapsed";
+    showRemainingCount: boolean;
+  };
+  completionMessage: { title: string; description?: string; acknowledgeLabel: string };
+  targeting: ChecklistTargeting;
+  builder: WidgetBuilderState;
 }
 
 export interface GuideStep {
@@ -140,8 +177,12 @@ export interface GuideExperienceDefinition {
   targeting: ExperienceTargeting;
 }
 
-export type ExperienceDefinition = WidgetExperienceDefinition | GuideExperienceDefinition;
+export type ExperienceDefinition = WidgetExperienceDefinition | GuideExperienceDefinition | ChecklistExperienceDefinition;
 
 export function isGuideDefinition(definition: ExperienceDefinition): definition is GuideExperienceDefinition {
   return "steps" in definition;
+}
+
+export function isChecklistDefinition(definition: ExperienceDefinition): definition is ChecklistExperienceDefinition {
+  return "items" in definition;
 }

@@ -8,6 +8,8 @@ import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
 import { guideStepRequiresTarget, type ExperienceDefinition, type ExperienceKind, type ExperienceTargeting, type WidgetType } from "../lib/experiences/types.js";
+import { isChecklistDefinition } from "../lib/experiences/types.js";
+import { initialChecklistDefinition, type ChecklistPreset } from "../lib/experiences/checklistPresets.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import { getExperienceAnalytics, listExperienceAnalytics, listSurveyResponses } from "../lib/experiences/analytics.js";
 import type { PageRule } from "../lib/pages/types.js";
@@ -68,6 +70,7 @@ function targeting(pageRules: PageRule[]): ExperienceTargeting {
 }
 
 function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, pageRules: PageRule[]): ExperienceDefinition {
+  if (kind === "checklist") return initialChecklistDefinition();
   const content = { heading: kind === "guide" ? "Welcome" : "A helpful message", body: "Add a concise message for your visitors." };
   if (kind === "guide") {
     return { steps: [{ id: "step_1", pattern: "anchored_card", content, behavior: { placement: "auto", alignment: "center", offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true } }], design: DEFAULT_DESIGN, behavior: { layer: { mode: "auto" } }, targeting: targeting(pageRules) };
@@ -141,14 +144,26 @@ async function serializeExperience(db: Db, row: typeof experiences.$inferSelect)
   };
 }
 
-async function validateReferences(db: Db, siteId: string, definition: ExperienceDefinition): Promise<string | null> {
+async function validateReferences(db: Db, siteId: string, definition: ExperienceDefinition, publishing = false): Promise<string | null> {
   for (const rule of definition.targeting.pageRules) {
     if (!rule.value.trim()) return "invalid_page_targeting";
   }
   if (definition.targeting.pageRules.length > 0 && !definition.targeting.pageRules.some((rule) => rule.kind === "include")) return "invalid_page_targeting";
   const audience = definition.targeting.audience;
   const segmentIds = audience.type === "segment" ? [audience.segmentId] : audience.type === "segment_rules" ? audience.conditions.map(condition => condition.segmentId) : [];
-  for (const segmentId of segmentIds) { const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1); if (!segment || segment.siteId !== siteId) return "invalid_segment"; }
+  if (isChecklistDefinition(definition)) for (const item of definition.items) if (item.completion.type === "segment") segmentIds.push(item.completion.segmentId);
+  for (const segmentId of new Set(segmentIds)) { const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1); if ((!segment && publishing) || (segment && segment.siteId !== siteId)) return "invalid_segment"; }
+  if (isChecklistDefinition(definition)) {
+    const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1); const origin = siteOrigin(site?.domain ?? null);
+    for (const item of definition.items) if (item.action.type === "navigate" && /^https?:\/\//i.test(item.action.url) && (!origin || new URL(item.action.url).origin !== origin)) return "navigate_url_outside_site_domain";
+    const completionGuideIds = new Set(definition.items.filter(item => item.completion.type === "guide_completed").map(item => (item.completion as { type: "guide_completed"; experienceId: string }).experienceId));
+    const launchGuideIds = new Set(definition.items.filter(item => item.action.type === "launch_guide").map(item => (item.action as { type: "launch_guide"; experienceId: string }).experienceId));
+    for (const guideId of new Set([...completionGuideIds, ...launchGuideIds])) {
+      const [guide] = await db.select().from(experiences).where(eq(experiences.id, guideId)).limit(1);
+      if ((!guide && publishing) || (guide && (guide.siteId !== siteId || guide.kind !== "guide"))) return "invalid_guide";
+      if (publishing && guide && launchGuideIds.has(guideId) && (guide.status !== "published" || !guide.publishedVersionId)) return "guide_unavailable";
+    }
+  }
   return null;
 }
 
@@ -187,7 +202,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
     if (!site) return reply.code(404).send({ error: "site_not_found" });
     const { kind, widgetType } = request.query as { kind?: string; widgetType?: string };
-    if (kind && kind !== "guide" && kind !== "widget") return reply.code(400).send({ error: "invalid_kind" });
+    if (kind && kind !== "guide" && kind !== "widget" && kind !== "checklist") return reply.code(400).send({ error: "invalid_kind" });
     if (widgetType && !SUPPORTED_WIDGET_TYPES.includes(widgetType as WidgetType)) return reply.code(400).send({ error: "invalid_widget_type" });
     if (widgetType && kind !== "widget") return reply.code(400).send({ error: "widget_type_requires_widget_kind" });
     const rows = await db.select().from(experiences).where(eq(experiences.siteId, site.id)).orderBy(desc(experiences.updatedAt));
@@ -208,14 +223,14 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
       [page] = await db.select().from(pageDefinitions).where(eq(pageDefinitions.id, parsed.data.buildPageId)).limit(1);
       if (!page || page.siteId !== site.id) return reply.code(400).send({ error: "invalid_build_page" });
     }
-    const buildUrl = parsed.data.buildUrl ?? (page ? deriveBuildUrl(site.domain, page.rules as PageRule[]) : null);
-    if (!buildUrl || !urlBelongsToSite(buildUrl, site.domain)) return reply.code(400).send({ error: "build_url_outside_site_domain" });
+    const buildUrl = parsed.data.kind === "checklist" ? null : parsed.data.buildUrl ?? (page ? deriveBuildUrl(site.domain, page.rules as PageRule[]) : null);
+    if (parsed.data.kind !== "checklist" && (!buildUrl || !urlBelongsToSite(buildUrl, site.domain))) return reply.code(400).send({ error: "build_url_outside_site_domain" });
     const initialPageRules = parsed.data.useBuildPageAsTarget
       ? page
         ? (page.rules as PageRule[])
-        : [{ id: "build_page", kind: "include" as const, operator: "equals" as const, value: new URL(buildUrl).pathname }]
+        : [{ id: "build_page", kind: "include" as const, operator: "equals" as const, value: new URL(buildUrl!).pathname }]
       : [];
-    const definition = initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules);
+    const definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(parsed.data.template as ChecklistPreset) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules);
 
     const [experience] = await db.insert(experiences).values({
       siteId: site.id,
@@ -223,7 +238,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
       widgetType: parsed.data.kind === "widget" ? parsed.data.widgetType! : null,
       name: parsed.data.name,
       buildPageId: page?.id ?? null,
-      buildUrl,
+      buildUrl: buildUrl ?? null,
       createdBy: request.user!.id,
     }).returning();
     await db.insert(experienceVersions).values({ experienceId: experience.id, versionNumber: 1, state: "draft", definition, createdBy: request.user!.id });
@@ -255,7 +270,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
       const definition = definitionSchemaFor(row.kind as ExperienceKind, row.widgetType).safeParse(parsed.data.definition);
       if (!definition.success) return reply.code(400).send({ error: "invalid_definition", details: { ...definition.error.flatten(), issues: definition.error.issues } });
       if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType as WidgetType, definition.data)) return reply.code(400).send({ error: "invalid_widget_size" });
-      const referenceError = await validateReferences(db, site.id, definition.data);
+      const referenceError = await validateReferences(db, site.id, definition.data, false);
       if (referenceError) return reply.code(400).send({ error: referenceError });
       await db.update(experienceVersions).set({ definition: definition.data }).where(eq(experienceVersions.id, draft.id));
     }
@@ -287,7 +302,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType as WidgetType, checked.data)) return reply.code(400).send({ error: "invalid_widget_size" });
     const requirementError = validatePublishRequirements(row.kind as ExperienceKind, row.widgetType as WidgetType | null, checked.data);
     if (requirementError) return reply.code(400).send({ error: requirementError });
-    const referenceError = await validateReferences(db, site.id, checked.data);
+    const referenceError = await validateReferences(db, site.id, checked.data, true);
     if (referenceError) return reply.code(400).send({ error: referenceError });
     const now = new Date();
     await db.update(experienceVersions).set({ state: "published", publishedAt: now }).where(eq(experienceVersions.id, draft.id));
@@ -312,6 +327,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!site) return reply.code(404).send({ error: "site_not_found" });
     const row = await loadExperience(db, site.id, experienceId);
     if (!row) return reply.code(404).send({ error: "experience_not_found" });
+    if (row.kind === "checklist") return reply.code(400).send({ error: "checklist_live_editor_unsupported" });
     if (!row.buildUrl || !urlBelongsToSite(row.buildUrl, site.domain)) return reply.code(400).send({ error: "invalid_build_url" });
     const rawToken = crypto.randomBytes(32).toString("base64url");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");

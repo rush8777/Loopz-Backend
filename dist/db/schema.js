@@ -872,12 +872,44 @@ export const experienceEvents = sqliteTable("experience_events", {
     pageViewId: text("page_view_id"),
     durationMs: integer("duration_ms"),
     action: text("action"),
+    itemId: text("item_id"),
+    itemIndex: integer("item_index"),
+    completionSource: text("completion_source"),
     timestamp: integer("timestamp", { mode: "timestamp_ms" }).notNull(),
 }, (table) => [
     index("experience_events_site_time_idx").on(table.siteId, table.timestamp),
     index("experience_events_experience_time_idx").on(table.siteId, table.experienceId, table.timestamp),
     index("experience_events_impression_type_step_idx").on(table.impressionId, table.eventType, table.stepId),
+    index("experience_events_experience_item_idx").on(table.experienceId, table.itemId, table.eventType),
 ]);
+export const checklistStates = sqliteTable("checklist_states", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("cks")),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    experienceId: text("experience_id").notNull().references(() => experiences.id, { onDelete: "cascade" }),
+    anonymousId: text("anonymous_id").notNull(),
+    trackedUserId: text("tracked_user_id").references(() => trackedUsers.id, { onDelete: "cascade" }),
+    isCollapsed: integer("is_collapsed", { mode: "boolean" }).notNull().default(false),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    lastShownAt: integer("last_shown_at", { mode: "timestamp_ms" }),
+    lastOpenedAt: integer("last_opened_at", { mode: "timestamp_ms" }),
+    dismissedAt: integer("dismissed_at", { mode: "timestamp_ms" }),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+    completionAcknowledgedAt: integer("completion_acknowledged_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+}, (table) => [
+    uniqueIndex("checklist_states_identified_uidx").on(table.siteId, table.experienceId, table.trackedUserId).where(sql `${table.trackedUserId} IS NOT NULL`),
+    uniqueIndex("checklist_states_anonymous_uidx").on(table.siteId, table.experienceId, table.anonymousId).where(sql `${table.trackedUserId} IS NULL`),
+    index("checklist_states_site_experience_idx").on(table.siteId, table.experienceId),
+]);
+export const checklistItemCompletions = sqliteTable("checklist_item_completions", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("ckc")),
+    checklistStateId: text("checklist_state_id").notNull().references(() => checklistStates.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull(),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }).notNull(),
+    completionSource: text("completion_source").notNull(),
+    completedVersionId: text("completed_version_id").references(() => experienceVersions.id, { onDelete: "set null" }),
+}, (table) => [uniqueIndex("checklist_item_completions_state_item_uidx").on(table.checklistStateId, table.itemId)]);
 export const surveyResponses = sqliteTable("survey_responses", {
     id: text("id").primaryKey().$defaultFn(() => cuid("srv")),
     siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),

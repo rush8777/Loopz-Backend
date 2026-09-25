@@ -6,6 +6,8 @@ import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
 import { guideStepRequiresTarget } from "../lib/experiences/types.js";
+import { isChecklistDefinition } from "../lib/experiences/types.js";
+import { initialChecklistDefinition } from "../lib/experiences/checklistPresets.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import { getExperienceAnalytics, listExperienceAnalytics, listSurveyResponses } from "../lib/experiences/analytics.js";
 const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
@@ -61,6 +63,8 @@ function targeting(pageRules) {
     return { pageRules, audience: { type: "all" }, trigger: { type: "page_load" }, frequency: { mode: "once" }, priority: 0 };
 }
 function initialDefinition(kind, widgetType, pageRules) {
+    if (kind === "checklist")
+        return initialChecklistDefinition();
     const content = { heading: kind === "guide" ? "Welcome" : "A helpful message", body: "Add a concise message for your visitors." };
     if (kind === "guide") {
         return { steps: [{ id: "step_1", pattern: "anchored_card", content, behavior: { placement: "auto", alignment: "center", offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true } }], design: DEFAULT_DESIGN, behavior: { layer: { mode: "auto" } }, targeting: targeting(pageRules) };
@@ -132,7 +136,7 @@ async function serializeExperience(db, row) {
         publishedVersion: published ? { ...published, definition: published.definition, createdAt: published.createdAt.toISOString(), publishedAt: published.publishedAt?.toISOString() ?? null } : null,
     };
 }
-async function validateReferences(db, siteId, definition) {
+async function validateReferences(db, siteId, definition, publishing = false) {
     for (const rule of definition.targeting.pageRules) {
         if (!rule.value.trim())
             return "invalid_page_targeting";
@@ -141,10 +145,30 @@ async function validateReferences(db, siteId, definition) {
         return "invalid_page_targeting";
     const audience = definition.targeting.audience;
     const segmentIds = audience.type === "segment" ? [audience.segmentId] : audience.type === "segment_rules" ? audience.conditions.map(condition => condition.segmentId) : [];
-    for (const segmentId of segmentIds) {
+    if (isChecklistDefinition(definition))
+        for (const item of definition.items)
+            if (item.completion.type === "segment")
+                segmentIds.push(item.completion.segmentId);
+    for (const segmentId of new Set(segmentIds)) {
         const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1);
-        if (!segment || segment.siteId !== siteId)
+        if ((!segment && publishing) || (segment && segment.siteId !== siteId))
             return "invalid_segment";
+    }
+    if (isChecklistDefinition(definition)) {
+        const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
+        const origin = siteOrigin(site?.domain ?? null);
+        for (const item of definition.items)
+            if (item.action.type === "navigate" && /^https?:\/\//i.test(item.action.url) && (!origin || new URL(item.action.url).origin !== origin))
+                return "navigate_url_outside_site_domain";
+        const completionGuideIds = new Set(definition.items.filter(item => item.completion.type === "guide_completed").map(item => item.completion.experienceId));
+        const launchGuideIds = new Set(definition.items.filter(item => item.action.type === "launch_guide").map(item => item.action.experienceId));
+        for (const guideId of new Set([...completionGuideIds, ...launchGuideIds])) {
+            const [guide] = await db.select().from(experiences).where(eq(experiences.id, guideId)).limit(1);
+            if ((!guide && publishing) || (guide && (guide.siteId !== siteId || guide.kind !== "guide")))
+                return "invalid_guide";
+            if (publishing && guide && launchGuideIds.has(guideId) && (guide.status !== "published" || !guide.publishedVersionId))
+                return "guide_unavailable";
+        }
     }
     return null;
 }
@@ -198,7 +222,7 @@ export function registerExperienceRoutes(app, db) {
         if (!site)
             return reply.code(404).send({ error: "site_not_found" });
         const { kind, widgetType } = request.query;
-        if (kind && kind !== "guide" && kind !== "widget")
+        if (kind && kind !== "guide" && kind !== "widget" && kind !== "checklist")
             return reply.code(400).send({ error: "invalid_kind" });
         if (widgetType && !SUPPORTED_WIDGET_TYPES.includes(widgetType))
             return reply.code(400).send({ error: "invalid_widget_type" });
@@ -224,22 +248,22 @@ export function registerExperienceRoutes(app, db) {
             if (!page || page.siteId !== site.id)
                 return reply.code(400).send({ error: "invalid_build_page" });
         }
-        const buildUrl = parsed.data.buildUrl ?? (page ? deriveBuildUrl(site.domain, page.rules) : null);
-        if (!buildUrl || !urlBelongsToSite(buildUrl, site.domain))
+        const buildUrl = parsed.data.kind === "checklist" ? null : parsed.data.buildUrl ?? (page ? deriveBuildUrl(site.domain, page.rules) : null);
+        if (parsed.data.kind !== "checklist" && (!buildUrl || !urlBelongsToSite(buildUrl, site.domain)))
             return reply.code(400).send({ error: "build_url_outside_site_domain" });
         const initialPageRules = parsed.data.useBuildPageAsTarget
             ? page
                 ? page.rules
                 : [{ id: "build_page", kind: "include", operator: "equals", value: new URL(buildUrl).pathname }]
             : [];
-        const definition = initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules);
+        const definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(parsed.data.template) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules);
         const [experience] = await db.insert(experiences).values({
             siteId: site.id,
             kind: parsed.data.kind,
             widgetType: parsed.data.kind === "widget" ? parsed.data.widgetType : null,
             name: parsed.data.name,
             buildPageId: page?.id ?? null,
-            buildUrl,
+            buildUrl: buildUrl ?? null,
             createdBy: request.user.id,
         }).returning();
         await db.insert(experienceVersions).values({ experienceId: experience.id, versionNumber: 1, state: "draft", definition, createdBy: request.user.id });
@@ -278,7 +302,7 @@ export function registerExperienceRoutes(app, db) {
                 return reply.code(400).send({ error: "invalid_definition", details: { ...definition.error.flatten(), issues: definition.error.issues } });
             if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType, definition.data))
                 return reply.code(400).send({ error: "invalid_widget_size" });
-            const referenceError = await validateReferences(db, site.id, definition.data);
+            const referenceError = await validateReferences(db, site.id, definition.data, false);
             if (referenceError)
                 return reply.code(400).send({ error: referenceError });
             await db.update(experienceVersions).set({ definition: definition.data }).where(eq(experienceVersions.id, draft.id));
@@ -317,7 +341,7 @@ export function registerExperienceRoutes(app, db) {
         const requirementError = validatePublishRequirements(row.kind, row.widgetType, checked.data);
         if (requirementError)
             return reply.code(400).send({ error: requirementError });
-        const referenceError = await validateReferences(db, site.id, checked.data);
+        const referenceError = await validateReferences(db, site.id, checked.data, true);
         if (referenceError)
             return reply.code(400).send({ error: referenceError });
         const now = new Date();
@@ -345,6 +369,8 @@ export function registerExperienceRoutes(app, db) {
         const row = await loadExperience(db, site.id, experienceId);
         if (!row)
             return reply.code(404).send({ error: "experience_not_found" });
+        if (row.kind === "checklist")
+            return reply.code(400).send({ error: "checklist_live_editor_unsupported" });
         if (!row.buildUrl || !urlBelongsToSite(row.buildUrl, site.domain))
             return reply.code(400).send({ error: "invalid_build_url" });
         const rawToken = crypto.randomBytes(32).toString("base64url");

@@ -23,6 +23,7 @@ import { registerPublicElementsRoutes } from "./routes/public-elements.js";
 import { registerHeatmapRoutes } from "./routes/heatmaps.js";
 import { registerExperienceRoutes } from "./routes/experiences.js";
 import { registerPublicExperienceRoutes } from "./routes/public-experiences.js";
+import { registerPublicChecklistRoutes } from "./routes/public-checklists.js";
 import { registerDashboardRoutes } from "./routes/dashboards.js";
 import { registerAnalyticsRoutes } from "./routes/analytics.js";
 
@@ -94,6 +95,7 @@ export async function buildApp(db: Db) {
   await app.register(async (publicExperienceScope) => {
     await publicExperienceScope.register(rateLimit, { global: true, max: 180, timeWindow: "1 minute" });
     registerPublicExperienceRoutes(publicExperienceScope, db);
+    registerPublicChecklistRoutes(publicExperienceScope, db);
   });
 
   app.get("/health", async () => ({ ok: true }));

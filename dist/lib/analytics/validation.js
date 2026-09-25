@@ -81,7 +81,7 @@ export const retentionConfigurationSchema = z.object({
     visualization: z.enum(["grid", "trend"]),
 });
 export const experienceConfigurationSchema = z.object({
-    schemaVersion: z.literal(1), kind: z.literal("experience"), experienceType: z.enum(["guide", "survey", "widget"]), experienceId: z.string().min(1).max(64),
+    schemaVersion: z.literal(1), kind: z.literal("experience"), experienceType: z.enum(["guide", "survey", "widget", "checklist"]), experienceId: z.string().min(1).max(64),
     metric: z.enum(["users_seen", "completions", "completion_rate", "dismissals", "step_reach", "step_drop_off", "responses", "response_rate", "abandonment_rate", "impressions", "interactions", "interaction_rate"]),
     visualization: z.enum(["total", "bars", "horizontal_bars", "table"]),
 });

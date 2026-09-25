@@ -11,6 +11,7 @@ import { widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import { matchesRules } from "../lib/pages/pageMatcher.js";
 import { evaluateSegment } from "../lib/segments/evaluator.js";
 import type { SegmentDefinition } from "../lib/segments/types.js";
+import { deliveredChecklist } from "./public-checklists.js";
 
 function rawTokenHash(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -107,12 +108,13 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
     const eligible: Array<{ id: string; versionId: string; kind: string; widgetType: string | null; priority: number; interruptPolicy: "queue" | "interrupt"; impressionId?: string; definition: unknown }> = [];
 
     for (const experience of rows) {
+      if (experience.kind === "checklist") continue;
       const [version] = await db.select().from(experienceVersions).where(eq(experienceVersions.id, experience.publishedVersionId!)).limit(1);
       if (!version || version.state !== "published") continue;
       const checked = definitionSchemaFor(experience.kind as ExperienceKind, experience.widgetType).safeParse(version.definition);
       if (!checked.success) continue;
       const definition = checked.data;
-      const target = definition.targeting;
+      const target = definition.targeting as ExperienceTargeting;
       const resumingGuide = experience.kind === "guide" && query.data.activeGuideId === experience.id && query.data.activeGuideVersionId === version.id;
       const now = new Date();
       if (target.schedule?.startsAt && now < new Date(target.schedule.startsAt)) continue;
@@ -121,7 +123,8 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
       if (!resumingGuide && target.pageRules.length > 0 && !matchesRules(pagePath, target.pageRules)) continue;
       if (!resumingGuide && target.trigger.type === "custom_event" && query.data.trigger !== target.trigger.eventName) continue;
       if (!resumingGuide && target.trigger.type === "page_load" && query.data.trigger) continue;
-      if (!await matchesAudience(db, site.id, identityKey, target.audience)) continue;
+      if (!resumingGuide && target.trigger.type === "manual") continue;
+      if (!resumingGuide && !await matchesAudience(db, site.id, identityKey, target.audience)) continue;
       const impressions = await db.select().from(experienceImpressions).where(and(eq(experienceImpressions.siteId, site.id), eq(experienceImpressions.experienceId, experience.id)));
       const personImpressions = impressions.filter((item) => item.anonymousId === query.data.anonymousId || (trackedUserId && item.trackedUserId === trackedUserId));
       if (!resumingGuide && target.frequency.mode === "once" && personImpressions.length > 0) continue;
@@ -132,8 +135,9 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
       eligible.push({ id: experience.id, versionId: version.id, kind: experience.kind, widgetType: experience.widgetType, priority: target.priority, interruptPolicy: target.interruptPolicy ?? "queue", ...(activeImpression ? { impressionId: activeImpression.id } : {}), definition: withoutPrivateTargeting(definition) });
     }
     eligible.sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
+    const checklist = await deliveredChecklist(db, site, query.data);
     reply.header("Cache-Control", "private, no-store");
-    return reply.send({ experiences: eligible });
+    return reply.send({ experiences: eligible, checklists: checklist ? [checklist] : [], hasChecklists: rows.some(row => row.kind === "checklist") });
   });
 
   app.post("/public/sites/:siteId/experience-events", async (request, reply) => {
@@ -153,7 +157,7 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
       const [impression] = await db.insert(experienceImpressions).values({
         siteId: site.id, experienceId: experience.id, versionId: version.id,
         anonymousId: parsed.data.anonymousId ?? null, trackedUserId, sessionId: parsed.data.sessionId ?? null,
-        pageViewId: parsed.data.pageViewId ?? null, shownAt: new Date(),
+        pageViewId: parsed.data.pageViewId ?? null, shownAt: new Date(), metadata: parsed.data.launchContext ?? null,
       }).returning();
       await db.insert(experienceEvents).values({
         siteId: site.id, experienceId: experience.id, versionId: version.id, impressionId: impression.id,

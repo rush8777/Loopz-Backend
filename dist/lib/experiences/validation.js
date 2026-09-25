@@ -98,6 +98,7 @@ const targetingSchema = z.object({
     trigger: z.discriminatedUnion("type", [
         z.object({ type: z.literal("page_load") }),
         z.object({ type: z.literal("custom_event"), eventName: z.string().trim().min(1).max(200) }),
+        z.object({ type: z.literal("manual") }),
     ]),
     frequency: z.object({
         mode: z.enum(["once", "once_per_session", "every_time"]),
@@ -207,21 +208,64 @@ export const guideDefinitionSchema = z.object({
     behavior: z.object({ layer: layerSchema.optional() }).strict().optional(),
     targeting: targetingSchema,
 }).strict();
+const checklistTargetingSchema = targetingSchema.pick({ pageRules: true, audience: true, priority: true, schedule: true, allowedOrigins: true });
+const checklistIdSchema = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/, "IDs may contain only letters, numbers, underscores, and hyphens");
+const checklistActionSchema = z.discriminatedUnion("type", [
+    z.object({ type: z.literal("launch_guide"), experienceId: checklistIdSchema }).strict(),
+    z.object({ type: z.literal("navigate"), url: z.string().trim().min(1).max(2000).refine(value => value.startsWith("/") || /^https?:\/\//i.test(value), "navigate URL must be relative or http(s)") }).strict(),
+    z.object({ type: z.literal("open_url"), url: z.url().max(2000).refine(value => /^https?:\/\//i.test(value), "only http(s) URLs are allowed") }).strict(),
+    z.object({ type: z.literal("none") }).strict(),
+]);
+const checklistCompletionSchema = z.discriminatedUnion("type", [
+    z.object({ type: z.literal("segment"), segmentId: checklistIdSchema }).strict(),
+    z.object({ type: z.literal("guide_completed"), experienceId: checklistIdSchema }).strict(),
+    z.object({ type: z.literal("item_clicked") }).strict(),
+]);
+export const checklistDefinitionSchema = z.object({
+    title: z.string().trim().min(1).max(160),
+    description: z.string().trim().max(2000).optional(),
+    items: z.array(z.object({ id: checklistIdSchema, title: z.string().trim().min(1).max(200), description: z.string().trim().max(1000).optional(), action: checklistActionSchema, completion: checklistCompletionSchema }).strict()).min(1).max(20),
+    behavior: z.object({ position: z.enum(["bottom-left", "bottom-right"]), order: z.enum(["any", "sequential"]), dismissible: z.boolean(), initialState: z.enum(["expanded", "collapsed"]), showRemainingCount: z.boolean() }).strict(),
+    completionMessage: z.object({ title: z.string().trim().min(1).max(160), description: z.string().trim().max(2000).optional(), acknowledgeLabel: z.string().trim().min(1).max(80) }).strict(),
+    targeting: checklistTargetingSchema,
+    builder: builderSchema,
+}).strict().superRefine((definition, ctx) => {
+    const ids = new Set();
+    definition.items.forEach((item, index) => { if (ids.has(item.id))
+        ctx.addIssue({ code: "custom", path: ["items", index, "id"], message: "Checklist item IDs must be unique" }); ids.add(item.id); if (item.action.type === "none" && item.completion.type !== "item_clicked")
+        ctx.addIssue({ code: "custom", path: ["items", index, "action"], message: "Items without an action must complete when clicked" }); });
+    const rootCount = Array.from(definition.builder.html.matchAll(/data-movecues-checklist-role\s*=\s*["']root["']/gi)).length;
+    if (rootCount !== 1)
+        ctx.addIssue({ code: "custom", path: ["builder", "html"], message: "Checklist builder must contain exactly one root marker" });
+    for (const role of ["title", "items", "progress", "launcher-label", "remaining-count", "completion-title", "completion-description", "completion-acknowledge"]) {
+        if (!new RegExp(`data-movecues-checklist-role\\s*=\\s*["']${role}["']`, "i").test(definition.builder.html))
+            ctx.addIssue({ code: "custom", path: ["builder", "html"], message: `Checklist builder is missing ${role}` });
+    }
+    const markers = Array.from(definition.builder.html.matchAll(/data-movecues-checklist-item-id\s*=\s*["']([^"']+)["']/gi)).map(match => match[1]);
+    definition.items.forEach(item => { if (markers.filter(id => id === item.id).length !== 1)
+        ctx.addIssue({ code: "custom", path: ["builder", "html"], message: `Checklist item ${item.id} must appear exactly once` }); });
+    markers.forEach(id => { if (!ids.has(id))
+        ctx.addIssue({ code: "custom", path: ["builder", "html"], message: `Unknown Checklist item marker ${id}` }); });
+});
 export const createExperienceSchema = z.object({
-    kind: z.enum(["guide", "widget"]),
+    kind: z.enum(["guide", "widget", "checklist"]),
     widgetType: z.enum(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"]).nullable().optional(),
     name: z.string().trim().min(1).max(200),
     buildPageId: z.string().min(1).max(64).nullable().optional(),
     buildUrl: z.url().max(2000).nullable().optional(),
-    template: z.literal("blank").default("blank"),
+    template: z.enum(["blank", "default", "minimal", "soft", "compact"]).default("blank"),
     useBuildPageAsTarget: z.boolean().default(false),
 }).superRefine((value, ctx) => {
     if (value.kind === "widget" && !value.widgetType)
         ctx.addIssue({ code: "custom", path: ["widgetType"], message: "widgetType is required" });
-    if (value.kind === "guide" && value.widgetType)
-        ctx.addIssue({ code: "custom", path: ["widgetType"], message: "guides do not have a widgetType" });
-    if (!value.buildPageId && !value.buildUrl)
+    if (value.kind !== "widget" && value.widgetType)
+        ctx.addIssue({ code: "custom", path: ["widgetType"], message: `${value.kind}s do not have a widgetType` });
+    if (value.kind !== "checklist" && !value.buildPageId && !value.buildUrl)
         ctx.addIssue({ code: "custom", path: ["buildUrl"], message: "a build page or URL is required" });
+    if (value.kind === "checklist" && value.template === "blank")
+        ctx.addIssue({ code: "custom", path: ["template"], message: "choose a Checklist preset" });
+    if (value.kind !== "checklist" && value.template !== "blank")
+        ctx.addIssue({ code: "custom", path: ["template"], message: "presets are only supported for Checklists" });
 });
 export const updateDraftSchema = z.object({
     name: z.string().trim().min(1).max(200).optional(),
@@ -251,11 +295,14 @@ export const impressionSchema = z.object({
     durationMs: z.number().int().min(0).max(86_400_000).optional(),
     action: z.string().min(1).max(80).optional(),
     timestamp: z.number().int().positive().default(() => Date.now()),
+    launchContext: z.object({ launchSource: z.enum(["api", "checklist"]), sourceExperienceId: z.string().min(1).max(64).optional(), sourceItemId: z.string().min(1).max(64).optional() }).strict().optional(),
 }).superRefine((value, ctx) => {
     if (value.event !== "shown" && !value.impressionId)
         ctx.addIssue({ code: "custom", path: ["impressionId"], message: "impression ID is required" });
     if (value.eventType?.startsWith("guide_step_") && (!value.stepId || value.stepIndex === undefined))
         ctx.addIssue({ code: "custom", path: ["stepId"], message: "Guide step events require a step ID and index" });
+    if (value.launchContext?.launchSource === "checklist" && (!value.launchContext.sourceExperienceId || !value.launchContext.sourceItemId))
+        ctx.addIssue({ code: "custom", path: ["launchContext"], message: "Checklist launch attribution is incomplete" });
 });
 const surveyAnswerValueSchema = z.union([z.string().max(10_000), z.array(z.string().max(64)).max(20), z.number().int()]);
 const surveyIdentityShape = {
@@ -273,6 +320,8 @@ export const updateSurveyResponseSchema = z.object({
 export function definitionSchemaFor(kind, widgetType) {
     if (kind === "guide")
         return guideDefinitionSchema;
+    if (kind === "checklist")
+        return checklistDefinitionSchema;
     return widgetDefinitionSchema.superRefine((definition, ctx) => {
         if (widgetType === "survey" && !definition.survey)
             ctx.addIssue({ code: "custom", path: ["survey"], message: "survey config is required for survey widgets" });

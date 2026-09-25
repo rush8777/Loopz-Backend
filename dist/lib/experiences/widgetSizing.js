@@ -28,7 +28,7 @@ function sizeIsValid(widgetType, size) {
     return true;
 }
 export function widgetSizeIsValid(widgetType, definition) {
-    if ("steps" in definition)
+    if ("steps" in definition || "items" in definition)
         return true;
     const sizes = [definition.design.size, ...(widgetType === "survey" ? definition.survey?.steps.map(step => step.size) ?? [] : [])].filter((size) => Boolean(size));
     return sizes.every(size => sizeIsValid(widgetType, size));
