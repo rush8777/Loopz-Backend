@@ -27,6 +27,24 @@ describe("visual experiences", () => {
     expect(published.statusCode).toBe(200); expect(published.json().publishedVersion.versionNumber).toBe(1); expect(published.json().draftVersion.versionNumber).toBe(2);
   });
 
+  it("persists launch setup completion independently from publishing", async () => {
+    const { owner, site } = await setup(ctx.app, "launch-setup");
+    const authorization = { authorization: `Bearer ${owner.accessToken}` };
+    const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: authorization, payload: { kind: "widget", widgetType: "toast", name: "Launch review", buildUrl: "https://launch-setup.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
+    expect(created.launchSetupCompletedAt).toBeNull();
+    expect(created.status).toBe("draft");
+
+    const completed = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/launch-setup/complete`, headers: authorization });
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json().launchSetupCompletedAt).toEqual(expect.any(String));
+    expect(completed.json().status).toBe("draft");
+    expect(completed.json().publishedVersionId).toBeNull();
+
+    const repeated = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/launch-setup/complete`, headers: authorization });
+    expect(repeated.statusCode).toBe(200);
+    expect(repeated.json().launchSetupCompletedAt).toBe(completed.json().launchSetupCompletedAt);
+  });
+
   it("filters unified widget experiences by a supported widget type", async () => {
     const { owner, site } = await setup(ctx.app, "collection-filter");
     for (const widgetType of ["modal", "banner"] as const) {

@@ -15,11 +15,19 @@ describe("experience layer validation", () => {
     expect(widgetDefinitionSchema.safeParse({ content: { heading: "Hello", body: "World" }, design, behavior: { dismissible: true, layer }, targeting }).success).toBe(true);
   });
 
-  it("accepts one guide-level policy and does not persist per-step layer overrides", () => {
+  it("accepts legacy guide-level policies and validated per-step overrides", () => {
     const definition = { design, targeting, behavior: { layer: { mode: "relative", relation: "above", target } }, steps: [{ id: "one", content: { heading: "One", body: "Body" }, behavior: { dismissible: true } }] };
     expect(guideDefinitionSchema.safeParse(definition).success).toBe(true);
     const parsed = guideDefinitionSchema.parse({ ...definition, steps: [{ ...definition.steps[0], behavior: { dismissible: true, layer: { mode: "auto" } } }] });
-    expect(parsed.steps[0].behavior).not.toHaveProperty("layer");
+    expect(parsed.steps[0].behavior.layer).toEqual({ mode: "auto" });
+    expect(guideDefinitionSchema.safeParse({ ...definition, steps: [{ ...definition.steps[0], behavior: { dismissible: true, layer: { mode: "custom", zIndex: 0 } } }] }).success).toBe(false);
+  });
+
+  it("accepts validated per-step Survey overrides", () => {
+    const definition = { content: { heading: "Survey", body: "Body" }, design, behavior: { dismissible: true, layer: { mode: "auto" } }, targeting, survey: { showProgress: true, allowBack: true, submitLabel: "Submit", steps: [{ id: "one", content: { heading: "One", body: "Body" }, questions: [], behavior: { layer: { mode: "custom", zIndex: 1500 } } }] } };
+    const parsed = widgetDefinitionSchema.parse(definition);
+    expect(parsed.survey?.steps[0].behavior?.layer).toEqual({ mode: "custom", zIndex: 1500 });
+    expect(widgetDefinitionSchema.safeParse({ ...definition, survey: { ...definition.survey, steps: [{ ...definition.survey.steps[0], behavior: { layer: { mode: "custom", zIndex: 0 } } }] } }).success).toBe(false);
   });
 
   it("rejects invalid custom values and incomplete relative policies", () => {

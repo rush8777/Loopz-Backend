@@ -137,6 +137,7 @@ async function serializeExperience(db: Db, row: typeof experiences.$inferSelect)
   const published = versions.find((version) => version.id === row.publishedVersionId) ?? null;
   return {
     ...row,
+    launchSetupCompletedAt: row.launchSetupCompletedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     draftVersion: draft ? { ...draft, definition: draft.definition as ExperienceDefinition, createdAt: draft.createdAt.toISOString(), publishedAt: null } : null,
@@ -286,6 +287,17 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!row) return reply.code(404).send({ error: "experience_not_found" });
     await db.delete(experiences).where(eq(experiences.id, row.id));
     return reply.code(204).send();
+  });
+
+  app.post("/orgs/:orgId/sites/:siteId/experiences/:experienceId/launch-setup/complete", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+    const { siteId, experienceId } = request.params as { siteId: string; experienceId: string };
+    const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const row = await loadExperience(db, site.id, experienceId);
+    if (!row) return reply.code(404).send({ error: "experience_not_found" });
+    if (row.launchSetupCompletedAt) return reply.send(await serializeExperience(db, row));
+    const [updated] = await db.update(experiences).set({ launchSetupCompletedAt: new Date(), updatedAt: new Date() }).where(eq(experiences.id, row.id)).returning();
+    return reply.send(await serializeExperience(db, updated));
   });
 
   app.post("/orgs/:orgId/sites/:siteId/experiences/:experienceId/publish", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {

@@ -141,7 +141,7 @@ export interface GuideStep {
   size?: ExperienceSize;
   advance?: { type: "button" } | { type: "element_click" } | { type: "element_hover"; durationMs?: number } | { type: "custom_event"; eventName: string } | { type: "route"; pageRules: PageRule[] };
   target?: ExperienceTarget;
-  behavior: Pick<ExperienceBehavior, "placement" | "alignment" | "offset" | "pointer" | "dismissible">;
+  behavior: Pick<ExperienceBehavior, "placement" | "alignment" | "offset" | "pointer" | "dismissible" | "layer">;
 }
 
 export type GuideStepPattern = "anchored_card" | "modal";
@@ -156,7 +156,7 @@ export type SurveyQuestion =
   | { id: string; type: "long_text"; label: string; required?: boolean; placeholder?: string; maxLength?: number }
   | { id: string; type: "rating"; label: string; required?: boolean; min: number; max: number }
   | { id: string; type: "nps"; label: string; required?: boolean };
-export interface SurveyStep { id: string; content: { heading: string; body: string }; questions: SurveyQuestion[]; builder?: WidgetBuilderState; size?: ExperienceSize }
+export interface SurveyStep { id: string; content: { heading: string; body: string }; questions: SurveyQuestion[]; builder?: WidgetBuilderState; size?: ExperienceSize; behavior?: { layer?: ExperienceLayer } }
 export interface SurveyConfig { steps: SurveyStep[]; showProgress: boolean; allowBack: boolean; submitLabel: string }
 export type SurveyAnswers = Record<string, string | string[] | number>;
 
