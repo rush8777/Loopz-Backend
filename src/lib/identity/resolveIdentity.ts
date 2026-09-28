@@ -1,4 +1,4 @@
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, inArray, isNull } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { trackedUsers, trackedUserAliases, trackedUserProperties, sessionEvents } from "../../db/schema.js";
 import { claimChecklistProgress } from "../experiences/checklistProgress.js";
@@ -110,18 +110,25 @@ export async function resolveIdentity(db: Db, input: IdentifyInput): Promise<{ t
   }
 
   if (traits) {
-    for (const [name, rawValue] of Object.entries(traits)) {
-      if (rawValue === undefined) continue;
-      const { value, valueType } = serializeTraitValue(rawValue);
-
-      const [existingProp] = await db
+    const traitEntries = Object.entries(traits).filter((entry): entry is [string, Exclude<unknown, undefined>] => entry[1] !== undefined);
+    const existingProperties = traitEntries.length === 0
+      ? []
+      : await db
         .select()
         .from(trackedUserProperties)
-        .where(and(eq(trackedUserProperties.trackedUserId, trackedUserId), eq(trackedUserProperties.name, name)))
-        .limit(1);
+        .where(and(
+          eq(trackedUserProperties.trackedUserId, trackedUserId),
+          inArray(trackedUserProperties.name, traitEntries.map(([name]) => name))
+        ));
+    const existingByName = new Map(existingProperties.map((property) => [property.name, property]));
+    const newProperties: (typeof trackedUserProperties.$inferInsert)[] = [];
+
+    for (const [name, rawValue] of traitEntries) {
+      const { value, valueType } = serializeTraitValue(rawValue);
+      const existingProp = existingByName.get(name);
 
       if (!existingProp) {
-        await db.insert(trackedUserProperties).values({
+        newProperties.push({
           trackedUserId,
           siteId,
           name,
@@ -142,6 +149,10 @@ export async function resolveIdentity(db: Db, input: IdentifyInput): Promise<{ t
           })
           .where(eq(trackedUserProperties.id, existingProp.id));
       }
+    }
+
+    if (newProperties.length > 0) {
+      await db.insert(trackedUserProperties).values(newProperties);
     }
   }
 

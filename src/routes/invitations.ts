@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
+import { runInTransaction } from "../db/transaction.js";
 import {
   auditLogs,
   cuid,
@@ -227,37 +228,33 @@ export function registerInvitationRoutes(app: FastifyInstance, db: Db) {
         return reply.code(403).send({ error: "invitation_email_mismatch", invitationEmail: initial.email });
       }
 
-      const result = db.transaction((tx) => {
-        const invitation = tx
+      const result = await runInTransaction(db, async (tx) => {
+        const [invitation] = await tx
           .select()
           .from(organizationInvitations)
           .where(eq(organizationInvitations.id, initial.id))
-          .limit(1)
-          .get();
+          .limit(1);
         if (!invitation || getInvitationStatus(invitation) !== "pending") return { error: "invalid_invitation" as const };
-        const membership = tx
+        const [membership] = await tx
           .select()
           .from(memberships)
           .where(and(eq(memberships.userId, request.user!.id), eq(memberships.orgId, invitation.orgId)))
-          .limit(1)
-          .get();
+          .limit(1);
         if (membership) return { error: "already_a_member" as const };
-        const created = tx
+        const [created] = await tx
           .insert(memberships)
           .values({ userId: request.user!.id, orgId: invitation.orgId, role: invitation.role })
-          .returning()
-          .get();
+          .returning();
         const now = new Date();
-        tx.update(organizationInvitations)
+        await tx.update(organizationInvitations)
           .set({ acceptedAt: now, updatedAt: now })
-          .where(and(eq(organizationInvitations.id, invitation.id), isNull(organizationInvitations.acceptedAt)))
-          .run();
-        tx.insert(auditLogs).values({
+          .where(and(eq(organizationInvitations.id, invitation.id), isNull(organizationInvitations.acceptedAt)));
+        await tx.insert(auditLogs).values({
           orgId: invitation.orgId,
           userId: request.user!.id,
           action: "member.invitation_accepted",
           detail: { invitationId: invitation.id, role: invitation.role },
-        }).run();
+        });
         return { membership: created };
       });
       if ("error" in result) {
@@ -287,38 +284,34 @@ export function registerInvitationRoutes(app: FastifyInstance, db: Db) {
     const passwordHash = await hashPassword(parsed.data.password);
     const userId = cuid("usr");
     const { accessToken, refresh } = issueTokenPair(userId, initial.email);
-    const result = db.transaction((tx) => {
-      const invitation = tx
+    const result = await runInTransaction(db, async (tx) => {
+      const [invitation] = await tx
         .select()
         .from(organizationInvitations)
         .where(eq(organizationInvitations.id, initial.id))
-        .limit(1)
-        .get();
+        .limit(1);
       if (!invitation || getInvitationStatus(invitation) !== "pending") return { error: "invalid_invitation" as const };
-      const existing = tx.select({ id: users.id }).from(users).where(sql`lower(${users.email}) = ${invitation.email}`).limit(1).get();
+      const [existing] = await tx.select({ id: users.id }).from(users).where(sql`lower(${users.email}) = ${invitation.email}`).limit(1);
       if (existing) return { error: "account_exists_sign_in" as const };
       const now = new Date();
-      const user = tx
+      const [user] = await tx
         .insert(users)
         .values({ id: userId, email: invitation.email, passwordHash, name: parsed.data.name })
-        .returning()
-        .get();
-      const membership = tx
+        .returning();
+      const [membership] = await tx
         .insert(memberships)
         .values({ userId, orgId: invitation.orgId, role: invitation.role })
-        .returning()
-        .get();
-      tx.update(organizationInvitations)
+        .returning();
+      await tx.update(organizationInvitations)
         .set({ acceptedAt: now, updatedAt: now })
-        .where(and(eq(organizationInvitations.id, invitation.id), isNull(organizationInvitations.acceptedAt)))
-        .run();
-      tx.insert(refreshTokens).values({ userId, tokenHash: refresh.hash, expiresAt: refresh.expiresAt }).run();
-      tx.insert(auditLogs).values({
+        .where(and(eq(organizationInvitations.id, invitation.id), isNull(organizationInvitations.acceptedAt)));
+      await tx.insert(refreshTokens).values({ userId, tokenHash: refresh.hash, expiresAt: refresh.expiresAt });
+      await tx.insert(auditLogs).values({
         orgId: invitation.orgId,
         userId,
         action: "member.invitation_accepted",
         detail: { invitationId: invitation.id, role: invitation.role },
-      }).run();
+      });
       return { user, membership };
     });
     if ("error" in result) {

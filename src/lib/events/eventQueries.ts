@@ -1,6 +1,7 @@
 import { and, eq, gte, lte, like, desc, asc, inArray, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/sqlite-core";
+import { databaseAlias } from "../../db/alias.js";
 import type { Db } from "../../db/client.js";
+import { utcDayBucket } from "../../db/expressions.js";
 import { sessionEvents, trackedUsers } from "../../db/schema.js";
 import { canonicalIdentityExpr } from "../analytics/identity.js";
 
@@ -188,7 +189,7 @@ export async function getEventTimeseries(
   eventName: string,
   range: Required<DateRange>
 ): Promise<TimeseriesPoint[]> {
-  const dayExpr = sql<string>`strftime('%Y-%m-%d', ${sessionEvents.timestamp} / 1000, 'unixepoch')`;
+  const dayExpr = utcDayBucket(sessionEvents.timestamp);
   const rows = await db
     .select({ day: dayExpr, count: sql<number>`count(*)` })
     .from(sessionEvents)
@@ -367,7 +368,7 @@ export interface EventOccurrence {
   properties: Record<string, unknown> | null;
 }
 
-function selectOccurrenceColumns(pageViewRows: ReturnType<typeof alias<typeof sessionEvents, string>>) {
+function selectOccurrenceColumns(pageViewRows: ReturnType<typeof databaseAlias<typeof sessionEvents, string>>) {
   return {
     id: sessionEvents.id,
     timestamp: sessionEvents.timestamp,
@@ -419,7 +420,7 @@ export async function listEventOccurrences(
   if (total === 0) return { occurrences: [], total: 0 };
 
   // Self-join to the page_view row sharing this event's pageViewId - see the module doc comment on page attribution.
-  const pageViewRows = alias(sessionEvents, "event_explorer_page_view");
+  const pageViewRows = databaseAlias(sessionEvents, "event_explorer_page_view");
 
   const rows = await db
     .select(selectOccurrenceColumns(pageViewRows))
@@ -448,7 +449,7 @@ export async function getEventOccurrence(
   eventName: string,
   occurrenceId: string
 ): Promise<EventOccurrence | null> {
-  const pageViewRows = alias(sessionEvents, "event_explorer_page_view");
+  const pageViewRows = databaseAlias(sessionEvents, "event_explorer_page_view");
   const [row] = await db
     .select(selectOccurrenceColumns(pageViewRows))
     .from(sessionEvents)
@@ -600,7 +601,7 @@ export interface EventPageSummary {
 const MAX_PAGES_BREAKDOWN = 50; // small, non-paginated breakdown - defensively capped, not a full pagination surface per the task brief
 
 export async function getEventPages(db: Db, siteId: string, eventName: string, range: DateRange): Promise<EventPageSummary[]> {
-  const pageViewRows = alias(sessionEvents, "event_explorer_page_view");
+  const pageViewRows = databaseAlias(sessionEvents, "event_explorer_page_view");
   const where = and(
     eq(sessionEvents.siteId, siteId),
     eq(sessionEvents.type, "custom"),

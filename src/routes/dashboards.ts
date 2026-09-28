@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
+import { runInTransaction } from "../db/transaction.js";
 import { cuid, dashboardCards, dashboards, experiences, funnels, segments, sites } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
@@ -33,9 +34,9 @@ export function registerDashboardRoutes(app: FastifyInstance, db: Db) {
     const parsed = dashboardCreateSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
     const referenceError = await invalidReference(db, siteId, parsed.data.cards); if (referenceError) return reply.code(400).send({ error: referenceError });
     const dashboardId = cuid("dsh"), now = new Date();
-    db.transaction((tx) => {
-      tx.insert(dashboards).values({ id: dashboardId, siteId, name: parsed.data.name, description: parsed.data.description ?? null, createdBy: request.user!.id, createdAt: now, updatedAt: now }).run();
-      if (parsed.data.cards.length) tx.insert(dashboardCards).values(parsed.data.cards.map((card, position) => ({ id: cuid("dsc"), dashboardId, title: card.title, cardType: card.cardType, width: card.width, position, configuration: card.configuration, createdAt: now, updatedAt: now }))).run();
+    await runInTransaction(db, async (tx) => {
+      await tx.insert(dashboards).values({ id: dashboardId, siteId, name: parsed.data.name, description: parsed.data.description ?? null, createdBy: request.user!.id, createdAt: now, updatedAt: now });
+      if (parsed.data.cards.length) await tx.insert(dashboardCards).values(parsed.data.cards.map((card, position) => ({ id: cuid("dsc"), dashboardId, title: card.title, cardType: card.cardType, width: card.width, position, configuration: card.configuration, createdAt: now, updatedAt: now })));
     });
     const row = await dashboardInSite(db, dashboardId, siteId); const cards = await db.select().from(dashboardCards).where(eq(dashboardCards.dashboardId, dashboardId)).orderBy(asc(dashboardCards.position));
     return reply.code(201).send({ ...dashboardJson(row!), cards: cards.map(cardJson) });
@@ -57,11 +58,11 @@ export function registerDashboardRoutes(app: FastifyInstance, db: Db) {
     const supplied = parsed.data.cards?.map((c) => c.id).filter((id): id is string => Boolean(id)) ?? [];
     if (supplied.some((id) => !oldById.has(id))) return reply.code(400).send({ error: "foreign_card_id" });
     const now = new Date();
-    db.transaction((tx) => {
-      tx.update(dashboards).set({ ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}), ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}), updatedAt: now }).where(eq(dashboards.id, dashboardId)).run();
+    await runInTransaction(db, async (tx) => {
+      await tx.update(dashboards).set({ ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}), ...(parsed.data.description !== undefined ? { description: parsed.data.description } : {}), updatedAt: now }).where(eq(dashboards.id, dashboardId));
       if (parsed.data.cards) {
-        tx.delete(dashboardCards).where(eq(dashboardCards.dashboardId, dashboardId)).run();
-        if (parsed.data.cards.length) tx.insert(dashboardCards).values(parsed.data.cards.map((card, position) => ({ id: card.id ?? cuid("dsc"), dashboardId, title: card.title, cardType: card.cardType, width: card.width, position, configuration: card.configuration, createdAt: card.id ? oldById.get(card.id)!.createdAt : now, updatedAt: now }))).run();
+        await tx.delete(dashboardCards).where(eq(dashboardCards.dashboardId, dashboardId));
+        if (parsed.data.cards.length) await tx.insert(dashboardCards).values(parsed.data.cards.map((card, position) => ({ id: card.id ?? cuid("dsc"), dashboardId, title: card.title, cardType: card.cardType, width: card.width, position, configuration: card.configuration, createdAt: card.id ? oldById.get(card.id)!.createdAt : now, updatedAt: now })));
       }
     });
     const row = await dashboardInSite(db, dashboardId, siteId); const cards = await db.select().from(dashboardCards).where(eq(dashboardCards.dashboardId, dashboardId)).orderBy(asc(dashboardCards.position));

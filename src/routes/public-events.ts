@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { sites, sessionEvents, trackedUserAliases } from "../db/schema.js";
 import { trackEventsBodySchema } from "../lib/patterns/validation.js";
@@ -69,29 +69,52 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
     // behavioral event. Events without an eventId (older SDK builds) are
     // never deduped against anything, per SQLite's default unique-index
     // NULL handling - same tradeoff already accepted for anonymousId.
-    // Process the SDK's ordered event stream in order.  This gives events
-    // following identify() an immutable owner while still letting identify()
-    // claim earlier unresolved events in the same batch.
+    // Resolve every anonymous id already known at the start of this request in
+    // one query. identify() can re-point an alias later in the ordered stream,
+    // so this remains mutable request-local state rather than a static lookup.
+    const anonymousIds = [...new Set(events.flatMap((event) => event.anonymousId ? [event.anonymousId] : []))];
     const currentIdentity = new Map<string, string | null>();
-    const ownerFor = async (anonymousId?: string) => {
+    for (const anonymousId of anonymousIds) currentIdentity.set(anonymousId, null);
+    if (anonymousIds.length > 0) {
+      const aliases = await db
+        .select({ anonymousId: trackedUserAliases.anonymousId, trackedUserId: trackedUserAliases.trackedUserId })
+        .from(trackedUserAliases)
+        .where(and(eq(trackedUserAliases.siteId, site.id), inArray(trackedUserAliases.anonymousId, anonymousIds)));
+      for (const alias of aliases) currentIdentity.set(alias.anonymousId, alias.trackedUserId);
+    }
+
+    const ownerFor = (anonymousId?: string) => {
       if (!anonymousId) return null;
-      if (currentIdentity.has(anonymousId)) return currentIdentity.get(anonymousId) ?? null;
-      const [alias] = await db.select({ trackedUserId: trackedUserAliases.trackedUserId }).from(trackedUserAliases)
-        .where(and(eq(trackedUserAliases.siteId, site.id), eq(trackedUserAliases.anonymousId, anonymousId))).limit(1);
-      const owner = alias?.trackedUserId ?? null;
-      currentIdentity.set(anonymousId, owner);
-      return owner;
+      return currentIdentity.get(anonymousId) ?? null;
+    };
+
+    // Rows are bulk-inserted between side-effect boundaries. In particular we
+    // must flush before identify(): resolveIdentity deliberately claims older
+    // unresolved rows, while rows after identify() must capture the new owner.
+    // Flushing also preserves the route's existing partial-write ordering if a
+    // later identify/session-context operation fails.
+    let pendingRows: (typeof sessionEvents.$inferInsert)[] = [];
+    const flushPendingRows = async () => {
+      if (pendingRows.length === 0) return;
+      const rows = pendingRows;
+      pendingRows = [];
+      await db
+        .insert(sessionEvents)
+        .values(rows)
+        .onConflictDoNothing({ target: [sessionEvents.siteId, sessionEvents.eventId] });
     };
 
     for (const event of events) {
       if (event.type === "identify") {
         if (!event.externalUserId) continue;
+        await flushPendingRows();
         const { trackedUserId } = await resolveIdentity(db, { siteId: site.id, anonymousId: event.anonymousId, externalUserId: event.externalUserId, traits: event.traits, timestamp: event.timestamp });
         if (event.anonymousId) currentIdentity.set(event.anonymousId, trackedUserId);
         continue;
       }
       if (event.type === "session_start") {
         if (!event.anonymousId) continue;
+        await flushPendingRows();
         await recordSessionStart(db, { siteId: site.id, sessionId, anonymousId: event.anonymousId, timestamp: event.timestamp, browserName: event.browserName, browserVersion: event.browserVersion, osName: event.osName, osVersion: event.osVersion, deviceType: event.deviceType, language: event.language, timezone: event.timezone, screenWidth: event.screenWidth, screenHeight: event.screenHeight, referrer: event.referrer });
         continue;
       }
@@ -99,13 +122,11 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
       // valid, then discard only the high-volume rows under the MVP1 policy.
       if (!shouldPersistSessionEvent(event.type)) continue;
       const e = event as IncomingEvent & { anonymousId?: string; path?: string; eventId?: string; pageViewId?: string };
-      await db
-        .insert(sessionEvents)
-        .values({
+      pendingRows.push({
             siteId: site.id,
             sessionId,
             anonymousId: e.anonymousId ?? null,
-            trackedUserId: await ownerFor(e.anonymousId),
+            trackedUserId: ownerFor(e.anonymousId),
             eventId: e.eventId ?? null,
             pageViewId: e.pageViewId ?? null,
             type: e.type,
@@ -133,9 +154,9 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
             // `mode: "json"` on the column round-trips it verbatim.
             eventName: e.type === "custom" ? (e.name ?? null) : null,
             eventProperties: e.type === "custom" ? (e.properties ?? null) : null,
-          })
-        .onConflictDoNothing({ target: [sessionEvents.siteId, sessionEvents.eventId] });
+          });
     }
+    await flushPendingRows();
 
     // The authored Pattern matcher is retired. Keep the response shape for
     // older SDK transports while ingestion remains fully operational.

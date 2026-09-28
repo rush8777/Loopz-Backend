@@ -79,6 +79,31 @@ describe("public event ingestion - eventId idempotency", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("inserts only the new rows from a partially duplicated batch", async () => {
+    const { site } = await setupSite(ctx.app);
+    await ctx.app.inject({
+      method: "POST",
+      url: `/public/sites/${site.siteId}/events`,
+      payload: { sessionId: "sess_partial", events: [{ type: "click", timestamp: 1000, eventId: "existing", element: { selector: "#old" } }] },
+    });
+
+    const response = await ctx.app.inject({
+      method: "POST",
+      url: `/public/sites/${site.siteId}/events`,
+      payload: {
+        sessionId: "sess_partial",
+        events: [
+          { type: "click", timestamp: 1000, eventId: "existing", element: { selector: "#old" } },
+          { type: "click", timestamp: 1100, eventId: "new", element: { selector: "#new" } },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const rows = await ctx.db.select().from(sessionEvents).where(eq(sessionEvents.siteId, site.id));
+    expect(rows.map((row) => row.eventId).sort()).toEqual(["existing", "new"]);
+  });
+
   it("scopes eventId uniqueness to the site - the same eventId on two different sites is not deduped across them", async () => {
     const owner = await signup(ctx.app);
     const siteA = (
