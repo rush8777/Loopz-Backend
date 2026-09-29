@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 describe("experience analytics", () => {
   let ctx: Awaited<ReturnType<typeof createTestApp>>;
   beforeEach(async () => { ctx = await createTestApp(); });
-  afterEach(async () => { await ctx.app.close(); (ctx.db as unknown as { $client: { close(): void } }).$client.close(); ctx.cleanup(); });
+  afterEach(async () => { await ctx.app.close(); ctx.cleanup(); });
 
   it("deduplicates Guide step reach and returns backend-computed funnel aggregates", async () => {
     const owner = await signup(ctx.app, { email: "experience-analytics@example.com" }); const authorization = { authorization: `Bearer ${owner.accessToken}` };

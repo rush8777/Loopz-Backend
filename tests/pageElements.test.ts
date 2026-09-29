@@ -46,7 +46,6 @@ describe("Page element sightings", () => {
   });
   afterEach(async () => {
     await ctx.app.close();
-    (ctx.db as unknown as { $client: { close(): void } }).$client.close();
     ctx.cleanup();
   });
 

@@ -1,11 +1,18 @@
 import { fileURLToPath } from "node:url";
-import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { migrate } from "drizzle-orm/libsql/migrator";
 import { sql } from "drizzle-orm";
 import type { Db } from "./client.js";
 
-export function runMigrations(db: Db) {
+export async function runMigrations(db: Db): Promise<void> {
   const migrationsFolder = fileURLToPath(new URL("../../drizzle", import.meta.url));
-  db.run(sql.raw("PRAGMA foreign_keys = OFF"));
-  try { migrate(db, { migrationsFolder }); }
-  finally { db.run(sql.raw("PRAGMA foreign_keys = ON")); }
+  await db.run(sql.raw("PRAGMA foreign_keys = OFF"));
+  try {
+    await migrate(db, { migrationsFolder });
+  } finally {
+    await db.run(sql.raw("PRAGMA foreign_keys = ON"));
+  }
+}
+
+export async function checkDatabaseReadiness(db: Db): Promise<void> {
+  await db.run(sql`SELECT 1`);
 }

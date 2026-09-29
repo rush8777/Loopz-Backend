@@ -27,6 +27,31 @@ const googleSchema = z.object({
 function userJson(user) {
     return { id: user.id, email: user.email, name: user.name };
 }
+function databaseErrorMessage(error) {
+    return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+function isUniqueConstraintError(error) {
+    return /unique constraint|constraint failed.*unique|SQLITE_CONSTRAINT_UNIQUE/i.test(databaseErrorMessage(error));
+}
+function isRetryableGoogleRace(error) {
+    return isUniqueConstraintError(error)
+        || /SQLITE_BUSY|database is locked|transaction.*(busy|conflict)|write conflict/i.test(databaseErrorMessage(error));
+}
+async function retryGoogleRace(work) {
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+            return await work();
+        }
+        catch (error) {
+            lastError = error;
+            if (!isRetryableGoogleRace(error) || attempt === 2)
+                throw error;
+            await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+        }
+    }
+    throw lastError;
+}
 export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVerifyGoogleCredential) {
     // One org is created per signup, with the signing-up user as OWNER.
     // Joining an *existing* org happens via the (separate, not-yet-built)
@@ -38,19 +63,31 @@ export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVeri
         }
         const { password, orgName, name } = parsed.data;
         const email = normalizeEmail(parsed.data.email);
-        const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-        if (existing) {
-            return reply.code(409).send({ error: "email_already_registered" });
-        }
         const passwordHash = await hashPassword(password);
-        const [user] = await db.insert(users).values({ email, passwordHash, name }).returning();
-        const [org] = await db.insert(organizations).values({ name: orgName }).returning();
-        await db.insert(memberships).values({ userId: user.id, orgId: org.id, role: "OWNER" });
-        const session = await issueSession(db, user, env.JWT_SECRET);
+        let result;
+        try {
+            result = await runInTransaction(db, async (tx) => {
+                const [existing] = await tx.select().from(users).where(eq(users.email, email)).limit(1);
+                if (existing)
+                    return { error: "email_already_registered" };
+                const [user] = await tx.insert(users).values({ email, passwordHash, name }).returning();
+                const [org] = await tx.insert(organizations).values({ name: orgName }).returning();
+                await tx.insert(memberships).values({ userId: user.id, orgId: org.id, role: "OWNER" });
+                const session = await issueSession(tx, user, env.JWT_SECRET);
+                return { user, org, session };
+            });
+        }
+        catch (error) {
+            if (isUniqueConstraintError(error))
+                return reply.code(409).send({ error: "email_already_registered" });
+            throw error;
+        }
+        if ("error" in result)
+            return reply.code(409).send({ error: result.error });
         return reply.code(201).send({
-            user: { id: user.id, email: user.email, name: user.name },
-            org: { id: org.id, name: org.name },
-            ...session,
+            user: { id: result.user.id, email: result.user.email, name: result.user.name },
+            org: { id: result.org.id, name: result.org.name },
+            ...result.session,
         });
     });
     app.post("/auth/login", async (request, reply) => {
@@ -89,7 +126,7 @@ export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVeri
         }
         const email = normalizeEmail(googleIdentity.email);
         try {
-            const result = await runInTransaction(db, async (tx) => {
+            const result = await retryGoogleRace(() => runInTransaction(db, async (tx) => {
                 const [linkedIdentity] = await tx
                     .select()
                     .from(userAuthIdentities)
@@ -142,7 +179,7 @@ export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVeri
                 await tx.insert(memberships).values({ userId, orgId: org.id, role: "OWNER" });
                 const session = await issueSession(tx, user, env.JWT_SECRET);
                 return { user, org, session, created: true };
-            });
+            }));
             if ("error" in result) {
                 return reply.code(result.error === "google_signup_required" ? 409 : 401).send({ error: result.error });
             }
@@ -168,21 +205,28 @@ export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVeri
             return reply.code(400).send({ error: "invalid_body" });
         }
         const tokenHash = hashRefreshToken(parsed.data.refreshToken);
-        const [row] = await db
-            .select()
-            .from(refreshTokens)
-            .where(and(eq(refreshTokens.tokenHash, tokenHash), isNull(refreshTokens.revokedAt)))
-            .limit(1);
-        if (!row || row.expiresAt.getTime() < Date.now()) {
-            return reply.code(401).send({ error: "invalid_refresh_token" });
-        }
-        const [user] = await db.select().from(users).where(eq(users.id, row.userId)).limit(1);
-        if (!user) {
-            return reply.code(401).send({ error: "invalid_refresh_token" });
-        }
-        await db.update(refreshTokens).set({ revokedAt: new Date() }).where(eq(refreshTokens.id, row.id));
-        const session = await issueSession(db, user, env.JWT_SECRET);
-        return reply.send(session);
+        const result = await runInTransaction(db, async (tx) => {
+            const [row] = await tx
+                .select()
+                .from(refreshTokens)
+                .where(and(eq(refreshTokens.tokenHash, tokenHash), isNull(refreshTokens.revokedAt)))
+                .limit(1);
+            if (!row || row.expiresAt.getTime() < Date.now())
+                return { error: "invalid_refresh_token" };
+            const [user] = await tx.select().from(users).where(eq(users.id, row.userId)).limit(1);
+            if (!user)
+                return { error: "invalid_refresh_token" };
+            const revoked = await tx.update(refreshTokens)
+                .set({ revokedAt: new Date() })
+                .where(and(eq(refreshTokens.id, row.id), isNull(refreshTokens.revokedAt)))
+                .returning({ id: refreshTokens.id });
+            if (revoked.length !== 1)
+                return { error: "invalid_refresh_token" };
+            return { session: await issueSession(tx, user, env.JWT_SECRET) };
+        });
+        if ("error" in result)
+            return reply.code(401).send({ error: result.error });
+        return reply.send(result.session);
     });
     app.post("/auth/logout", async (request, reply) => {
         const parsed = refreshSchema.safeParse(request.body);

@@ -199,7 +199,7 @@ describe("team invitations and membership management", () => {
 
   it("enforces unique membership pairs at the database level", async () => {
     const owner = await signup(ctx.app, { email: "unique-owner@example.com" });
-    expect(() => ctx.db.insert(memberships).values({ userId: owner.user.id, orgId: owner.org.id, role: "MEMBER" }).run()).toThrow();
+    await expect(ctx.db.insert(memberships).values({ userId: owner.user.id, orgId: owner.org.id, role: "MEMBER" }).run()).rejects.toThrow();
   });
 
   it("allows ADMIN role changes and removals while locking OWNER and cross-tenant rows", async () => {

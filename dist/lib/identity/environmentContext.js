@@ -8,11 +8,12 @@ import { sessionContexts } from "../../db/schema.js";
  * duplicate row.
  */
 export async function recordSessionStart(db, input) {
-    const { siteId, sessionId, anonymousId, ...environment } = input;
+    const { siteId, sessionId, anonymousId, timestamp, ...environment } = input;
     const values = {
         siteId,
         sessionId,
         anonymousId,
+        createdAt: new Date(timestamp),
         browserName: environment.browserName ?? null,
         browserVersion: environment.browserVersion ?? null,
         osName: environment.osName ?? null,
@@ -44,6 +45,7 @@ export async function recordSessionStart(db, input) {
             screenWidth: values.screenWidth,
             screenHeight: values.screenHeight,
             referrer: values.referrer,
+            createdAt: values.createdAt,
         },
     });
 }

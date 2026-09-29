@@ -11,7 +11,7 @@ async function setup(ctx: Awaited<ReturnType<typeof createTestApp>>, suffix: str
 describe("onboarding checklists", () => {
   let ctx: Awaited<ReturnType<typeof createTestApp>>;
   beforeEach(async () => { ctx = await createTestApp(); });
-  afterEach(async () => { await ctx.app.close(); (ctx.db as unknown as { $client: { close(): void } }).$client.close(); ctx.cleanup(); });
+  afterEach(async () => { await ctx.app.close(); ctx.cleanup(); });
 
   it("creates without a build URL, persists sticky item completion, acknowledges completion, and reopens for a new item", async () => {
     const { owner, site, headers } = await setup(ctx, "lifecycle"); const base = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;

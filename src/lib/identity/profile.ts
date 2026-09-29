@@ -1,6 +1,6 @@
 import { eq, and, inArray, isNull, or, sql, desc, asc } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { trackedUserAliases, sessionEvents, sessionReplayEvents } from "../../db/schema.js";
+import { sessionContexts, trackedUserAliases, sessionEvents, sessionReplayEvents } from "../../db/schema.js";
 
 /**
  * The read/aggregation core of the User Profile layer (task brief
@@ -231,12 +231,7 @@ export async function listSessionsForTrackedUser(
   if (anonymousIds.length === 0 && !trackedUserId) return { sessions: [], total: 0 };
   const where = profileEventsWhere(siteId, anonymousIds, trackedUserId);
 
-  const [{ total }] = await db
-    .select({ total: sql<number>`count(distinct ${sessionEvents.sessionId})` })
-    .from(sessionEvents)
-    .where(where);
-
-  const rows = await db
+  const eventRows = await db
     .select({
       sessionId: sessionEvents.sessionId,
       eventCount: sql<number>`count(*)`,
@@ -246,9 +241,24 @@ export async function listSessionsForTrackedUser(
     .from(sessionEvents)
     .where(where)
     .groupBy(sessionEvents.sessionId)
-    .orderBy(desc(sql`max(${sessionEvents.timestamp})`))
-    .limit(opts.limit)
-    .offset(opts.offset);
+    .orderBy(desc(sql`max(${sessionEvents.timestamp})`));
+
+  const contextRows = anonymousIds.length === 0
+    ? []
+    : await db
+      .select({ sessionId: sessionContexts.sessionId, timestamp: sessionContexts.createdAt })
+      .from(sessionContexts)
+      .where(and(eq(sessionContexts.siteId, siteId), inArray(sessionContexts.anonymousId, anonymousIds)));
+  const merged = new Map(eventRows.map((row) => [row.sessionId, row]));
+  for (const context of contextRows) {
+    if (!merged.has(context.sessionId)) {
+      const timestamp = context.timestamp.getTime();
+      merged.set(context.sessionId, { sessionId: context.sessionId, eventCount: 0, firstSeen: timestamp, lastSeen: timestamp });
+    }
+  }
+  const rows = [...merged.values()]
+    .sort((a, b) => b.lastSeen - a.lastSeen)
+    .slice(opts.offset, opts.offset + opts.limit);
 
   const sessionIds = rows.map((r) => r.sessionId);
   const replaySessionIds = new Set(
@@ -271,6 +281,6 @@ export async function listSessionsForTrackedUser(
       durationMs: r.lastSeen - r.firstSeen,
       hasReplay: replaySessionIds.has(r.sessionId),
     })),
-    total,
+    total: merged.size,
   };
 }

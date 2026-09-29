@@ -1,10 +1,12 @@
 import { env } from "./config.js";
 import { createDb } from "./db/client.js";
-import { runMigrations } from "./db/migrate.js";
+import { checkDatabaseReadiness, runMigrations } from "./db/migrate.js";
 import { buildApp } from "./app.js";
 
-const db = createDb(env.DATABASE_URL);
-runMigrations(db);
+const db = createDb(env.DATABASE_URL, env.DATABASE_AUTH_TOKEN);
+await checkDatabaseReadiness(db);
+await runMigrations(db);
+await checkDatabaseReadiness(db);
 
 const app = await buildApp(db);
 

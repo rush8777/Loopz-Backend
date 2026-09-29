@@ -28,7 +28,6 @@ describe("Page heatmaps", () => {
   beforeEach(async () => { ctx = await createTestApp(); });
   afterEach(async () => {
     await ctx.app.close();
-    (ctx.db as unknown as { $client: { close(): void } }).$client.close();
     ctx.cleanup();
   });
 

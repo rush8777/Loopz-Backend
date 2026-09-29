@@ -1,32 +1,33 @@
-import { createDb, type Db } from "../src/db/client.js";
+import { closeDb, createDb, type Db } from "../src/db/client.js";
 import { runMigrations } from "../src/db/migrate.js";
 import { buildApp } from "../src/app.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-/** Fresh sqlite file per test suite - real file (not :memory:) so drizzle's migrator behaves identically to production. */
-export function createTestDb(): { db: Db; cleanup: () => void } {
+/** Fresh libSQL file per test suite so the same adapter family is exercised as production. */
+export async function createTestDb(): Promise<{ db: Db; cleanup: () => void; file: string }> {
   const file = path.join(os.tmpdir(), `test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
-  const db = createDb(file);
-  runMigrations(db);
+  const db = createDb(`file:${file}`);
+  await runMigrations(db);
   return {
     db,
     cleanup: () => {
-      // better-sqlite3 keeps the file locked on Windows until the connection
-      // closes. Make cleanup self-contained for suites that do not explicitly
-      // close the Drizzle client before removing their temporary database.
-      const client = (db as unknown as { $client: { open: boolean; close(): void } }).$client;
-      if (client.open) client.close();
-      for (const suffix of ["", "-wal", "-shm"]) {
-        if (fs.existsSync(file + suffix)) fs.unlinkSync(file + suffix);
+      void closeDb(db);
+      for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+        try {
+          if (fs.existsSync(file + suffix)) fs.unlinkSync(file + suffix);
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "EBUSY")) throw error;
+        }
       }
     },
+    file,
   };
 }
 
 export async function createTestApp(options: Parameters<typeof buildApp>[1] = {}) {
-  const { db, cleanup } = createTestDb();
+  const { db, cleanup } = await createTestDb();
   const app = await buildApp(db, options);
   return { app, db, cleanup };
 }

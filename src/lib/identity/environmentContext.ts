@@ -27,11 +27,12 @@ export interface SessionStartInput {
  * duplicate row.
  */
 export async function recordSessionStart(db: Db, input: SessionStartInput): Promise<void> {
-  const { siteId, sessionId, anonymousId, ...environment } = input;
+  const { siteId, sessionId, anonymousId, timestamp, ...environment } = input;
   const values = {
     siteId,
     sessionId,
     anonymousId,
+    createdAt: new Date(timestamp),
     browserName: environment.browserName ?? null,
     browserVersion: environment.browserVersion ?? null,
     osName: environment.osName ?? null,
@@ -64,6 +65,7 @@ export async function recordSessionStart(db: Db, input: SessionStartInput): Prom
         screenWidth: values.screenWidth,
         screenHeight: values.screenHeight,
         referrer: values.referrer,
+        createdAt: values.createdAt,
       },
     });
 }

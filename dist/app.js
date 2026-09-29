@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import { sql } from "drizzle-orm";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerOrgRoutes } from "./routes/orgs.js";
 // Legacy Behavioral Intelligence routes are intentionally dormant.
@@ -91,7 +92,15 @@ export async function buildApp(db, options = {}) {
         registerPublicExperienceRoutes(publicExperienceScope, db);
         registerPublicChecklistRoutes(publicExperienceScope, db);
     });
-    app.get("/health", async () => ({ ok: true }));
+    app.get("/health", async (_request, reply) => {
+        try {
+            await db.run(sql `SELECT 1`);
+            return { ok: true };
+        }
+        catch {
+            return reply.code(503).send({ ok: false });
+        }
+    });
     return app;
 }
 //# sourceMappingURL=app.js.map

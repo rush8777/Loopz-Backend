@@ -1,10 +1,19 @@
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "./schema.js";
-export function createDb(filePath) {
-    const sqlite = new Database(filePath);
-    sqlite.pragma("journal_mode = WAL");
-    sqlite.pragma("foreign_keys = ON");
-    return drizzle(sqlite, { schema });
+function normalizeDatabaseUrl(url) {
+    if (/^(file|libsql|https?|wss?):/i.test(url))
+        return url;
+    return `file:${url}`;
+}
+export function createDb(url, authToken) {
+    const client = createClient({
+        url: normalizeDatabaseUrl(url),
+        ...(authToken ? { authToken } : {}),
+    });
+    return drizzle(client, { schema });
+}
+export async function closeDb(db) {
+    db.$client.close();
 }
 //# sourceMappingURL=client.js.map

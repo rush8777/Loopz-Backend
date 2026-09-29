@@ -1,6 +1,6 @@
 import { eq, and, isNull, sql, desc, like } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { sessionEvents, trackedUserAliases, trackedUsers } from "../../db/schema.js";
+import { sessionContexts, sessionEvents, trackedUserAliases, trackedUsers } from "../../db/schema.js";
 
 /**
  * Anonymous visitor discovery - the counterpart to the tracked-user
@@ -106,7 +106,14 @@ export async function resolveAnonymousIdentityState(
     .from(sessionEvents)
     .where(and(eq(sessionEvents.siteId, siteId), eq(sessionEvents.anonymousId, anonymousId)))
     .limit(1);
-  if (!seen) return { exists: false, resolved: null };
+  if (!seen) {
+    const [context] = await db
+      .select({ id: sessionContexts.id })
+      .from(sessionContexts)
+      .where(and(eq(sessionContexts.siteId, siteId), eq(sessionContexts.anonymousId, anonymousId)))
+      .limit(1);
+    if (!context) return { exists: false, resolved: null };
+  }
 
   const [alias] = await db
     .select({ trackedUserId: trackedUserAliases.trackedUserId })

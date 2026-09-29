@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { and, asc, eq } from "drizzle-orm";
 import { sessionEvents, trackedUsers } from "../src/db/schema.js";
 import { createTestApp, signup } from "./helpers.js";
+import type { Client, InStatement } from "@libsql/client";
 
 async function setupSite(app: Awaited<ReturnType<typeof createTestApp>>["app"]) {
   const owner = await signup(app);
@@ -21,12 +22,12 @@ describe("public event ingestion - batching and identity boundaries", () => {
 
   it("persists a normal behavioral batch with one session_events INSERT", async () => {
     const site = await setupSite(ctx.app);
-    const client = (ctx.db as unknown as { $client: { prepare(sql: string): unknown } }).$client;
-    const originalPrepare = client.prepare.bind(client);
+    const client: Client = ctx.db.$client;
+    const originalExecute = client.execute.bind(client);
     const statements: string[] = [];
-    client.prepare = (sql: string) => {
-      statements.push(sql);
-      return originalPrepare(sql);
+    client.execute = (statement: InStatement) => {
+      statements.push(typeof statement === "string" ? statement : statement.sql);
+      return originalExecute(statement);
     };
 
     const response = await ctx.app.inject({

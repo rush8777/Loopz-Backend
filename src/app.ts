@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import { sql } from "drizzle-orm";
 import type { Db } from "./db/client.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerOrgRoutes } from "./routes/orgs.js";
@@ -104,7 +105,14 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
     registerPublicChecklistRoutes(publicExperienceScope, db);
   });
 
-  app.get("/health", async () => ({ ok: true }));
+  app.get("/health", async (_request, reply) => {
+    try {
+      await db.run(sql`SELECT 1`);
+      return { ok: true };
+    } catch {
+      return reply.code(503).send({ ok: false });
+    }
+  });
 
   return app;
 }
