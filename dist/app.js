@@ -27,7 +27,7 @@ import { registerDashboardRoutes } from "./routes/dashboards.js";
 import { registerAnalyticsRoutes } from "./routes/analytics.js";
 import { registerInvitationRoutes } from "./routes/invitations.js";
 import { registerPublicSdkVerificationRoutes, registerSdkVerificationRoutes } from "./routes/sdk-verifications.js";
-export async function buildApp(db) {
+export async function buildApp(db, options = {}) {
     const app = Fastify({ logger: false });
     await app.register(cors, {
         // Configures Access-Control-Allow-Origin dynamically based on the request header
@@ -40,7 +40,7 @@ export async function buildApp(db) {
     // public routes below get their own tighter, per-route limits since
     // they're what an attacker would actually target (no credentials required).
     await app.register(rateLimit, { global: true, max: 300, timeWindow: "1 minute" });
-    registerAuthRoutes(app, db);
+    registerAuthRoutes(app, db, options.verifyGoogleCredential);
     registerOrgRoutes(app, db);
     registerInvitationRoutes(app, db);
     // registerPatternRoutes(app, db);

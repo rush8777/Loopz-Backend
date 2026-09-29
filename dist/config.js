@@ -5,6 +5,7 @@ const envSchema = z.object({
     PORT: z.coerce.number().int().positive().default(3000),
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
     DASHBOARD_URL: z.string().url().default("http://localhost:5173"),
+    GOOGLE_CLIENT_ID: z.string().trim().min(1).optional(),
 });
 export const env = envSchema.parse(process.env);
 if (env.NODE_ENV === "production" && env.JWT_SECRET === "dev-only-insecure-secret-change-me") {

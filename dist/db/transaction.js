@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+const transactionTails = new WeakMap();
 /**
  * Async transaction boundary for application code.
  *
@@ -10,15 +11,27 @@ import { sql } from "drizzle-orm";
  * route/service code.
  */
 export async function runInTransaction(db, work) {
-    await db.run(sql.raw("BEGIN"));
+    const previous = transactionTails.get(db) ?? Promise.resolve();
+    let release;
+    const turn = new Promise((resolve) => { release = resolve; });
+    transactionTails.set(db, previous.then(() => turn));
+    await previous;
+    let began = false;
     try {
+        await db.run(sql.raw("BEGIN"));
+        began = true;
         const result = await work(db);
         await db.run(sql.raw("COMMIT"));
+        began = false;
         return result;
     }
     catch (error) {
-        await db.run(sql.raw("ROLLBACK"));
+        if (began)
+            await db.run(sql.raw("ROLLBACK"));
         throw error;
+    }
+    finally {
+        release();
     }
 }
 //# sourceMappingURL=transaction.js.map

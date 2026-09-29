@@ -25,9 +25,9 @@ export function createTestDb(): { db: Db; cleanup: () => void } {
   };
 }
 
-export async function createTestApp() {
+export async function createTestApp(options: Parameters<typeof buildApp>[1] = {}) {
   const { db, cleanup } = createTestDb();
-  const app = await buildApp(db);
+  const app = await buildApp(db, options);
   return { app, db, cleanup };
 }
 

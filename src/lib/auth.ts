@@ -1,6 +1,8 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
+import type { Db } from "../db/client.js";
+import { refreshTokens } from "../db/schema.js";
 
 const BCRYPT_ROUNDS = 12;
 
@@ -10,6 +12,17 @@ export async function hashPassword(plain: string): Promise<string> {
 
 export async function verifyPassword(plain: string, hash: string): Promise<boolean> {
   return bcrypt.compare(plain, hash);
+}
+
+export async function issueSession(db: Db, user: { id: string; email: string }, secret: string) {
+  const accessToken = signAccessToken({ sub: user.id, email: user.email }, secret);
+  const refresh = generateRefreshToken();
+  await db.insert(refreshTokens).values({
+    userId: user.id,
+    tokenHash: refresh.hash,
+    expiresAt: refresh.expiresAt,
+  });
+  return { accessToken, refreshToken: refresh.token };
 }
 
 export interface AccessTokenPayload {

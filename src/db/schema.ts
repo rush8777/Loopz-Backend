@@ -38,7 +38,7 @@ export const organizations = sqliteTable("organizations", {
 export const users = sqliteTable("users", {
   id: text("id").primaryKey().$defaultFn(() => cuid("usr")),
   email: text("email").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
+  passwordHash: text("password_hash"),
   name: text("name"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
@@ -121,6 +121,27 @@ export const sites = sqliteTable("sites", {
     .notNull()
     .default(sql`(unixepoch('now') * 1000)`),
 });
+
+/** External login identities are kept separate from users so additional providers can be added safely. */
+export const userAuthIdentities = sqliteTable(
+  "user_auth_identities",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("aid")),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    providerSubject: text("provider_subject").notNull(),
+    providerEmail: text("provider_email").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(sql`(unixepoch('now') * 1000)`),
+  },
+  (table) => [
+    uniqueIndex("user_auth_identities_provider_subject_uidx").on(table.provider, table.providerSubject),
+    uniqueIndex("user_auth_identities_user_provider_uidx").on(table.userId, table.provider),
+  ]
+);
 
 /**
  * Short-lived, user-triggered probes used to prove that the SDK is

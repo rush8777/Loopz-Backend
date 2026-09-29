@@ -1,18 +1,22 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { users, organizations, memberships, refreshTokens } from "../db/schema.js";
+import { users, organizations, memberships, refreshTokens, userAuthIdentities, cuid } from "../db/schema.js";
 import {
   hashPassword,
   verifyPassword,
-  signAccessToken,
-  generateRefreshToken,
   hashRefreshToken,
+  issueSession,
 } from "../lib/auth.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { env } from "../config.js";
 import { normalizeEmail } from "../lib/invitations.js";
+import { runInTransaction } from "../db/transaction.js";
+import {
+  verifyGoogleCredential as defaultVerifyGoogleCredential,
+  type VerifyGoogleCredential,
+} from "../lib/google-auth.js";
 
 const signupSchema = z.object({
   email: z.string().trim().email(),
@@ -30,13 +34,20 @@ const refreshSchema = z.object({
   refreshToken: z.string().min(1),
 });
 
-function issueTokenPair(userId: string, email: string) {
-  const accessToken = signAccessToken({ sub: userId, email }, env.JWT_SECRET);
-  const refresh = generateRefreshToken();
-  return { accessToken, refresh };
+const googleSchema = z.object({
+  credential: z.string().min(1),
+  orgName: z.string().trim().min(1).max(200).optional(),
+});
+
+function userJson(user: typeof users.$inferSelect) {
+  return { id: user.id, email: user.email, name: user.name };
 }
 
-export function registerAuthRoutes(app: FastifyInstance, db: Db) {
+export function registerAuthRoutes(
+  app: FastifyInstance,
+  db: Db,
+  verifyGoogleCredential: VerifyGoogleCredential = defaultVerifyGoogleCredential,
+) {
   // One org is created per signup, with the signing-up user as OWNER.
   // Joining an *existing* org happens via the (separate, not-yet-built)
   // invite flow - signup always creates a new tenant boundary.
@@ -59,18 +70,12 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db) {
     const [org] = await db.insert(organizations).values({ name: orgName }).returning();
     await db.insert(memberships).values({ userId: user.id, orgId: org.id, role: "OWNER" });
 
-    const { accessToken, refresh } = issueTokenPair(user.id, user.email);
-    await db.insert(refreshTokens).values({
-      userId: user.id,
-      tokenHash: refresh.hash,
-      expiresAt: refresh.expiresAt,
-    });
+    const session = await issueSession(db, user, env.JWT_SECRET);
 
     return reply.code(201).send({
       user: { id: user.id, email: user.email, name: user.name },
       org: { id: org.id, name: org.name },
-      accessToken,
-      refreshToken: refresh.token,
+      ...session,
     });
   });
 
@@ -84,22 +89,109 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db) {
 
     const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
     // Same error for "no such user" and "wrong password" - don't leak which emails are registered.
-    if (!user || !(await verifyPassword(password, user.passwordHash))) {
+    if (!user || user.passwordHash === null || !(await verifyPassword(password, user.passwordHash))) {
       return reply.code(401).send({ error: "invalid_credentials" });
     }
 
-    const { accessToken, refresh } = issueTokenPair(user.id, user.email);
-    await db.insert(refreshTokens).values({
-      userId: user.id,
-      tokenHash: refresh.hash,
-      expiresAt: refresh.expiresAt,
-    });
+    const session = await issueSession(db, user, env.JWT_SECRET);
 
     return reply.send({
       user: { id: user.id, email: user.email, name: user.name },
-      accessToken,
-      refreshToken: refresh.token,
+      ...session,
     });
+  });
+
+  app.post("/auth/google", async (request, reply) => {
+    const parsed = googleSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+    if (!env.GOOGLE_CLIENT_ID) return reply.code(503).send({ error: "google_auth_not_configured" });
+
+    let googleIdentity;
+    try {
+      googleIdentity = await verifyGoogleCredential(parsed.data.credential, env.GOOGLE_CLIENT_ID);
+    } catch {
+      return reply.code(401).send({ error: "invalid_google_credential" });
+    }
+    if (!googleIdentity.subject || !googleIdentity.email) {
+      return reply.code(401).send({ error: "invalid_google_credential" });
+    }
+
+    const email = normalizeEmail(googleIdentity.email);
+    try {
+      const result = await runInTransaction(db, async (tx) => {
+        const [linkedIdentity] = await tx
+          .select()
+          .from(userAuthIdentities)
+          .where(and(
+            eq(userAuthIdentities.provider, "google"),
+            eq(userAuthIdentities.providerSubject, googleIdentity.subject),
+          ))
+          .limit(1);
+
+        if (linkedIdentity) {
+          const [linkedUser] = await tx.select().from(users).where(eq(users.id, linkedIdentity.userId)).limit(1);
+          if (!linkedUser) throw new Error("linked user missing");
+          const session = await issueSession(tx, linkedUser, env.JWT_SECRET);
+          return { user: linkedUser, session };
+        }
+
+        const [emailUser] = await tx.select().from(users).where(sql`lower(${users.email}) = ${email}`).limit(1);
+        if (emailUser) {
+          await tx.insert(userAuthIdentities).values({
+            userId: emailUser.id,
+            provider: "google",
+            providerSubject: googleIdentity.subject,
+            providerEmail: email,
+          }).onConflictDoNothing();
+
+          const [identityAfterInsert] = await tx
+            .select()
+            .from(userAuthIdentities)
+            .where(and(
+              eq(userAuthIdentities.provider, "google"),
+              eq(userAuthIdentities.providerSubject, googleIdentity.subject),
+            ))
+            .limit(1);
+          if (!identityAfterInsert) return { error: "invalid_google_credential" as const };
+          const [canonicalUser] = await tx.select().from(users).where(eq(users.id, identityAfterInsert.userId)).limit(1);
+          if (!canonicalUser) throw new Error("linked user missing");
+          const session = await issueSession(tx, canonicalUser, env.JWT_SECRET);
+          return { user: canonicalUser, session };
+        }
+
+        if (!parsed.data.orgName) return { error: "google_signup_required" as const };
+
+        const userId = cuid("usr");
+        const [user] = await tx.insert(users).values({
+          id: userId,
+          email,
+          passwordHash: null,
+          name: googleIdentity.name,
+        }).returning();
+        await tx.insert(userAuthIdentities).values({
+          userId,
+          provider: "google",
+          providerSubject: googleIdentity.subject,
+          providerEmail: email,
+        });
+        const [org] = await tx.insert(organizations).values({ name: parsed.data.orgName }).returning();
+        await tx.insert(memberships).values({ userId, orgId: org.id, role: "OWNER" });
+        const session = await issueSession(tx, user, env.JWT_SECRET);
+        return { user, org, session, created: true as const };
+      });
+
+      if ("error" in result) {
+        return reply.code(result.error === "google_signup_required" ? 409 : 401).send({ error: result.error });
+      }
+      return reply.code(result.created ? 201 : 200).send({
+        user: userJson(result.user),
+        ...(result.org ? { org: { id: result.org.id, name: result.org.name } } : {}),
+        ...result.session,
+      });
+    } catch (error) {
+      request.log.error({ err: error }, "Google authentication failed after credential verification");
+      return reply.code(500).send({ error: "google_auth_failed" });
+    }
   });
 
   // Refresh token rotation: every refresh both issues a new pair AND
@@ -131,14 +223,9 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db) {
 
     await db.update(refreshTokens).set({ revokedAt: new Date() }).where(eq(refreshTokens.id, row.id));
 
-    const { accessToken, refresh } = issueTokenPair(user.id, user.email);
-    await db.insert(refreshTokens).values({
-      userId: user.id,
-      tokenHash: refresh.hash,
-      expiresAt: refresh.expiresAt,
-    });
+    const session = await issueSession(db, user, env.JWT_SECRET);
 
-    return reply.send({ accessToken, refreshToken: refresh.token });
+    return reply.send(session);
   });
 
   app.post("/auth/logout", async (request, reply) => {

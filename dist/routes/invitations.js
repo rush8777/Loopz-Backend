@@ -1,11 +1,11 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { runInTransaction } from "../db/transaction.js";
-import { auditLogs, cuid, memberships, organizationInvitations, organizations, refreshTokens, users, } from "../db/schema.js";
+import { auditLogs, cuid, memberships, organizationInvitations, organizations, users, } from "../db/schema.js";
 import { env } from "../config.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
-import { generateRefreshToken, hashPassword, signAccessToken } from "../lib/auth.js";
+import { hashPassword, issueSession } from "../lib/auth.js";
 import { generateInvitationToken, getInvitationStatus, hashInvitationToken, invitationUrl, normalizeEmail, } from "../lib/invitations.js";
 const invitationInputSchema = z.object({
     email: z.string().trim().email(),
@@ -35,11 +35,6 @@ function findInvitationByToken(db, token) {
         .from(organizationInvitations)
         .where(eq(organizationInvitations.tokenHash, tokenHash))
         .limit(1);
-}
-function issueTokenPair(userId, email) {
-    const accessToken = signAccessToken({ sub: userId, email }, env.JWT_SECRET);
-    const refresh = generateRefreshToken();
-    return { accessToken, refresh };
 }
 export function registerInvitationRoutes(app, db) {
     app.get("/orgs/:orgId/invitations", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
@@ -240,7 +235,6 @@ export function registerInvitationRoutes(app, db) {
             return reply.code(409).send({ error: "account_exists_sign_in" });
         const passwordHash = await hashPassword(parsed.data.password);
         const userId = cuid("usr");
-        const { accessToken, refresh } = issueTokenPair(userId, initial.email);
         const result = await runInTransaction(db, async (tx) => {
             const [invitation] = await tx
                 .select()
@@ -264,14 +258,14 @@ export function registerInvitationRoutes(app, db) {
             await tx.update(organizationInvitations)
                 .set({ acceptedAt: now, updatedAt: now })
                 .where(and(eq(organizationInvitations.id, invitation.id), isNull(organizationInvitations.acceptedAt)));
-            await tx.insert(refreshTokens).values({ userId, tokenHash: refresh.hash, expiresAt: refresh.expiresAt });
+            const session = await issueSession(tx, user, env.JWT_SECRET);
             await tx.insert(auditLogs).values({
                 orgId: invitation.orgId,
                 userId,
                 action: "member.invitation_accepted",
                 detail: { invitationId: invitation.id, role: invitation.role },
             });
-            return { user, membership };
+            return { user, membership, session };
         });
         if ("error" in result) {
             return result.error === "account_exists_sign_in"
@@ -281,8 +275,7 @@ export function registerInvitationRoutes(app, db) {
         return reply.code(201).send({
             user: { id: result.user.id, email: result.user.email, name: result.user.name },
             membership: { orgId: result.membership.orgId, role: result.membership.role },
-            accessToken,
-            refreshToken: refresh.token,
+            ...result.session,
         });
     });
 }

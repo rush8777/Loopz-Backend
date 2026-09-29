@@ -1,12 +1,23 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
+import { refreshTokens } from "../db/schema.js";
 const BCRYPT_ROUNDS = 12;
 export async function hashPassword(plain) {
     return bcrypt.hash(plain, BCRYPT_ROUNDS);
 }
 export async function verifyPassword(plain, hash) {
     return bcrypt.compare(plain, hash);
+}
+export async function issueSession(db, user, secret) {
+    const accessToken = signAccessToken({ sub: user.id, email: user.email }, secret);
+    const refresh = generateRefreshToken();
+    await db.insert(refreshTokens).values({
+        userId: user.id,
+        tokenHash: refresh.hash,
+        expiresAt: refresh.expiresAt,
+    });
+    return { accessToken, refreshToken: refresh.token };
 }
 const ACCESS_TOKEN_TTL = "15m";
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
