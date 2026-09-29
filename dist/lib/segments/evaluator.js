@@ -1,5 +1,5 @@
-import { and, eq, gte, inArray } from "drizzle-orm";
-import { sessionEvents, trackedUsers, trackedUserProperties, funnels } from "../../db/schema.js";
+import { and, eq, gte, inArray, isNotNull, lte } from "drizzle-orm";
+import { sessionEvents, trackedUsers, trackedUserProperties, funnels, experiences, experienceVersions, surveyResponses, trackedUserAliases } from "../../db/schema.js";
 import { hydrateIdentities } from "../identity/hydrate.js";
 import { isGroup } from "./types.js";
 import { canonicalIdentityExpr } from "../analytics/identity.js";
@@ -176,6 +176,56 @@ async function resolveFunnelCohortCondition(db, siteId, c) {
         .filter((row) => row.stepTimestamps[c.stepIndex] !== null && (c.cohort === "reached" || row.stepTimestamps[c.stepIndex + 1] === null))
         .map((row) => row.identity));
 }
+function surveyQuestionMatches(question, snapshot) {
+    if (question.id !== snapshot.id || question.label !== snapshot.label || question.type !== snapshot.type)
+        return false;
+    if (question.type === "single_choice" || question.type === "multiple_choice")
+        return JSON.stringify(question.options) === JSON.stringify(snapshot.options ?? []);
+    if (question.type === "rating")
+        return question.min === snapshot.min && question.max === snapshot.max;
+    return question.type === "nps";
+}
+function surveyAnswerMatches(value, c) {
+    if (c.matcher.type === "answers") {
+        const values = c.matcher.values;
+        return Array.isArray(value) ? value.some(item => typeof item === "string" && values.includes(item)) : typeof value === "string" && values.includes(value);
+    }
+    if (typeof value !== "number")
+        return false;
+    if (c.matcher.type === "rating_range")
+        return value >= c.matcher.min && value <= c.matcher.max;
+    return c.matcher.category === "promoter" ? value >= 9 && value <= 10 : c.matcher.category === "passive" ? value >= 7 && value <= 8 : value >= 0 && value <= 6;
+}
+async function resolveSurveyResponseCondition(db, siteId, c) {
+    const [experience] = await db.select().from(experiences).where(eq(experiences.id, c.experienceId)).limit(1);
+    if (!experience || experience.siteId !== siteId || experience.widgetType !== "survey")
+        return new Set();
+    const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, experience.id));
+    const compatibleVersionIds = versions.filter(version => { const definition = version.definition; return "survey" in definition && Boolean(definition.survey?.steps.flatMap(step => step.questions).some(question => surveyQuestionMatches(question, c.question))); }).map(version => version.id);
+    if (!compatibleVersionIds.length)
+        return new Set();
+    const range = resolveFunnelCohortRange(c.dateRange);
+    const rows = await db.select().from(surveyResponses).where(and(eq(surveyResponses.siteId, siteId), eq(surveyResponses.experienceId, experience.id), inArray(surveyResponses.versionId, compatibleVersionIds), isNotNull(surveyResponses.submittedAt), gte(surveyResponses.startedAt, range.since), lte(surveyResponses.startedAt, range.until)));
+    const anonymousIds = [...new Set(rows.filter(row => !row.trackedUserId).map(row => row.anonymousId))];
+    const aliases = anonymousIds.length ? await db.select({ anonymousId: trackedUserAliases.anonymousId, trackedUserId: trackedUserAliases.trackedUserId }).from(trackedUserAliases).where(and(eq(trackedUserAliases.siteId, siteId), inArray(trackedUserAliases.anonymousId, anonymousIds))) : [];
+    const trackedByAnonymous = new Map(aliases.map(alias => [alias.anonymousId, alias.trackedUserId]));
+    return new Set(rows.filter(row => surveyAnswerMatches(row.answers[c.question.id], c)).map(row => row.trackedUserId ?? trackedByAnonymous.get(row.anonymousId) ?? row.anonymousId));
+}
+export async function surveyResponseConditionIsValid(db, siteId, c) {
+    const [experience] = await db.select().from(experiences).where(eq(experiences.id, c.experienceId)).limit(1);
+    if (!experience || experience.siteId !== siteId || experience.widgetType !== "survey")
+        return false;
+    const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, experience.id));
+    return versions.some(version => { const definition = version.definition; if (!("survey" in definition) || !definition.survey)
+        return false; const question = definition.survey.steps.flatMap(step => step.questions).find(item => surveyQuestionMatches(item, c.question)); return Boolean(question && surveyMatcherIsValid(question, c)); });
+}
+function surveyMatcherIsValid(question, c) {
+    if (question.type === "single_choice" || question.type === "multiple_choice")
+        return c.matcher.type === "answers" && c.matcher.values.every(value => question.options.some(option => option.id === value));
+    if (question.type === "rating")
+        return c.matcher.type === "rating_range" && c.matcher.min >= question.min && c.matcher.max <= question.max;
+    return question.type === "nps" && c.matcher.type === "nps_category";
+}
 // ---------------------------------------------------------------------------
 // Group combination
 async function resolveCondition(db, siteId, c, universe) {
@@ -188,6 +238,8 @@ async function resolveCondition(db, siteId, c, universe) {
             return resolvePageCondition(db, siteId, c, universe);
         case "funnel_cohort":
             return resolveFunnelCohortCondition(db, siteId, c);
+        case "survey_response":
+            return resolveSurveyResponseCondition(db, siteId, c);
     }
 }
 function intersect(sets) {

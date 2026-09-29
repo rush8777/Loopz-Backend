@@ -130,6 +130,7 @@ async function serializeExperience(db, row) {
     const published = versions.find((version) => version.id === row.publishedVersionId) ?? null;
     return {
         ...row,
+        launchSetupCompletedAt: row.launchSetupCompletedAt?.toISOString() ?? null,
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
         draftVersion: draft ? { ...draft, definition: draft.definition, createdAt: draft.createdAt.toISOString(), publishedAt: null } : null,
@@ -184,6 +185,12 @@ function validatePublishRequirements(kind, widgetType, definition) {
 }
 export function registerExperienceRoutes(app, db) {
     const analyticsRangeSchema = z.object({ since: z.coerce.date().optional(), until: z.coerce.date().optional(), limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0) });
+    const responseQuerySchema = analyticsRangeSchema.extend({
+        status: z.enum(["submitted", "abandoned", "started"]).optional(),
+        identityType: z.enum(["identified", "anonymous"]).optional(),
+        versionId: z.string().min(1).max(100).optional(), questionId: z.string().min(1).max(200).optional(), answer: z.string().max(2000).optional(),
+        ratingMin: z.coerce.number().optional(), ratingMax: z.coerce.number().optional(), npsCategory: z.enum(["promoter", "passive", "detractor"]).optional(),
+    });
     const range = (value) => { const until = value.until ?? new Date(); return { since: value.since ?? new Date(until.getTime() - 30 * 86_400_000), until }; };
     app.get("/orgs/:orgId/sites/:siteId/experience-analytics", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
         const { siteId } = request.params;
@@ -211,10 +218,11 @@ export function registerExperienceRoutes(app, db) {
         const site = await loadSiteInOrg(db, siteId, request.membership.orgId);
         if (!site)
             return reply.code(404).send({ error: "site_not_found" });
-        const parsed = analyticsRangeSchema.safeParse(request.query);
+        const parsed = responseQuerySchema.safeParse(request.query);
         if (!parsed.success)
             return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
-        return listSurveyResponses(db, site.id, experienceId, range(parsed.data), parsed.data.limit, parsed.data.offset);
+        const result = await listSurveyResponses(db, site.id, experienceId, range(parsed.data), parsed.data.limit, parsed.data.offset, parsed.data);
+        return result ? reply.send(result) : reply.code(404).send({ error: "survey_not_found" });
     });
     app.get("/orgs/:orgId/sites/:siteId/experiences", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
         const { siteId } = request.params;
@@ -320,6 +328,19 @@ export function registerExperienceRoutes(app, db) {
             return reply.code(404).send({ error: "experience_not_found" });
         await db.delete(experiences).where(eq(experiences.id, row.id));
         return reply.code(204).send();
+    });
+    app.post("/orgs/:orgId/sites/:siteId/experiences/:experienceId/launch-setup/complete", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+        const { siteId, experienceId } = request.params;
+        const site = await loadSiteInOrg(db, siteId, request.membership.orgId);
+        if (!site)
+            return reply.code(404).send({ error: "site_not_found" });
+        const row = await loadExperience(db, site.id, experienceId);
+        if (!row)
+            return reply.code(404).send({ error: "experience_not_found" });
+        if (row.launchSetupCompletedAt)
+            return reply.send(await serializeExperience(db, row));
+        const [updated] = await db.update(experiences).set({ launchSetupCompletedAt: new Date(), updatedAt: new Date() }).where(eq(experiences.id, row.id)).returning();
+        return reply.send(await serializeExperience(db, updated));
     });
     app.post("/orgs/:orgId/sites/:siteId/experiences/:experienceId/publish", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
         const { siteId, experienceId } = request.params;

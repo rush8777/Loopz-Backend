@@ -75,7 +75,31 @@ export interface FunnelCohortCondition {
   dateRange: FunnelCohortDateRange;
 }
 
-export type SegmentCondition = EventCondition | UserPropertyCondition | PageCondition | FunnelCohortCondition;
+export interface SurveyQuestionSnapshot {
+  id: string;
+  label: string;
+  type: "single_choice" | "multiple_choice" | "rating" | "nps";
+  options?: Array<{ id: string; label: string }>;
+  min?: number;
+  max?: number;
+}
+
+export type SurveyResponseMatcher =
+  | { type: "answers"; values: string[] }
+  | { type: "rating_range"; min: number; max: number }
+  | { type: "nps_category"; category: "promoter" | "passive" | "detractor" };
+
+/** Dynamic membership from submitted answers. The question snapshot prevents
+ * a later incompatible edit from silently changing an existing segment. */
+export interface SurveyResponseCondition {
+  type: "survey_response";
+  experienceId: string;
+  question: SurveyQuestionSnapshot;
+  matcher: SurveyResponseMatcher;
+  dateRange: FunnelCohortDateRange;
+}
+
+export type SegmentCondition = EventCondition | UserPropertyCondition | PageCondition | FunnelCohortCondition | SurveyResponseCondition;
 
 export type SegmentLogic = "and" | "or";
 

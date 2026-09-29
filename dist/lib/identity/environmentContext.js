@@ -9,31 +9,7 @@ import { sessionContexts } from "../../db/schema.js";
  */
 export async function recordSessionStart(db, input) {
     const { siteId, sessionId, anonymousId, ...environment } = input;
-    const [existing] = await db
-        .select({ id: sessionContexts.id })
-        .from(sessionContexts)
-        .where(and(eq(sessionContexts.siteId, siteId), eq(sessionContexts.sessionId, sessionId)))
-        .limit(1);
-    if (existing) {
-        await db
-            .update(sessionContexts)
-            .set({
-            anonymousId,
-            browserName: environment.browserName ?? null,
-            browserVersion: environment.browserVersion ?? null,
-            osName: environment.osName ?? null,
-            osVersion: environment.osVersion ?? null,
-            deviceType: environment.deviceType ?? null,
-            language: environment.language ?? null,
-            timezone: environment.timezone ?? null,
-            screenWidth: environment.screenWidth ?? null,
-            screenHeight: environment.screenHeight ?? null,
-            referrer: environment.referrer ?? null,
-        })
-            .where(eq(sessionContexts.id, existing.id));
-        return;
-    }
-    await db.insert(sessionContexts).values({
+    const values = {
         siteId,
         sessionId,
         anonymousId,
@@ -47,6 +23,28 @@ export async function recordSessionStart(db, input) {
         screenWidth: environment.screenWidth ?? null,
         screenHeight: environment.screenHeight ?? null,
         referrer: environment.referrer ?? null,
+    };
+    // One statement instead of SELECT followed by INSERT/UPDATE. The unique
+    // (siteId, sessionId) key preserves the existing one-context-per-session
+    // contract and makes SDK retries idempotent.
+    await db
+        .insert(sessionContexts)
+        .values(values)
+        .onConflictDoUpdate({
+        target: [sessionContexts.siteId, sessionContexts.sessionId],
+        set: {
+            anonymousId: values.anonymousId,
+            browserName: values.browserName,
+            browserVersion: values.browserVersion,
+            osName: values.osName,
+            osVersion: values.osVersion,
+            deviceType: values.deviceType,
+            language: values.language,
+            timezone: values.timezone,
+            screenWidth: values.screenWidth,
+            screenHeight: values.screenHeight,
+            referrer: values.referrer,
+        },
     });
 }
 function toView(row) {

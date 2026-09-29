@@ -865,6 +865,7 @@ export const experiences = sqliteTable("experiences", {
     buildPageId: text("build_page_id").references(() => pageDefinitions.id, { onDelete: "set null" }),
     buildUrl: text("build_url"),
     publishedVersionId: text("published_version_id"),
+    launchSetupCompletedAt: integer("launch_setup_completed_at", { mode: "timestamp_ms" }),
     createdBy: text("created_by").notNull().references(() => users.id),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),

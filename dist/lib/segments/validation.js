@@ -52,7 +52,22 @@ const funnelCohortConditionSchema = z.object({
     conversionWindowMinutes: z.number().int().min(60).max(90 * 24 * 60),
     dateRange: funnelCohortDateRangeSchema,
 });
-const conditionSchema = z.discriminatedUnion("type", [eventConditionSchema, userPropertyConditionSchema, pageConditionSchema, funnelCohortConditionSchema]);
+const surveyQuestionSnapshotSchema = z.object({
+    id: z.string().min(1).max(200), label: z.string().min(1).max(500),
+    type: z.enum(["single_choice", "multiple_choice", "rating", "nps"]),
+    options: z.array(z.object({ id: z.string().min(1).max(200), label: z.string().max(200) })).max(20).optional(),
+    min: z.number().int().optional(), max: z.number().int().optional(),
+});
+const surveyResponseMatcherSchema = z.discriminatedUnion("type", [
+    z.object({ type: z.literal("answers"), values: z.array(z.string().min(1).max(200)).min(1).max(20) }),
+    z.object({ type: z.literal("rating_range"), min: z.number().int(), max: z.number().int() }).refine(value => value.min <= value.max, { message: "min must not exceed max", path: ["max"] }),
+    z.object({ type: z.literal("nps_category"), category: z.enum(["promoter", "passive", "detractor"]) }),
+]);
+const surveyResponseConditionSchema = z.object({
+    type: z.literal("survey_response"), experienceId: z.string().min(1).max(64),
+    question: surveyQuestionSnapshotSchema, matcher: surveyResponseMatcherSchema, dateRange: funnelCohortDateRangeSchema,
+});
+const conditionSchema = z.discriminatedUnion("type", [eventConditionSchema, userPropertyConditionSchema, pageConditionSchema, funnelCohortConditionSchema, surveyResponseConditionSchema]);
 /**
  * Recursive group schema - `z.lazy` because a group's `conditions`
  * array can contain either a leaf condition or another group (task

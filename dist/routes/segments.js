@@ -4,7 +4,8 @@ import { sites, segments } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createSegmentSchema, updateSegmentSchema, previewSegmentSchema } from "../lib/segments/validation.js";
-import { getSegmentAudienceCount, getSegmentMembers } from "../lib/segments/evaluator.js";
+import { getSegmentAudienceCount, getSegmentMembers, surveyResponseConditionIsValid } from "../lib/segments/evaluator.js";
+import { isGroup } from "../lib/segments/types.js";
 /** Loads a site and verifies it belongs to the authenticated org - the same 404-not-403 principle used throughout (see pages.ts/tracked-users.ts). */
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
@@ -29,6 +30,15 @@ function serializeSegment(row, audienceCount) {
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
     };
+}
+async function surveyReferencesAreValid(db, siteId, node) {
+    if (isGroup(node)) {
+        for (const child of node.conditions)
+            if (!await surveyReferencesAreValid(db, siteId, child))
+                return false;
+        return true;
+    }
+    return node.type !== "survey_response" || surveyResponseConditionIsValid(db, siteId, node);
 }
 const listQuerySchema = z.object({
     search: z.string().min(1).max(200).optional(),
@@ -72,6 +82,8 @@ export function registerSegmentRoutes(app, db) {
         const parsed = createSegmentSchema.safeParse(request.body);
         if (!parsed.success)
             return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+        if (!await surveyReferencesAreValid(db, site.id, parsed.data.definition))
+            return reply.code(400).send({ error: "invalid_survey_condition" });
         const [row] = await db
             .insert(segments)
             .values({
@@ -98,6 +110,8 @@ export function registerSegmentRoutes(app, db) {
         const parsed = previewSegmentSchema.safeParse(request.body);
         if (!parsed.success)
             return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+        if (!await surveyReferencesAreValid(db, site.id, parsed.data.definition))
+            return reply.code(400).send({ error: "invalid_survey_condition" });
         const audienceCount = await getSegmentAudienceCount(db, site.id, parsed.data.definition);
         return reply.send({ audienceCount });
     });
@@ -139,6 +153,8 @@ export function registerSegmentRoutes(app, db) {
         const parsed = updateSegmentSchema.safeParse(request.body);
         if (!parsed.success)
             return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+        if (parsed.data.definition && !await surveyReferencesAreValid(db, site.id, parsed.data.definition))
+            return reply.code(400).send({ error: "invalid_survey_condition" });
         const [updated] = await db
             .update(segments)
             .set({ ...parsed.data, updatedAt: new Date() })
