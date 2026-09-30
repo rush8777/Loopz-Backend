@@ -30,12 +30,20 @@ import { registerInvitationRoutes } from "./routes/invitations.js";
 import { registerPublicSdkVerificationRoutes, registerSdkVerificationRoutes } from "./routes/sdk-verifications.js";
 export async function buildApp(db, options = {}) {
     const app = Fastify({ logger: false });
+    const dashboardOrigin = new URL(env.DASHBOARD_URL).origin;
     await app.register(cors, {
-        // Configures Access-Control-Allow-Origin dynamically based on the request header
-        origin: true,
-        methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
-        allowedHeaders: ["Content-Type", "Authorization"],
-        credentials: true,
+        // Dashboard routes may receive bearer tokens, so only the configured
+        // dashboard origin is allowed. The public SDK endpoints remain usable on
+        // customer sites, but never opt in to credentialed browser requests.
+        delegator: (request, callback) => {
+            const isPublicRoute = request.url.startsWith("/public/");
+            callback(null, {
+                origin: isPublicRoute ? true : dashboardOrigin,
+                methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
+                allowedHeaders: ["Content-Type", "Authorization"],
+                credentials: !isPublicRoute,
+            });
+        },
     });
     // Global default is generous (dashboard traffic, authenticated); the
     // public routes below get their own tighter, per-route limits since
