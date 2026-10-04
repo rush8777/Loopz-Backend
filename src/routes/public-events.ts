@@ -8,6 +8,18 @@ import { resolveIdentity } from "../lib/identity/resolveIdentity.js";
 import { recordSessionStart } from "../lib/identity/environmentContext.js";
 import { shouldPersistSessionEvent } from "../lib/mvpPolicy.js";
 
+/** The browser supplies Origin for cross-origin SDK POSTs. Invalid or absent
+ * values remain unclassified rather than being guessed into billable traffic. */
+function requestOrigin(request: { headers: Record<string, string | string[] | undefined> }): string | null {
+  const value = request.headers.origin;
+  if (!value || Array.isArray(value)) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Public, unauthenticated (same trust model as /public/config - see the
  * comment there) endpoint the SDK calls as event batches are ready to
@@ -45,6 +57,7 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
       return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
     }
     const { sessionId, events } = parsed.data;
+    const origin = requestOrigin(request);
 
     // identify() calls are identity/property data, and session_start is
     // one-per-session environment context - neither is interaction
@@ -127,6 +140,7 @@ export function registerPublicEventsRoutes(app: FastifyInstance, db: Db) {
             sessionId,
             anonymousId: e.anonymousId ?? null,
             trackedUserId: ownerFor(e.anonymousId),
+            origin,
             eventId: e.eventId ?? null,
             pageViewId: e.pageViewId ?? null,
             type: e.type,

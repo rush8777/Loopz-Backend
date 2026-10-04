@@ -584,6 +584,11 @@ export const sessionEvents = sqliteTable(
     // the answer to "who owned this event when it happened?" and must
     // never be changed by a later login on the same browser.
     trackedUserId: text("tracked_user_id").references(() => trackedUsers.id, { onDelete: "set null" }),
+    // Browser origin captured by the public ingestion endpoint.  This is
+    // intentionally immutable event provenance, not a mutable site setting:
+    // billing can therefore exclude development, staging, and editor traffic
+    // without discarding that analytics data.
+    origin: text("origin"),
     // The SDK's page-view lifecycle id active when this event was
     // captured (AnalyticsEvent.pageViewId - see SessionManager's
     // getPageViewId()/newPageView() on the SDK side). The SDK alone owns
@@ -656,6 +661,8 @@ export const sessionEvents = sqliteTable(
     // useful for any other type-scoped query, not just custom events.
     index("session_events_site_type_name_ts_idx").on(table.siteId, table.type, table.eventName, table.timestamp),
     index("session_events_site_tracked_user_ts_idx").on(table.siteId, table.trackedUserId, table.timestamp),
+    // Covers billable MAU's site + production-origin + calendar-range query.
+    index("session_events_site_origin_user_ts_idx").on(table.siteId, table.origin, table.trackedUserId, table.timestamp),
   ]
 );
 
