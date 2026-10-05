@@ -9,6 +9,7 @@ import type { ChecklistExperienceDefinition, ExperienceTargeting } from "../lib/
 import { matchesRules } from "../lib/pages/pageMatcher.js";
 import { evaluateSegment } from "../lib/segments/evaluator.js";
 import type { SegmentDefinition } from "../lib/segments/types.js";
+import { getOrganizationSubscription, subscriptionIsActive } from "../lib/entitlements/subscription.js";
 
 const identitySchema = {
   url: z.url().max(2000), anonymousId: z.string().min(1).max(200), trackedUserId: z.string().min(1).max(200).optional(), sessionId: z.string().min(1).max(200), pageViewId: z.string().min(1).max(200).optional(), timestamp: z.number().int().positive().default(() => Date.now()),
@@ -101,6 +102,7 @@ export function registerPublicChecklistRoutes(app: FastifyInstance, db: Db) {
   app.post("/public/sites/:siteId/experiences/:experienceId/launch", async (request, reply) => {
     const { siteId, experienceId } = request.params as { siteId: string; experienceId: string }; const body = launchSchema.safeParse(request.body); if (!body.success) return reply.code(400).send({ error: "invalid_body", details: body.error.flatten() });
     const [site] = await db.select().from(sites).where(eq(sites.publicId, siteId)).limit(1); const url = site && checkedUrl(body.data.url, site.domain); if (!site || !url) return reply.code(404).send({ error: "experience_not_found" });
+    if (!subscriptionIsActive(await getOrganizationSubscription(db, site.orgId))) return reply.code(402).send({ error: "subscription_inactive" });
     const [experience] = await db.select().from(experiences).where(and(eq(experiences.id, experienceId), eq(experiences.siteId, site.id), eq(experiences.kind, "guide"), eq(experiences.status, "published"))).limit(1); if (!experience?.publishedVersionId) return reply.code(404).send({ error: "experience_not_found" });
     const [version] = await db.select().from(experienceVersions).where(eq(experienceVersions.id, experience.publishedVersionId)).limit(1); const parsed = version && guideDefinitionSchema.safeParse(version.definition); if (!version || version.state !== "published" || !parsed || !parsed.success) return reply.code(404).send({ error: "experience_not_found" });
     const target = parsed.data.targeting; const now = new Date(); if ((target.schedule?.startsAt && now < new Date(target.schedule.startsAt)) || (target.schedule?.endsAt && now >= new Date(target.schedule.endsAt)) || (target.allowedOrigins?.length && !target.allowedOrigins.includes(url.origin))) return reply.code(409).send({ error: "experience_unavailable" });

@@ -1,6 +1,6 @@
 import { and, eq, gt, gte, inArray, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
-import type { Db } from "../../db/client.js";
+import type { DbExecutor } from "../../db/client.js";
 import {
   dashboards,
   experienceVersions,
@@ -47,7 +47,7 @@ export function productionOrigin(domain: string | null): string | null {
   }
 }
 
-async function countRows(db: Db, table: SQLiteTable, where: SQL | undefined): Promise<number> {
+async function countRows(db: DbExecutor, table: SQLiteTable, where: SQL | undefined): Promise<number> {
   const [row] = await db.select({ count: sql<number>`count(*)` }).from(table).where(where);
   return Number(row?.count ?? 0);
 }
@@ -60,7 +60,7 @@ async function countRows(db: Db, table: SQLiteTable, where: SQL | undefined): Pr
  * anonymous event rows to the one tracked user, so they cannot add a second
  * MAU once identified.
  */
-export async function getMonthlyActiveUsers(db: Db, siteId: string, month: UsageMonth): Promise<number> {
+export async function getMonthlyActiveUsers(db: DbExecutor, siteId: string, month: UsageMonth): Promise<number> {
   const [site] = await db.select({ domain: sites.domain }).from(sites).where(eq(sites.id, siteId)).limit(1);
   const origin = productionOrigin(site?.domain ?? null);
   if (!origin) return 0;
@@ -81,7 +81,7 @@ export async function getMonthlyActiveUsers(db: Db, siteId: string, month: Usage
 /** Active dashboard seats plus invitations that can still be accepted. A
  * membership wins over a pending invitation with the same email so malformed
  * legacy data cannot double-count a person. */
-export async function getMemberUsage(db: Db, orgId: string, now = new Date()): Promise<number> {
+export async function getMemberUsage(db: DbExecutor, orgId: string, now = new Date()): Promise<number> {
   const [memberRows, invitationRows] = await Promise.all([
     db.select({ email: users.email })
       .from(memberships)
@@ -100,20 +100,38 @@ export async function getMemberUsage(db: Db, orgId: string, now = new Date()): P
   return memberRows.length + invitationRows.filter((row) => !memberEmails.has(normalizeEmail(row.email))).length;
 }
 
-export async function getSiteUsage(db: Db, orgId: string): Promise<number> {
+export async function getSiteUsage(db: DbExecutor, orgId: string): Promise<number> {
   return countRows(db, sites, eq(sites.orgId, orgId));
 }
 
-export async function getDashboardUsage(db: Db, siteId: string): Promise<number> {
+export async function getDashboardUsage(db: DbExecutor, siteId: string): Promise<number> {
   return countRows(db, dashboards, eq(dashboards.siteId, siteId));
 }
 
-export async function getSegmentUsage(db: Db, siteId: string): Promise<number> {
+export async function getOrganizationDashboardUsage(db: DbExecutor, orgId: string): Promise<number> {
+  const [row] = await db.select({ count: sql<number>`count(*)` }).from(dashboards)
+    .innerJoin(sites, eq(dashboards.siteId, sites.id)).where(eq(sites.orgId, orgId));
+  return Number(row?.count ?? 0);
+}
+
+export async function getSegmentUsage(db: DbExecutor, siteId: string): Promise<number> {
   return countRows(db, segments, eq(segments.siteId, siteId));
 }
 
-export async function getFunnelUsage(db: Db, siteId: string): Promise<number> {
+export async function getOrganizationSegmentUsage(db: DbExecutor, orgId: string): Promise<number> {
+  const [row] = await db.select({ count: sql<number>`count(*)` }).from(segments)
+    .innerJoin(sites, eq(segments.siteId, sites.id)).where(eq(sites.orgId, orgId));
+  return Number(row?.count ?? 0);
+}
+
+export async function getFunnelUsage(db: DbExecutor, siteId: string): Promise<number> {
   return countRows(db, funnels, eq(funnels.siteId, siteId));
+}
+
+export async function getOrganizationFunnelUsage(db: DbExecutor, orgId: string): Promise<number> {
+  const [row] = await db.select({ count: sql<number>`count(*)` }).from(funnels)
+    .innerJoin(sites, eq(funnels.siteId, sites.id)).where(eq(sites.orgId, orgId));
+  return Number(row?.count ?? 0);
 }
 
 /**
@@ -121,7 +139,7 @@ export async function getFunnelUsage(db: Db, siteId: string): Promise<number> {
  * currently marked published, point to a published version, and have a valid
  * stored definition. Future schedules count; an ended schedule does not.
  */
-export async function getPublishedExperienceUsage(db: Db, siteId: string, now = new Date()): Promise<number> {
+export async function getPublishedExperienceUsage(db: DbExecutor, siteId: string, now = new Date()): Promise<number> {
   const rows = await db.select().from(experiences).where(and(
     eq(experiences.siteId, siteId),
     eq(experiences.status, "published"),
@@ -144,6 +162,12 @@ export async function getPublishedExperienceUsage(db: Db, siteId: string, now = 
   return count;
 }
 
+export async function getOrganizationPublishedExperienceUsage(db: DbExecutor, orgId: string, now = new Date()): Promise<number> {
+  const orgSites = await db.select({ id: sites.id }).from(sites).where(eq(sites.orgId, orgId));
+  const counts = await Promise.all(orgSites.map(site => getPublishedExperienceUsage(db, site.id, now)));
+  return counts.reduce((total, count) => total + count, 0);
+}
+
 export interface SiteUsage {
   siteId: string;
   monthlyActiveUsers: number;
@@ -155,7 +179,7 @@ export interface SiteUsage {
 
 /** Tenant-scoped resource measurements. MAU remains site-scoped because the
  * current tracked-user identity key is unique only within a site. */
-export async function getSiteUsageSnapshot(db: Db, siteId: string, month: UsageMonth, now = new Date()): Promise<SiteUsage> {
+export async function getSiteUsageSnapshot(db: DbExecutor, siteId: string, month: UsageMonth, now = new Date()): Promise<SiteUsage> {
   const [monthlyActiveUsers, dashboards, segments, funnels, publishedExperiences] = await Promise.all([
     getMonthlyActiveUsers(db, siteId, month),
     getDashboardUsage(db, siteId),
@@ -179,7 +203,7 @@ export interface OrganizationUsage {
 
 /** Organization MAU is explicitly the sum of site MAUs. This is not an
  * identity dedupe: the existing identity model is intentionally site-scoped. */
-export async function getOrganizationUsage(db: Db, orgId: string, month: UsageMonth, now = new Date()): Promise<OrganizationUsage> {
+export async function getOrganizationUsage(db: DbExecutor, orgId: string, month: UsageMonth, now = new Date()): Promise<OrganizationUsage> {
   const orgSites = await db.select({ id: sites.id }).from(sites).where(eq(sites.orgId, orgId));
   const siteSnapshots = await Promise.all(orgSites.map((site) => getSiteUsageSnapshot(db, site.id, month, now)));
   const members = await getMemberUsage(db, orgId, now);

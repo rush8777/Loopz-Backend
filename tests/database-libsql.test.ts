@@ -9,7 +9,7 @@ describe("local libSQL database", () => {
     const ctx = await createTestDb();
     try {
       const migrations = await ctx.db.all<{ count: number }>(sql`SELECT count(*) AS count FROM __drizzle_migrations`);
-      expect(Number(migrations[0].count)).toBe(30);
+      expect(Number(migrations[0].count)).toBe(32);
       await expect(ctx.db.run(sql`SELECT 1`)).resolves.toBeTruthy();
     } finally {
       ctx.cleanup();

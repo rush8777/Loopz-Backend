@@ -78,12 +78,13 @@ export interface EventDefinitionSummary {
 export async function listEventDefinitions(
   db: Db,
   siteId: string,
-  opts: { search?: string; limit: number; offset: number; segmentMembers?: string[]; sort?: "occurrences" | "users" | "sessions" | "lastSeen" | "firstSeen" | "az" | "za" } & DateRange
+  opts: { search?: string; limit: number; offset: number; segmentMembers?: string[]; pagePaths?: string[]; sort?: "occurrences" | "users" | "sessions" | "lastSeen" | "firstSeen" | "az" | "za" } & DateRange
 ): Promise<{ events: EventDefinitionSummary[]; total: number }> {
   const conditions = [eq(sessionEvents.siteId, siteId), eq(sessionEvents.type, "custom"), ...dateRangeConditions(opts)];
   if (opts.search) conditions.push(like(sessionEvents.eventName, `%${opts.search}%`));
   // An empty evaluated segment is a valid filter and must return no events.
   if (opts.segmentMembers) conditions.push(opts.segmentMembers.length ? inArray(identityExpr, opts.segmentMembers) : sql`0`);
+  if (opts.pagePaths) conditions.push(opts.pagePaths.length ? inArray(sessionEvents.pagePath, opts.pagePaths) : sql`0`);
   const where = and(...conditions);
 
   const [{ total }] = await db

@@ -122,6 +122,50 @@ export const sites = sqliteTable("sites", {
     .default(sql`(unixepoch('now') * 1000)`),
 });
 
+/** Billing belongs to the organization. Provider identifiers are stored here,
+ * but plan policy remains internal and provider-neutral. */
+export const organizationSubscriptions = sqliteTable(
+  "organization_subscriptions",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("sub")),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    planId: text("plan_id").notNull(),
+    status: text("status").notNull(),
+    trialEndsAt: integer("trial_ends_at", { mode: "timestamp_ms" }),
+    currentPeriodStartsAt: integer("current_period_starts_at", { mode: "timestamp_ms" }),
+    currentPeriodEndsAt: integer("current_period_ends_at", { mode: "timestamp_ms" }),
+    paddleCustomerId: text("paddle_customer_id"),
+    paddleSubscriptionId: text("paddle_subscription_id"),
+    paddlePriceId: text("paddle_price_id"),
+    paddleUpdatedAt: integer("paddle_updated_at", { mode: "timestamp_ms" }),
+    cancelAtPeriodEnd: integer("cancel_at_period_end", { mode: "boolean" }).notNull().default(false),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(sql`(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(sql`(unixepoch('now') * 1000)`),
+  },
+  (table) => [
+    uniqueIndex("organization_subscriptions_org_uidx").on(table.orgId),
+    uniqueIndex("organization_subscriptions_paddle_subscription_uidx").on(table.paddleSubscriptionId),
+  ],
+);
+
+/** Paddle retries notifications and may deliver them out of order. Persisting
+ * event ids makes processing idempotent; subscription.paddleUpdatedAt handles
+ * ordering between distinct lifecycle events. */
+export const billingWebhookEvents = sqliteTable("billing_webhook_events", {
+  eventId: text("event_id").primaryKey(),
+  eventType: text("event_type").notNull(),
+  occurredAt: integer("occurred_at", { mode: "timestamp_ms" }).notNull(),
+  processedAt: integer("processed_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch('now') * 1000)`),
+});
+
 /** External login identities are kept separate from users so additional providers can be added safely. */
 export const userAuthIdentities = sqliteTable(
   "user_auth_identities",

@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import rawBody from "fastify-raw-body";
 import { sql } from "drizzle-orm";
 import { env } from "./config.js";
 import type { Db } from "./db/client.js";
@@ -29,6 +30,7 @@ import { registerPublicChecklistRoutes } from "./routes/public-checklists.js";
 import { registerDashboardRoutes } from "./routes/dashboards.js";
 import { registerAnalyticsRoutes } from "./routes/analytics.js";
 import { registerInvitationRoutes } from "./routes/invitations.js";
+import { registerBillingRoutes } from "./routes/billing.js";
 import { registerPublicSdkVerificationRoutes, registerSdkVerificationRoutes } from "./routes/sdk-verifications.js";
 import type { VerifyGoogleCredential } from "./lib/google-auth.js";
 
@@ -56,10 +58,12 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
   // public routes below get their own tighter, per-route limits since
   // they're what an attacker would actually target (no credentials required).
   await app.register(rateLimit, { global: true, max: 300, timeWindow: "1 minute" });
+  await app.register(rawBody, { global: false, encoding: "utf8", runFirst: true });
 
   registerAuthRoutes(app, db, options.verifyGoogleCredential);
   registerOrgRoutes(app, db);
   registerInvitationRoutes(app, db);
+  registerBillingRoutes(app, db);
   // registerPatternRoutes(app, db);
   // registerAnalysisRoutes(app, db);
   // registerPatternObserverRoutes(app, db);

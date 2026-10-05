@@ -1,11 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { runInTransaction } from "../db/transaction.js";
+import { runEntitlementTransaction, runInTransaction } from "../db/transaction.js";
 import { cuid, dashboardCards, dashboards, experiences, funnels, segments, sites } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { cardConfigurationSchema, dashboardCreateSchema, dashboardUpdateSchema } from "../lib/analytics/validation.js";
+import { createEntitlementService } from "../lib/entitlements/service.js";
+import { sendEntitlementError } from "../lib/entitlements/http.js";
 
 async function siteInOrg(db: Db, siteId: string, orgId: string) { const [site] = await db.select().from(sites).where(and(eq(sites.id, siteId), eq(sites.orgId, orgId))).limit(1); return site; }
 async function dashboardInSite(db: Db, dashboardId: string, siteId: string) { const [row] = await db.select().from(dashboards).where(and(eq(dashboards.id, dashboardId), eq(dashboards.siteId, siteId))).limit(1); return row; }
@@ -34,10 +36,13 @@ export function registerDashboardRoutes(app: FastifyInstance, db: Db) {
     const parsed = dashboardCreateSchema.safeParse(request.body); if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
     const referenceError = await invalidReference(db, siteId, parsed.data.cards); if (referenceError) return reply.code(400).send({ error: referenceError });
     const dashboardId = cuid("dsh"), now = new Date();
-    await runInTransaction(db, async (tx) => {
-      await tx.insert(dashboards).values({ id: dashboardId, siteId, name: parsed.data.name, description: parsed.data.description ?? null, createdBy: request.user!.id, createdAt: now, updatedAt: now });
-      if (parsed.data.cards.length) await tx.insert(dashboardCards).values(parsed.data.cards.map((card, position) => ({ id: cuid("dsc"), dashboardId, title: card.title, cardType: card.cardType, width: card.width, position, configuration: card.configuration, createdAt: now, updatedAt: now })));
-    });
+    try {
+      await runEntitlementTransaction(db, async (tx) => {
+        await createEntitlementService(tx).assertCanCreate({ orgId: site.orgId, siteId }, "dashboard");
+        await tx.insert(dashboards).values({ id: dashboardId, siteId, name: parsed.data.name, description: parsed.data.description ?? null, createdBy: request.user!.id, createdAt: now, updatedAt: now });
+        if (parsed.data.cards.length) await tx.insert(dashboardCards).values(parsed.data.cards.map((card, position) => ({ id: cuid("dsc"), dashboardId, title: card.title, cardType: card.cardType, width: card.width, position, configuration: card.configuration, createdAt: now, updatedAt: now })));
+      });
+    } catch (error) { return sendEntitlementError(reply, error); }
     const row = await dashboardInSite(db, dashboardId, siteId); const cards = await db.select().from(dashboardCards).where(eq(dashboardCards.dashboardId, dashboardId)).orderBy(asc(dashboardCards.position));
     return reply.code(201).send({ ...dashboardJson(row!), cards: cards.map(cardJson) });
   });

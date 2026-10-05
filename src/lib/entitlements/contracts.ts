@@ -4,15 +4,31 @@
  * details. It deliberately contains no products, limits, or payment state.
  */
 export type BillableResource = "site" | "member" | "dashboard" | "segment" | "funnel" | "published_experience";
-export type EntitlementFeature = string;
+export type EntitlementFeature =
+  | "advanced_audience_targeting"
+  | "custom_event_trigger"
+  | "manual_guide_launch"
+  | "experience_scheduling"
+  | "advanced_frequency"
+  | "advanced_guide_progression"
+  | "experience_orchestration";
 
 export interface EntitlementSubject {
   orgId: string;
+  siteId?: string;
+  resourceId?: string;
 }
 
 export interface EntitlementDecision {
   allowed: boolean;
   reason?: "resource_limit" | "feature_unavailable" | "subscription_inactive";
+  planId?: string;
+  resource?: BillableResource;
+  feature?: EntitlementFeature;
+  current?: number;
+  limit?: number;
+  trialEndsAt?: string | null;
+  upgradeRequired?: boolean;
 }
 
 export interface EntitlementService {

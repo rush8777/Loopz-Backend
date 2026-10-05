@@ -8,6 +8,9 @@ import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createSegmentSchema, updateSegmentSchema, previewSegmentSchema } from "../lib/segments/validation.js";
 import { getSegmentAudienceCount, getSegmentMembers, surveyResponseConditionIsValid } from "../lib/segments/evaluator.js";
 import { isGroup, type SegmentDefinition, type SegmentNode } from "../lib/segments/types.js";
+import { runEntitlementTransaction } from "../db/transaction.js";
+import { createEntitlementService } from "../lib/entitlements/service.js";
+import { sendEntitlementError } from "../lib/entitlements/http.js";
 
 /** Loads a site and verifies it belongs to the authenticated org - the same 404-not-403 principle used throughout (see pages.ts/tracked-users.ts). */
 async function loadSiteInOrg(db: Db, siteId: string, orgId: string) {
@@ -98,15 +101,14 @@ export function registerSegmentRoutes(app: FastifyInstance, db: Db) {
       if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
       if (!await surveyReferencesAreValid(db, site.id, parsed.data.definition)) return reply.code(400).send({ error: "invalid_survey_condition" });
 
-      const [row] = await db
-        .insert(segments)
-        .values({
-          siteId: site.id,
-          name: parsed.data.name,
-          description: parsed.data.description ?? null,
-          definition: parsed.data.definition,
-        })
-        .returning();
+      let row: typeof segments.$inferSelect;
+      try {
+        row = await runEntitlementTransaction(db, async tx => {
+          await createEntitlementService(tx).assertCanCreate({ orgId: site.orgId, siteId: site.id }, "segment");
+          const [created] = await tx.insert(segments).values({ siteId: site.id, name: parsed.data.name, description: parsed.data.description ?? null, definition: parsed.data.definition }).returning();
+          return created;
+        });
+      } catch (error) { return sendEntitlementError(reply, error); }
 
       const audienceCount = await getSegmentAudienceCount(db, site.id, row.definition as SegmentDefinition);
       return reply.code(201).send(serializeSegment(row, audienceCount));

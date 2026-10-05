@@ -17,6 +17,7 @@ import {
   verifyGoogleCredential as defaultVerifyGoogleCredential,
   type VerifyGoogleCredential,
 } from "../lib/google-auth.js";
+import { createGrowthTrial } from "../lib/entitlements/subscription.js";
 
 const signupSchema = z.object({
   email: z.string().trim().email(),
@@ -96,6 +97,7 @@ export function registerAuthRoutes(
         const [user] = await tx.insert(users).values({ email, passwordHash, name }).returning();
         const [org] = await tx.insert(organizations).values({ name: orgName }).returning();
         await tx.insert(memberships).values({ userId: user.id, orgId: org.id, role: "OWNER" });
+        await createGrowthTrial(tx, org.id);
         const session = await issueSession(tx, user, env.JWT_SECRET);
         return { user, org, session };
       });
@@ -209,6 +211,7 @@ export function registerAuthRoutes(
         });
         const [org] = await tx.insert(organizations).values({ name: parsed.data.orgName }).returning();
         await tx.insert(memberships).values({ userId, orgId: org.id, role: "OWNER" });
+        await createGrowthTrial(tx, org.id);
         const session = await issueSession(tx, user, env.JWT_SECRET);
         return { user, org, session, created: true as const };
       }));

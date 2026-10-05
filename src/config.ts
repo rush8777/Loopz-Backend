@@ -9,6 +9,12 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DASHBOARD_URL: z.string().url().default("http://localhost:5173"),
   GOOGLE_CLIENT_ID: z.string().trim().min(1).optional(),
+  PADDLE_API_KEY: z.string().trim().min(1).optional(),
+  PADDLE_WEBHOOK_SECRET: z.string().trim().min(1).optional(),
+  PADDLE_ENVIRONMENT: z.enum(["sandbox", "production"]).default("sandbox"),
+  PADDLE_STARTER_PRICE_ID: z.string().trim().min(1).optional(),
+  PADDLE_GROWTH_PRICE_ID: z.string().trim().min(1).optional(),
+  PADDLE_SCALE_PRICE_ID: z.string().trim().min(1).optional(),
 });
 
 export const env = envSchema.parse(process.env);

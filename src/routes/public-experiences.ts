@@ -12,6 +12,7 @@ import { matchesRules } from "../lib/pages/pageMatcher.js";
 import { evaluateSegment } from "../lib/segments/evaluator.js";
 import type { SegmentDefinition } from "../lib/segments/types.js";
 import { deliveredChecklist } from "./public-checklists.js";
+import { getOrganizationSubscription, subscriptionIsActive } from "../lib/entitlements/subscription.js";
 
 function rawTokenHash(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -89,6 +90,10 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!query.success) return reply.code(400).send({ error: "invalid_query", details: query.error.flatten() });
     const [site] = await db.select().from(sites).where(eq(sites.publicId, siteId)).limit(1);
     if (!site) return reply.code(404).send({ error: "site_not_found" });
+    if (!subscriptionIsActive(await getOrganizationSubscription(db, site.orgId))) {
+      reply.header("Cache-Control", "private, no-store");
+      return reply.send({ experiences: [], checklists: [], hasChecklists: false });
+    }
     let pagePath: string; let requestUrl: URL;
     try {
       const url = new URL(query.data.url); requestUrl = url;

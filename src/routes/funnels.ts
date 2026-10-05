@@ -9,6 +9,9 @@ import { createFunnelSchema, updateFunnelSchema, conversionWindowToMinutes } fro
 import { evaluateFunnel, getFunnelStepUsers } from "../lib/funnels/evaluator.js";
 import { eventExistsForSite } from "../lib/events/eventQueries.js";
 import type { FunnelStep } from "../lib/funnels/types.js";
+import { runEntitlementTransaction } from "../db/transaction.js";
+import { createEntitlementService } from "../lib/entitlements/service.js";
+import { sendEntitlementError } from "../lib/entitlements/http.js";
 
 async function loadSiteInOrg(db: Db, siteId: string, orgId: string) {
   const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
@@ -127,16 +130,14 @@ export function registerFunnelRoutes(app: FastifyInstance, db: Db) {
     const referenceError = await validateStepReferences(db, site.id, parsed.data.steps);
     if (referenceError) return reply.code(400).send({ error: "invalid_step_reference", message: referenceError });
 
-    const [row] = await db
-      .insert(funnels)
-      .values({
-        siteId: site.id,
-        name: parsed.data.name,
-        description: parsed.data.description ?? null,
-        steps: parsed.data.steps,
-        conversionWindowMinutes: parsed.data.conversionWindow ? conversionWindowToMinutes(parsed.data.conversionWindow) : undefined,
-      })
-      .returning();
+    let row: typeof funnels.$inferSelect;
+    try {
+      row = await runEntitlementTransaction(db, async tx => {
+        await createEntitlementService(tx).assertCanCreate({ orgId: site.orgId, siteId: site.id }, "funnel");
+        const [created] = await tx.insert(funnels).values({ siteId: site.id, name: parsed.data.name, description: parsed.data.description ?? null, steps: parsed.data.steps, conversionWindowMinutes: parsed.data.conversionWindow ? conversionWindowToMinutes(parsed.data.conversionWindow) : undefined }).returning();
+        return created;
+      });
+    } catch (error) { return sendEntitlementError(reply, error); }
 
     return reply.code(201).send(serializeFunnel(row));
   });
