@@ -746,7 +746,7 @@ export const sessionReplayEvents = sqliteTable("session_replay_events", {
  * the dashboard's `users`/`memberships`/`organizations` (see the note
  * at the top of this file): these rows represent visitors/users of the
  * *customer's* site, identified via the SDK's `analytics.identify()`,
- * not people who log into movecues.
+ * not people who log into movcues.
  *
  * This is a read/aggregation layer over the existing behavioral
  * system, not a parallel collector - `tracked_users` and

@@ -57,7 +57,7 @@ function builderProjectValueIsSafe(value) {
 const builderShape = {
     version: z.literal(1),
     projectData: z.record(z.string(), z.unknown()).refine(builderProjectValueIsSafe, "unsafe builder project data"),
-    css: z.string().max(250_000).refine(builderCssIsSafe, "builder CSS must be safe and scoped under .movecues-widget"),
+    css: z.string().max(250_000).refine(builderCssIsSafe, "builder CSS must be safe and scoped under .movcues-widget"),
     canvas: z.object({ zoom: z.number().finite().min(25).max(200), panX: z.number().finite(), panY: z.number().finite() }).strict().optional(),
 };
 const builderSchema = z.object({ ...builderShape, html: z.string().max(500_000).refine(value => builderHtmlIsSafe(value), "unsafe builder HTML") }).strict();
@@ -154,13 +154,13 @@ const surveyStepSchema = z.object({
         }
     });
     if (step.builder) {
-        const markers = Array.from(step.builder.html.matchAll(/<[^>]*\bdata-movecues-question-id\s*=\s*["']([^"']+)["'][^>]*>/gi));
+        const markers = Array.from(step.builder.html.matchAll(/<[^>]*\bdata-movcues-question-id\s*=\s*["']([^"']+)["'][^>]*>/gi));
         const structured = new Map(step.questions.map(question => [question.id, question.type]));
         const counts = new Map();
         markers.forEach(marker => {
             const id = marker[1];
             counts.set(id, (counts.get(id) ?? 0) + 1);
-            const type = /\bdata-movecues-question-type\s*=\s*["']([^"']+)["']/i.exec(marker[0])?.[1];
+            const type = /\bdata-movcues-question-type\s*=\s*["']([^"']+)["']/i.exec(marker[0])?.[1];
             if (!structured.has(id) || structured.get(id) !== type)
                 ctx.addIssue({ code: "custom", path: ["builder", "html"], message: "survey question markup must match structured question IDs and types" });
         });
@@ -235,14 +235,14 @@ export const checklistDefinitionSchema = z.object({
     definition.items.forEach((item, index) => { if (ids.has(item.id))
         ctx.addIssue({ code: "custom", path: ["items", index, "id"], message: "Checklist item IDs must be unique" }); ids.add(item.id); if (item.action.type === "none" && item.completion.type !== "item_clicked")
         ctx.addIssue({ code: "custom", path: ["items", index, "action"], message: "Items without an action must complete when clicked" }); });
-    const rootCount = Array.from(definition.builder.html.matchAll(/data-movecues-checklist-role\s*=\s*["']root["']/gi)).length;
+    const rootCount = Array.from(definition.builder.html.matchAll(/data-movcues-checklist-role\s*=\s*["']root["']/gi)).length;
     if (rootCount !== 1)
         ctx.addIssue({ code: "custom", path: ["builder", "html"], message: "Checklist builder must contain exactly one root marker" });
     for (const role of ["title", "items", "progress", "launcher-label", "remaining-count", "completion-title", "completion-description", "completion-acknowledge"]) {
-        if (!new RegExp(`data-movecues-checklist-role\\s*=\\s*["']${role}["']`, "i").test(definition.builder.html))
+        if (!new RegExp(`data-movcues-checklist-role\\s*=\\s*["']${role}["']`, "i").test(definition.builder.html))
             ctx.addIssue({ code: "custom", path: ["builder", "html"], message: `Checklist builder is missing ${role}` });
     }
-    const markers = Array.from(definition.builder.html.matchAll(/data-movecues-checklist-item-id\s*=\s*["']([^"']+)["']/gi)).map(match => match[1]);
+    const markers = Array.from(definition.builder.html.matchAll(/data-movcues-checklist-item-id\s*=\s*["']([^"']+)["']/gi)).map(match => match[1]);
     definition.items.forEach(item => { if (markers.filter(id => id === item.id).length !== 1)
         ctx.addIssue({ code: "custom", path: ["builder", "html"], message: `Checklist item ${item.id} must appear exactly once` }); });
     markers.forEach(id => { if (!ids.has(id))

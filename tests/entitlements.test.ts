@@ -89,7 +89,7 @@ describe("plans and entitlements", () => {
     const { owner } = await setup("paddle-sync");
     const payload = {
       id: "sub_01test", status: "active", customerId: "ctm_01test", updatedAt: "2026-10-04T00:00:00.000Z",
-      customData: { movecuesOrgId: owner.org.id }, currentBillingPeriod: { startsAt: "2026-10-01T00:00:00.000Z", endsAt: "2026-11-01T00:00:00.000Z" },
+      customData: { movcuesOrgId: owner.org.id }, currentBillingPeriod: { startsAt: "2026-10-01T00:00:00.000Z", endsAt: "2026-11-01T00:00:00.000Z" },
       scheduledChange: null, items: [{ price: { id: "price_growth" } }],
     };
     const resolve = (priceId: string | null | undefined) => priceId === "price_growth" ? "growth" as const : null;

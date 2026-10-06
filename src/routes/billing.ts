@@ -64,7 +64,7 @@ export function registerBillingRoutes(app: FastifyInstance, db: Db) {
       if (!paddle || !priceId) return reply.code(503).send({ error: "billing_not_configured" });
       const transaction = await paddle.transactions.create({
         items: [{ priceId, quantity: 1 }],
-        customData: { movecuesOrgId: request.membership!.orgId, movecuesPlanId: parsed.data.planId },
+        customData: { movcuesOrgId: request.membership!.orgId, movcuesPlanId: parsed.data.planId },
         checkout: { url: env.DASHBOARD_URL },
       });
       if (!transaction.checkout?.url) return reply.code(502).send({ error: "checkout_url_unavailable" });
@@ -135,7 +135,7 @@ export async function syncPaddleSubscription(
   await runInTransaction(db, async tx => {
     const [processed] = await tx.select({ eventId: billingWebhookEvents.eventId }).from(billingWebhookEvents).where(eq(billingWebhookEvents.eventId, input.eventId)).limit(1);
     if (processed) return;
-    const orgIdFromData = typeof input.subscription.customData?.movecuesOrgId === "string" ? input.subscription.customData.movecuesOrgId : null;
+    const orgIdFromData = typeof input.subscription.customData?.movcuesOrgId === "string" ? input.subscription.customData.movcuesOrgId : null;
     const byPaddleId = await tx.select().from(organizationSubscriptions).where(eq(organizationSubscriptions.paddleSubscriptionId, input.subscription.id)).limit(1);
     let subscription: typeof organizationSubscriptions.$inferSelect | undefined = byPaddleId[0];
     if (!subscription && orgIdFromData) {

@@ -1,7 +1,7 @@
 /** Backend-authoritative builder security contract, mirrored by dashboard and SDK. */
 export const BUILDER_ALLOWED_TAGS = new Set(["div", "section", "header", "h1", "h2", "h3", "h4", "p", "span", "br", "button", "img", "hr", "label", "ul", "li"]);
 export const BUILDER_SURVEY_INPUT_TAGS = new Set(["input", "textarea"]);
-export const BUILDER_ALLOWED_ATTRIBUTES = new Set(["class", "id", "title", "role", "aria-label", "aria-live", "aria-hidden", "aria-pressed", "alt", "src", "width", "height", "type", "placeholder", "maxlength", "data-movecues-action-id", "data-movecues-content", "data-movecues-widget-type", "data-movecues-question-id", "data-movecues-question-type", "data-movecues-question-input", "data-movecues-option-id", "data-movecues-survey-action", "data-movecues-survey-controls", "data-movecues-survey-progress", "data-movecues-survey-progress-bar", "data-movecues-survey-step-id", "data-movecues-checklist-role", "data-movecues-checklist-item-id", "data-movecues-checklist-item-role", "data-movecues-checklist-view"]);
+export const BUILDER_ALLOWED_ATTRIBUTES = new Set(["class", "id", "title", "role", "aria-label", "aria-live", "aria-hidden", "aria-pressed", "alt", "src", "width", "height", "type", "placeholder", "maxlength", "data-movcues-action-id", "data-movcues-content", "data-movcues-widget-type", "data-movcues-question-id", "data-movcues-question-type", "data-movcues-question-input", "data-movcues-option-id", "data-movcues-survey-action", "data-movcues-survey-controls", "data-movcues-survey-progress", "data-movcues-survey-progress-bar", "data-movcues-survey-step-id", "data-movcues-checklist-role", "data-movcues-checklist-item-id", "data-movcues-checklist-item-role", "data-movcues-checklist-view"]);
 export const BUILDER_UNSAFE_CSS = /@import|expression\s*\(|javascript\s*:|behavior\s*:|-moz-binding/i;
 
 export function builderImageUrlIsSafe(value: string): boolean { return !value || /^(https?:|data:image\/(?:png|gif|jpeg|webp);base64,|\/)/i.test(value); }
@@ -13,7 +13,7 @@ export function builderCssIsSafe(value: string): boolean {
   for (const match of css.matchAll(/([^{}]+)\{/g)) {
     const prelude = match[1].trim();
     if (!prelude || prelude.startsWith("@")) continue;
-    if (prelude.split(",").some(selector => !selector.trim().includes(".movecues-widget"))) return false;
+    if (prelude.split(",").some(selector => !selector.trim().includes(".movcues-widget"))) return false;
   }
   return true;
 }
@@ -30,8 +30,8 @@ export function builderHtmlIsSafe(value: string, allowSurveyInputs = false): boo
       const name = attribute[1].toLowerCase(); const attributeValue = attribute[2] ?? attribute[3] ?? attribute[4] ?? "";
       if (!BUILDER_ALLOWED_ATTRIBUTES.has(name)) return false;
       if (name === "src" && (tag !== "img" || !builderImageUrlIsSafe(attributeValue))) return false;
-      if (name === "data-movecues-action-id" && attributeValue !== "primary" && attributeValue !== "secondary") return false;
-      if (name === "data-movecues-survey-action" && attributeValue !== "back" && attributeValue !== "next" && attributeValue !== "submit") return false;
+      if (name === "data-movcues-action-id" && attributeValue !== "primary" && attributeValue !== "secondary") return false;
+      if (name === "data-movcues-survey-action" && attributeValue !== "back" && attributeValue !== "next" && attributeValue !== "submit") return false;
       attributes = attributes.slice(attribute[0].length).trim();
     }
     if (tag === "input") {
