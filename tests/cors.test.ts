@@ -11,7 +11,7 @@ describe("CORS", () => {
 
   afterAll(() => ctx?.cleanup());
 
-  it("allows credentialed dashboard requests only from the configured dashboard origin", async () => {
+  it("allows configured and local development dashboard origins", async () => {
     const dashboardOrigin = new URL(env.DASHBOARD_URL).origin;
     const allowed = await ctx.app.inject({
       method: "OPTIONS",
@@ -26,14 +26,25 @@ describe("CORS", () => {
     expect(allowed.headers["access-control-allow-origin"]).toBe(dashboardOrigin);
     expect(allowed.headers["access-control-allow-credentials"]).toBe("true");
 
+    const local = await ctx.app.inject({
+      method: "OPTIONS",
+      url: "/auth/google",
+      headers: {
+        origin: "http://localhost:5173",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type",
+      },
+    });
+    expect(local.statusCode).toBe(204);
+    expect(local.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+    expect(local.headers["access-control-allow-credentials"]).toBe("true");
+
     const rejected = await ctx.app.inject({
       method: "OPTIONS",
       url: "/auth/google",
       headers: { origin: "https://untrusted.example", "access-control-request-method": "POST" },
     });
-    // The plugin sends the configured value, never reflects the requester;
-    // browsers therefore reject this response for an untrusted origin.
-    expect(rejected.headers["access-control-allow-origin"]).toBe(dashboardOrigin);
+    expect(rejected.headers["access-control-allow-origin"]).toBeUndefined();
   });
 
   it("keeps public SDK endpoints cross-origin without credentials", async () => {

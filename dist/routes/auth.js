@@ -229,6 +229,14 @@ export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVeri
             return reply.code(409).send(result);
         return reply.code(201).send({ organization: { id: result.org.id, name: result.org.name }, site: { id: result.site.id, siteId: result.site.publicId, name: result.site.name, domain: result.site.domain } });
     });
+    app.post("/auth/onboarding/skip", { preHandler: authenticate }, async (request, reply) => {
+        const [membership] = await db.select().from(memberships).where(eq(memberships.userId, request.user.id)).limit(1);
+        if (!membership)
+            return reply.code(409).send({ error: "onboarding_not_started" });
+        const now = new Date();
+        await db.update(organizations).set({ onboardingCompletedAt: now, onboardingSkippedAt: now, updatedAt: now }).where(eq(organizations.id, membership.orgId));
+        return reply.code(204).send();
+    });
     // Refresh token rotation: every refresh both issues a new pair AND
     // revokes the token that was just used. A reused (already-revoked)
     // refresh token is treated as a signal the token was stolen - the

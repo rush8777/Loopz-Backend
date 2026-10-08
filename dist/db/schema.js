@@ -32,6 +32,8 @@ export const organizations = sqliteTable("organizations", {
         .default(sql `(unixepoch('now') * 1000)`),
     /** Set only after the first site's SDK connection has been verified. */
     onboardingCompletedAt: integer("onboarding_completed_at", { mode: "timestamp_ms" }),
+    /** Set when a workspace owner elects to defer the first SDK connection. */
+    onboardingSkippedAt: integer("onboarding_skipped_at", { mode: "timestamp_ms" }),
 });
 export const users = sqliteTable("users", {
     id: text("id").primaryKey().$defaultFn(() => cuid("usr")),

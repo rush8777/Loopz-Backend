@@ -239,6 +239,13 @@
       "when": 1791141516317,
       "tag": "0033_mark_existing_organizations_onboarded",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1791141516318,
+      "tag": "0034_organization_onboarding_skipped",
+      "breakpoints": true
     }
   ]
 }

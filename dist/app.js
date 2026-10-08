@@ -34,6 +34,16 @@ import { registerPublicSdkVerificationRoutes, registerSdkVerificationRoutes } fr
 export async function buildApp(db, options = {}) {
     const app = Fastify({ logger: false });
     const dashboardOrigin = new URL(env.DASHBOARD_URL).origin;
+    const dashboardOrigins = new Set([dashboardOrigin]);
+    // Vite serves the dashboard over HTTP locally by default. Keep the
+    // configured dashboard origin for redirects, but accept both local schemes
+    // during development so a stale https://localhost value cannot break CORS.
+    if (env.NODE_ENV !== "production") {
+        dashboardOrigins.add("http://localhost:5173");
+        dashboardOrigins.add("https://localhost:5173");
+        dashboardOrigins.add("http://127.0.0.1:5173");
+        dashboardOrigins.add("https://127.0.0.1:5173");
+    }
     await app.register(cors, {
         // Dashboard routes may receive bearer tokens, so only the configured
         // dashboard origin is allowed. The public SDK endpoints remain usable on
@@ -41,7 +51,7 @@ export async function buildApp(db, options = {}) {
         delegator: (request, callback) => {
             const isPublicRoute = request.url.startsWith("/public/");
             callback(null, {
-                origin: isPublicRoute ? true : dashboardOrigin,
+                origin: isPublicRoute ? true : [...dashboardOrigins],
                 methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
                 allowedHeaders: ["Content-Type", "Authorization"],
                 credentials: !isPublicRoute,
