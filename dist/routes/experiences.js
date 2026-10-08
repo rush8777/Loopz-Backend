@@ -10,6 +10,10 @@ import { isChecklistDefinition } from "../lib/experiences/types.js";
 import { initialChecklistDefinition } from "../lib/experiences/checklistPresets.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import { getExperienceAnalytics, listExperienceAnalytics, listSurveyResponses } from "../lib/experiences/analytics.js";
+import { runEntitlementTransaction } from "../db/transaction.js";
+import { assertSubscriptionActive, createEntitlementService } from "../lib/entitlements/service.js";
+import { sendEntitlementError } from "../lib/entitlements/http.js";
+import { requiredExperienceFeatures } from "../lib/entitlements/experienceFeatures.js";
 const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
@@ -183,6 +187,13 @@ function validatePublishRequirements(kind, widgetType, definition) {
     }
     return null;
 }
+async function assertNewDefinitionFeatures(db, orgId, previous, next) {
+    const previousFeatures = previous ? requiredExperienceFeatures(previous) : new Set();
+    const service = createEntitlementService(db);
+    for (const feature of requiredExperienceFeatures(next))
+        if (!previousFeatures.has(feature))
+            await service.assertFeature({ orgId }, feature);
+}
 export function registerExperienceRoutes(app, db) {
     const analyticsRangeSchema = z.object({ since: z.coerce.date().optional(), until: z.coerce.date().optional(), limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0) });
     const responseQuerySchema = analyticsRangeSchema.extend({
@@ -265,16 +276,18 @@ export function registerExperienceRoutes(app, db) {
                 : [{ id: "build_page", kind: "include", operator: "equals", value: new URL(buildUrl).pathname }]
             : [];
         const definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(parsed.data.template) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules);
-        const [experience] = await db.insert(experiences).values({
-            siteId: site.id,
-            kind: parsed.data.kind,
-            widgetType: parsed.data.kind === "widget" ? parsed.data.widgetType : null,
-            name: parsed.data.name,
-            buildPageId: page?.id ?? null,
-            buildUrl: buildUrl ?? null,
-            createdBy: request.user.id,
-        }).returning();
-        await db.insert(experienceVersions).values({ experienceId: experience.id, versionNumber: 1, state: "draft", definition, createdBy: request.user.id });
+        let experience;
+        try {
+            experience = await runEntitlementTransaction(db, async (tx) => {
+                await assertSubscriptionActive(tx, site.orgId);
+                const [created] = await tx.insert(experiences).values({ siteId: site.id, kind: parsed.data.kind, widgetType: parsed.data.kind === "widget" ? parsed.data.widgetType : null, name: parsed.data.name, buildPageId: page?.id ?? null, buildUrl: buildUrl ?? null, createdBy: request.user.id }).returning();
+                await tx.insert(experienceVersions).values({ experienceId: created.id, versionNumber: 1, state: "draft", definition, createdBy: request.user.id });
+                return created;
+            });
+        }
+        catch (error) {
+            return sendEntitlementError(reply, error);
+        }
         return reply.code(201).send(await serializeExperience(db, experience));
     });
     app.get("/orgs/:orgId/sites/:siteId/experiences/:experienceId", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
@@ -313,7 +326,14 @@ export function registerExperienceRoutes(app, db) {
             const referenceError = await validateReferences(db, site.id, definition.data, false);
             if (referenceError)
                 return reply.code(400).send({ error: referenceError });
-            await db.update(experienceVersions).set({ definition: definition.data }).where(eq(experienceVersions.id, draft.id));
+            try {
+                await assertSubscriptionActive(db, site.orgId);
+                await assertNewDefinitionFeatures(db, site.orgId, draft.definition, definition.data);
+                await db.update(experienceVersions).set({ definition: definition.data }).where(eq(experienceVersions.id, draft.id));
+            }
+            catch (error) {
+                return sendEntitlementError(reply, error);
+            }
         }
         const [updated] = await db.update(experiences).set({ ...(parsed.data.name ? { name: parsed.data.name } : {}), updatedAt: new Date() }).where(eq(experiences.id, row.id)).returning();
         return reply.send(await serializeExperience(db, updated));
@@ -366,9 +386,26 @@ export function registerExperienceRoutes(app, db) {
         if (referenceError)
             return reply.code(400).send({ error: referenceError });
         const now = new Date();
-        await db.update(experienceVersions).set({ state: "published", publishedAt: now }).where(eq(experienceVersions.id, draft.id));
-        await db.insert(experienceVersions).values({ experienceId: row.id, versionNumber: draft.versionNumber + 1, state: "draft", definition: checked.data, createdBy: request.user.id });
-        const [updated] = await db.update(experiences).set({ status: "published", publishedVersionId: draft.id, updatedAt: now }).where(eq(experiences.id, row.id)).returning();
+        let updated;
+        try {
+            updated = await runEntitlementTransaction(db, async (tx) => {
+                await assertSubscriptionActive(tx, site.orgId, now);
+                const previousVersion = row.publishedVersionId ? versions.find(version => version.id === row.publishedVersionId) : null;
+                await assertNewDefinitionFeatures(tx, site.orgId, previousVersion?.definition, checked.data);
+                const previousDefinition = previousVersion ? definitionSchemaFor(row.kind, row.widgetType).safeParse(previousVersion.definition) : null;
+                const previousEndsAt = previousDefinition?.success ? previousDefinition.data.targeting.schedule?.endsAt : undefined;
+                const alreadyReservesCapacity = row.status === "published" && Boolean(previousVersion && previousVersion.state === "published" && (!previousEndsAt || new Date(previousEndsAt) > now));
+                if (!alreadyReservesCapacity)
+                    await createEntitlementService(tx).assertCanPublishExperience({ orgId: site.orgId, siteId: site.id, resourceId: row.id });
+                await tx.update(experienceVersions).set({ state: "published", publishedAt: now }).where(eq(experienceVersions.id, draft.id));
+                await tx.insert(experienceVersions).values({ experienceId: row.id, versionNumber: draft.versionNumber + 1, state: "draft", definition: checked.data, createdBy: request.user.id });
+                const [published] = await tx.update(experiences).set({ status: "published", publishedVersionId: draft.id, updatedAt: now }).where(eq(experiences.id, row.id)).returning();
+                return published;
+            });
+        }
+        catch (error) {
+            return sendEntitlementError(reply, error);
+        }
         return reply.send(await serializeExperience(db, updated));
     });
     app.post("/orgs/:orgId/sites/:siteId/experiences/:experienceId/pause", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {

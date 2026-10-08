@@ -30,6 +30,8 @@ export async function listEventDefinitions(db, siteId, opts) {
     // An empty evaluated segment is a valid filter and must return no events.
     if (opts.segmentMembers)
         conditions.push(opts.segmentMembers.length ? inArray(identityExpr, opts.segmentMembers) : sql `0`);
+    if (opts.pagePaths)
+        conditions.push(opts.pagePaths.length ? inArray(sessionEvents.pagePath, opts.pagePaths) : sql `0`);
     const where = and(...conditions);
     const [{ total }] = await db
         .select({ total: sql `count(distinct ${sessionEvents.eventName})` })

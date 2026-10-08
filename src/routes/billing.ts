@@ -62,13 +62,20 @@ export function registerBillingRoutes(app: FastifyInstance, db: Db) {
       if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
       const paddle = paddleClient(); const priceId = paddlePriceId(parsed.data.planId);
       if (!paddle || !priceId) return reply.code(503).send({ error: "billing_not_configured" });
+      const existingSubscription = await getOrganizationSubscription(db, request.membership!.orgId);
+      // A checkout creates a new Paddle subscription. Plan changes for an
+      // existing paid subscription must go through the customer portal.
+      if (existingSubscription.paddleSubscriptionId && subscriptionIsActive(existingSubscription)) {
+        return reply.code(409).send({ error: "manage_subscription_in_portal" });
+      }
       const transaction = await paddle.transactions.create({
         items: [{ priceId, quantity: 1 }],
         customData: { movcuesOrgId: request.membership!.orgId, movcuesPlanId: parsed.data.planId },
-        checkout: { url: env.DASHBOARD_URL },
       });
-      if (!transaction.checkout?.url) return reply.code(502).send({ error: "checkout_url_unavailable" });
-      return reply.code(201).send({ transactionId: transaction.id, checkoutUrl: transaction.checkout.url });
+      // The dashboard passes this transaction to Paddle.js, which opens an
+      // embedded checkout on dash.movcues.com. This avoids relying on hosted
+      // payment-link access and never exposes the secret API key to browsers.
+      return reply.code(201).send({ transactionId: transaction.id });
     },
   );
 

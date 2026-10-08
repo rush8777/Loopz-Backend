@@ -5,6 +5,7 @@ import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { listEventDefinitions, getEventSummary, getEventTimeseries, getEventPropertySummary, listEventOccurrences, getEventOccurrence, getEventUsers, getEventSessions, getEventPages, getEventPatternReferences, eventExistsForSite, } from "../lib/events/eventQueries.js";
 import { evaluateSegment } from "../lib/segments/evaluator.js";
+import { resolveMatchedPagePaths } from "../lib/pages/resolveMatchedPagePaths.js";
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
     if (!site || site.orgId !== orgId)
@@ -18,6 +19,7 @@ const listQuerySchema = z.object({
     since: z.coerce.date().optional(),
     until: z.coerce.date().optional(),
     segmentId: z.string().min(1).max(100).optional(),
+    pageId: z.string().min(1).max(100).optional(),
     sort: z.enum(["occurrences", "users", "sessions", "lastSeen", "firstSeen", "az", "za"]).default("occurrences"),
 });
 const rangeQuerySchema = z.object({
@@ -56,13 +58,20 @@ export function registerEventRoutes(app, db) {
         if (!parsed.success) {
             return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
         }
-        const { limit, offset, search, since, until, segmentId, sort } = parsed.data;
+        const { limit, offset, search, since, until, segmentId, pageId, sort } = parsed.data;
         let segmentMembers;
         if (segmentId) {
             const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1);
             if (!segment || segment.siteId !== site.id)
                 return reply.code(400).send({ error: "invalid_segment" });
             segmentMembers = [...await evaluateSegment(db, site.id, segment.definition)];
+        }
+        if (pageId) {
+            const pagePaths = await resolveMatchedPagePaths(db, site.id, pageId);
+            if (pagePaths === null)
+                return reply.code(400).send({ error: "invalid_page" });
+            const { events, total } = await listEventDefinitions(db, site.id, { limit, offset, search, since, until, segmentMembers, pagePaths, sort });
+            return reply.send({ events, total, limit, offset });
         }
         const { events, total } = await listEventDefinitions(db, site.id, { limit, offset, search, since, until, segmentMembers, sort });
         return reply.send({ events, total, limit, offset });

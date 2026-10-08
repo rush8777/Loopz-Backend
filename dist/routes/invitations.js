@@ -1,6 +1,8 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import { runInTransaction } from "../db/transaction.js";
+import { runEntitlementTransaction, runInTransaction } from "../db/transaction.js";
+import { createEntitlementService } from "../lib/entitlements/service.js";
+import { sendEntitlementError } from "../lib/entitlements/http.js";
 import { auditLogs, cuid, memberships, organizationInvitations, organizations, users, } from "../db/schema.js";
 import { env } from "../config.js";
 import { authenticate } from "../middleware/authenticate.js";
@@ -74,23 +76,18 @@ export function registerInvitationRoutes(app, db) {
             return reply.code(409).send({ error: "invitation_already_pending" });
         }
         const token = generateInvitationToken();
-        const [invitation] = await db
-            .insert(organizationInvitations)
-            .values({
-            orgId,
-            email,
-            role: parsed.data.role,
-            tokenHash: token.tokenHash,
-            invitedByUserId: request.user.id,
-            expiresAt: token.expiresAt,
-        })
-            .returning();
-        await db.insert(auditLogs).values({
-            orgId,
-            userId: request.user.id,
-            action: "member.invited",
-            detail: { invitationId: invitation.id, email, role: invitation.role },
-        });
+        let invitation;
+        try {
+            invitation = await runEntitlementTransaction(db, async (tx) => {
+                await createEntitlementService(tx).assertCanCreate({ orgId }, "member");
+                const [created] = await tx.insert(organizationInvitations).values({ orgId, email, role: parsed.data.role, tokenHash: token.tokenHash, invitedByUserId: request.user.id, expiresAt: token.expiresAt }).returning();
+                await tx.insert(auditLogs).values({ orgId, userId: request.user.id, action: "member.invited", detail: { invitationId: created.id, email, role: created.role } });
+                return created;
+            });
+        }
+        catch (error) {
+            return sendEntitlementError(reply, error);
+        }
         return reply.code(201).send({
             invitation: invitationJson(invitation),
             inviteUrl: invitationUrl(env.DASHBOARD_URL, token.token),

@@ -1,6 +1,7 @@
 import { eq, and } from "drizzle-orm";
 import { memberships } from "../db/schema.js";
 import { hasAtLeastRole, isValidRole } from "../lib/roles.js";
+import { getOrganizationSubscription, subscriptionIsActive } from "../lib/entitlements/subscription.js";
 /**
  * Enforces that the authenticated user belongs to the org named by
  * `:orgId` in the route params, with at least `minRole`. This is the
@@ -31,6 +32,22 @@ export function requireOrgRole(db, minRole) {
         }
         if (!hasAtLeastRole(row.role, minRole)) {
             return reply.code(403).send({ error: "insufficient_role", required: minRole, actual: row.role });
+        }
+        const billingRecovery = request.url.includes("/billing/checkout") || request.url.includes("/billing/portal");
+        if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && !billingRecovery) {
+            const subscription = await getOrganizationSubscription(db, orgId);
+            if (!subscriptionIsActive(subscription)) {
+                return reply.code(402).send({
+                    error: "subscription_inactive",
+                    entitlement: {
+                        allowed: false,
+                        reason: "subscription_inactive",
+                        planId: subscription.planId,
+                        trialEndsAt: subscription.trialEndsAt?.toISOString() ?? null,
+                        upgradeRequired: true,
+                    },
+                });
+            }
         }
         request.membership = { orgId, role: row.role };
     };

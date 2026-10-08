@@ -4,6 +4,9 @@ import { organizations, memberships, sites, users, auditLogs, sessionEvents } fr
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { generateSitePublicId } from "../lib/ids.js";
+import { runEntitlementTransaction } from "../db/transaction.js";
+import { createEntitlementService } from "../lib/entitlements/service.js";
+import { sendEntitlementError } from "../lib/entitlements/http.js";
 const domainSchema = z
     .string()
     .trim()
@@ -104,13 +107,16 @@ export function registerOrgRoutes(app, db) {
         if (existing) {
             return reply.code(409).send({ error: "already_a_member" });
         }
-        await db.insert(memberships).values({ userId: user.id, orgId, role });
-        await db.insert(auditLogs).values({
-            orgId,
-            userId: request.user.id,
-            action: "member.added",
-            detail: { targetUserId: user.id, role },
-        });
+        try {
+            await runEntitlementTransaction(db, async (tx) => {
+                await createEntitlementService(tx).assertCanCreate({ orgId }, "member");
+                await tx.insert(memberships).values({ userId: user.id, orgId, role });
+                await tx.insert(auditLogs).values({ orgId, userId: request.user.id, action: "member.added", detail: { targetUserId: user.id, role } });
+            });
+        }
+        catch (error) {
+            return sendEntitlementError(reply, error);
+        }
         return reply.code(201).send({ userId: user.id, email: user.email, role });
     });
     app.patch("/orgs/:orgId/members/:userId", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
@@ -185,16 +191,18 @@ export function registerOrgRoutes(app, db) {
         }
         const orgId = request.membership.orgId;
         const publicId = generateSitePublicId();
-        const [site] = await db
-            .insert(sites)
-            .values({ orgId, publicId, name: parsed.data.name, domain: parsed.data.domain, publicConfig: {} })
-            .returning();
-        await db.insert(auditLogs).values({
-            orgId,
-            userId: request.user.id,
-            action: "site.created",
-            detail: { siteId: site.publicId },
-        });
+        let site;
+        try {
+            site = await runEntitlementTransaction(db, async (tx) => {
+                await createEntitlementService(tx).assertCanCreate({ orgId }, "site");
+                const [created] = await tx.insert(sites).values({ orgId, publicId, name: parsed.data.name, domain: parsed.data.domain, publicConfig: {} }).returning();
+                await tx.insert(auditLogs).values({ orgId, userId: request.user.id, action: "site.created", detail: { siteId: created.publicId } });
+                return created;
+            });
+        }
+        catch (error) {
+            return sendEntitlementError(reply, error);
+        }
         return reply.code(201).send({ id: site.id, siteId: site.publicId, name: site.name, domain: site.domain });
     });
     /** Site origin is a tenant setting, used to validate visual-builder URLs. */

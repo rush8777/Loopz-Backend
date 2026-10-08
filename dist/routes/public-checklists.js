@@ -5,6 +5,7 @@ import { checklistProgress, completeChecklistItemFromClick, currentChecklistDefi
 import { checklistDefinitionSchema, guideDefinitionSchema } from "../lib/experiences/validation.js";
 import { matchesRules } from "../lib/pages/pageMatcher.js";
 import { evaluateSegment } from "../lib/segments/evaluator.js";
+import { getOrganizationSubscription, subscriptionIsActive } from "../lib/entitlements/subscription.js";
 const identitySchema = {
     url: z.url().max(2000), anonymousId: z.string().min(1).max(200), trackedUserId: z.string().min(1).max(200).optional(), sessionId: z.string().min(1).max(200), pageViewId: z.string().min(1).max(200).optional(), timestamp: z.number().int().positive().default(() => Date.now()),
 };
@@ -154,6 +155,8 @@ export function registerPublicChecklistRoutes(app, db) {
         const url = site && checkedUrl(body.data.url, site.domain);
         if (!site || !url)
             return reply.code(404).send({ error: "experience_not_found" });
+        if (!subscriptionIsActive(await getOrganizationSubscription(db, site.orgId)))
+            return reply.code(402).send({ error: "subscription_inactive" });
         const [experience] = await db.select().from(experiences).where(and(eq(experiences.id, experienceId), eq(experiences.siteId, site.id), eq(experiences.kind, "guide"), eq(experiences.status, "published"))).limit(1);
         if (!experience?.publishedVersionId)
             return reply.code(404).send({ error: "experience_not_found" });

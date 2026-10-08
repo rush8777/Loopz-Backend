@@ -225,6 +225,20 @@
       "when": 1791141516315,
       "tag": "0031_organization_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1791141516316,
+      "tag": "0032_organization_onboarding",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1791141516317,
+      "tag": "0033_mark_existing_organizations_onboarded",
+      "breakpoints": true
     }
   ]
 }

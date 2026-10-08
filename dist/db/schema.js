@@ -30,6 +30,8 @@ export const organizations = sqliteTable("organizations", {
     updatedAt: integer("updated_at", { mode: "timestamp_ms" })
         .notNull()
         .default(sql `(unixepoch('now') * 1000)`),
+    /** Set only after the first site's SDK connection has been verified. */
+    onboardingCompletedAt: integer("onboarding_completed_at", { mode: "timestamp_ms" }),
 });
 export const users = sqliteTable("users", {
     id: text("id").primaryKey().$defaultFn(() => cuid("usr")),
@@ -103,6 +105,44 @@ export const sites = sqliteTable("sites", {
         .notNull()
         .default(sql `(unixepoch('now') * 1000)`),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+        .notNull()
+        .default(sql `(unixepoch('now') * 1000)`),
+});
+/** Billing belongs to the organization. Provider identifiers are stored here,
+ * but plan policy remains internal and provider-neutral. */
+export const organizationSubscriptions = sqliteTable("organization_subscriptions", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("sub")),
+    orgId: text("org_id")
+        .notNull()
+        .references(() => organizations.id, { onDelete: "cascade" }),
+    planId: text("plan_id").notNull(),
+    status: text("status").notNull(),
+    trialEndsAt: integer("trial_ends_at", { mode: "timestamp_ms" }),
+    currentPeriodStartsAt: integer("current_period_starts_at", { mode: "timestamp_ms" }),
+    currentPeriodEndsAt: integer("current_period_ends_at", { mode: "timestamp_ms" }),
+    paddleCustomerId: text("paddle_customer_id"),
+    paddleSubscriptionId: text("paddle_subscription_id"),
+    paddlePriceId: text("paddle_price_id"),
+    paddleUpdatedAt: integer("paddle_updated_at", { mode: "timestamp_ms" }),
+    cancelAtPeriodEnd: integer("cancel_at_period_end", { mode: "boolean" }).notNull().default(false),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+        .notNull()
+        .default(sql `(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+        .notNull()
+        .default(sql `(unixepoch('now') * 1000)`),
+}, (table) => [
+    uniqueIndex("organization_subscriptions_org_uidx").on(table.orgId),
+    uniqueIndex("organization_subscriptions_paddle_subscription_uidx").on(table.paddleSubscriptionId),
+]);
+/** Paddle retries notifications and may deliver them out of order. Persisting
+ * event ids makes processing idempotent; subscription.paddleUpdatedAt handles
+ * ordering between distinct lifecycle events. */
+export const billingWebhookEvents = sqliteTable("billing_webhook_events", {
+    eventId: text("event_id").primaryKey(),
+    eventType: text("event_type").notNull(),
+    occurredAt: integer("occurred_at", { mode: "timestamp_ms" }).notNull(),
+    processedAt: integer("processed_at", { mode: "timestamp_ms" })
         .notNull()
         .default(sql `(unixepoch('now') * 1000)`),
 });
@@ -530,6 +570,11 @@ export const sessionEvents = sqliteTable("session_events", {
     // the answer to "who owned this event when it happened?" and must
     // never be changed by a later login on the same browser.
     trackedUserId: text("tracked_user_id").references(() => trackedUsers.id, { onDelete: "set null" }),
+    // Browser origin captured by the public ingestion endpoint.  This is
+    // intentionally immutable event provenance, not a mutable site setting:
+    // billing can therefore exclude development, staging, and editor traffic
+    // without discarding that analytics data.
+    origin: text("origin"),
     // The SDK's page-view lifecycle id active when this event was
     // captured (AnalyticsEvent.pageViewId - see SessionManager's
     // getPageViewId()/newPageView() on the SDK side). The SDK alone owns
@@ -601,6 +646,8 @@ export const sessionEvents = sqliteTable("session_events", {
     // useful for any other type-scoped query, not just custom events.
     index("session_events_site_type_name_ts_idx").on(table.siteId, table.type, table.eventName, table.timestamp),
     index("session_events_site_tracked_user_ts_idx").on(table.siteId, table.trackedUserId, table.timestamp),
+    // Covers billable MAU's site + production-origin + calendar-range query.
+    index("session_events_site_origin_user_ts_idx").on(table.siteId, table.origin, table.trackedUserId, table.timestamp),
 ]);
 /**
  * Raw rrweb events for session replay, one row per event, ordered by

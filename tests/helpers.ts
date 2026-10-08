@@ -39,13 +39,19 @@ export async function signup(app: Awaited<ReturnType<typeof buildApp>>, override
     payload: {
       email: overrides.email ?? `user-${Math.random().toString(36).slice(2)}@example.com`,
       password: overrides.password ?? "correct-horse-battery-staple",
-      orgName: overrides.orgName ?? "Test Org",
     },
   });
-  return res.json() as {
+  const account = res.json() as {
     user: { id: string; email: string };
-    org: { id: string; name: string };
     accessToken: string;
     refreshToken: string;
   };
+  const onboarded = await app.inject({
+    method: "POST",
+    url: "/auth/onboarding",
+    headers: { authorization: `Bearer ${account.accessToken}` },
+    payload: { workspaceName: overrides.orgName ?? "Test Org", siteName: "Test site", domain: "https://example.test" },
+  });
+  const setup = onboarded.json() as { organization: { id: string; name: string } };
+  return { ...account, org: setup.organization };
 }

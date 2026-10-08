@@ -62,27 +62,26 @@ describe("Google authentication", () => {
     expect((await ctx.app.inject({ method: "POST", url: "/auth/refresh", payload: { refreshToken: rotated.refreshToken } })).statusCode).toBe(401);
   });
 
-  it("requires explicit signup before writing any records for a new identity", async () => {
+  it("creates an account but no workspace for a new identity", async () => {
     const response = await ctx.app.inject({ method: "POST", url: "/auth/google", payload: { credential: "new" } });
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: "google_signup_required" });
-    expect(await ctx.db.select().from(users)).toHaveLength(0);
-    expect(await ctx.db.select().from(userAuthIdentities)).toHaveLength(0);
+    expect(response.statusCode).toBe(201);
+    expect(await ctx.db.select().from(users)).toHaveLength(1);
+    expect(await ctx.db.select().from(userAuthIdentities)).toHaveLength(1);
     expect(await ctx.db.select().from(organizations)).toHaveLength(0);
     expect(await ctx.db.select().from(memberships)).toHaveLength(0);
   });
 
-  it("atomically creates a Google-only user, identity, organization, OWNER membership, and session", async () => {
-    const response = await ctx.app.inject({ method: "POST", url: "/auth/google", payload: { credential: "new", orgName: "Google Org" } });
+  it("atomically creates a Google-only user, identity, and session", async () => {
+    const response = await ctx.app.inject({ method: "POST", url: "/auth/google", payload: { credential: "new" } });
     expect(response.statusCode).toBe(201);
-    expect(response.json()).toMatchObject({ user: { email: "new@example.com", name: "New Person" }, org: { name: "Google Org" } });
+    expect(response.json()).toMatchObject({ user: { email: "new@example.com", name: "New Person" } });
     expect(response.json().accessToken).toBeTruthy();
     expect(response.json().refreshToken).toBeTruthy();
 
     const [user] = await ctx.db.select().from(users).where(eq(users.email, "new@example.com"));
     expect(user.passwordHash).toBeNull();
     expect(await ctx.db.select().from(userAuthIdentities)).toHaveLength(1);
-    expect((await ctx.db.select().from(memberships))[0].role).toBe("OWNER");
+    expect(await ctx.db.select().from(memberships)).toHaveLength(0);
 
     const passwordAttempt = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: { email: "new@example.com", password: "some-password" } });
     expect(passwordAttempt.statusCode).toBe(401);
@@ -91,14 +90,14 @@ describe("Google authentication", () => {
 
   it("reuses the provider subject and cannot create duplicate users under concurrent requests", async () => {
     const [first, second] = await Promise.all([
-      ctx.app.inject({ method: "POST", url: "/auth/google", payload: { credential: "race", orgName: "First Org" } }),
-      ctx.app.inject({ method: "POST", url: "/auth/google", payload: { credential: "race", orgName: "Second Org" } }),
+      ctx.app.inject({ method: "POST", url: "/auth/google", payload: { credential: "race" } }),
+      ctx.app.inject({ method: "POST", url: "/auth/google", payload: { credential: "race" } }),
     ]);
     expect([first.statusCode, second.statusCode].sort()).toEqual([200, 201]);
     expect(first.json().user.id).toBe(second.json().user.id);
     expect(await ctx.db.select().from(users)).toHaveLength(1);
     expect(await ctx.db.select().from(userAuthIdentities)).toHaveLength(1);
-    expect(await ctx.db.select().from(organizations)).toHaveLength(1);
+    expect(await ctx.db.select().from(organizations)).toHaveLength(0);
   });
 
   it.each(["invalid-signature", "invalid-audience", "invalid-unverified-email", "invalid-missing-claims"])(

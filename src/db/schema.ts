@@ -33,6 +33,8 @@ export const organizations = sqliteTable("organizations", {
   updatedAt: integer("updated_at", { mode: "timestamp_ms" })
     .notNull()
     .default(sql`(unixepoch('now') * 1000)`),
+  /** Set only after the first site's SDK connection has been verified. */
+  onboardingCompletedAt: integer("onboarding_completed_at", { mode: "timestamp_ms" }),
 });
 
 export const users = sqliteTable("users", {

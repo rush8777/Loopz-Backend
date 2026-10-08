@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../db/client.js";
-import { sdkVerificationChallenges, sites } from "../db/schema.js";
+import { sdkVerificationChallenges, sites, organizations } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 
@@ -96,6 +96,7 @@ export function registerPublicSdkVerificationRoutes(app: FastifyInstance, db: Db
       .set({ acknowledgedAt: now })
       .where(and(eq(sdkVerificationChallenges.id, challenge.id), eq(sdkVerificationChallenges.siteId, site.id)))
       .returning();
+    await db.update(organizations).set({ onboardingCompletedAt: now, updatedAt: now }).where(eq(organizations.id, (await db.select({ orgId: sites.orgId }).from(sites).where(eq(sites.id, site.id)).limit(1))[0].orgId));
     return reply.send({ verification: serializedChallenge(acknowledged, now) });
   });
 }

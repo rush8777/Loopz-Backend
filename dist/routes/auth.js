@@ -1,16 +1,17 @@
 import { z } from "zod";
 import { eq, and, isNull, sql } from "drizzle-orm";
-import { users, organizations, memberships, refreshTokens, userAuthIdentities, cuid } from "../db/schema.js";
+import { users, organizations, memberships, refreshTokens, userAuthIdentities, sites, cuid } from "../db/schema.js";
 import { hashPassword, verifyPassword, hashRefreshToken, issueSession, } from "../lib/auth.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { env } from "../config.js";
 import { normalizeEmail } from "../lib/invitations.js";
 import { runInTransaction } from "../db/transaction.js";
 import { verifyGoogleCredential as defaultVerifyGoogleCredential, } from "../lib/google-auth.js";
+import { createGrowthTrial } from "../lib/entitlements/subscription.js";
+import { generateSitePublicId } from "../lib/ids.js";
 const signupSchema = z.object({
     email: z.string().trim().email(),
     password: z.string().min(10, "password must be at least 10 characters"),
-    orgName: z.string().min(1).max(200),
     name: z.string().max(200).optional(),
 });
 const loginSchema = z.object({
@@ -22,7 +23,11 @@ const refreshSchema = z.object({
 });
 const googleSchema = z.object({
     credential: z.string().min(1),
-    orgName: z.string().trim().min(1).max(200).optional(),
+});
+const onboardingSchema = z.object({
+    workspaceName: z.string().trim().min(1).max(200),
+    siteName: z.string().trim().min(1).max(200),
+    domain: z.string().trim().min(1).max(300),
 });
 function userJson(user) {
     return { id: user.id, email: user.email, name: user.name };
@@ -53,15 +58,19 @@ async function retryGoogleRace(work) {
     throw lastError;
 }
 export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVerifyGoogleCredential) {
-    // One org is created per signup, with the signing-up user as OWNER.
-    // Joining an *existing* org happens via the (separate, not-yet-built)
-    // invite flow - signup always creates a new tenant boundary.
+    // OAuth client IDs are public. Resolve this at runtime so the dashboard
+    // does not also need a build-time copy of the backend setting.
+    app.get("/auth/google/config", async (_request, reply) => {
+        return reply.send({ clientId: env.GOOGLE_CLIENT_ID ?? null });
+    });
+    // Authentication intentionally creates only an account. The first workspace
+    // and site are created by the required onboarding flow after sign-in.
     app.post("/auth/signup", async (request, reply) => {
         const parsed = signupSchema.safeParse(request.body);
         if (!parsed.success) {
             return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
         }
-        const { password, orgName, name } = parsed.data;
+        const { password, name } = parsed.data;
         const email = normalizeEmail(parsed.data.email);
         const passwordHash = await hashPassword(password);
         let result;
@@ -71,10 +80,8 @@ export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVeri
                 if (existing)
                     return { error: "email_already_registered" };
                 const [user] = await tx.insert(users).values({ email, passwordHash, name }).returning();
-                const [org] = await tx.insert(organizations).values({ name: orgName }).returning();
-                await tx.insert(memberships).values({ userId: user.id, orgId: org.id, role: "OWNER" });
                 const session = await issueSession(tx, user, env.JWT_SECRET);
-                return { user, org, session };
+                return { user, session };
             });
         }
         catch (error) {
@@ -86,7 +93,6 @@ export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVeri
             return reply.code(409).send({ error: result.error });
         return reply.code(201).send({
             user: { id: result.user.id, email: result.user.email, name: result.user.name },
-            org: { id: result.org.id, name: result.org.name },
             ...result.session,
         });
     });
@@ -160,8 +166,6 @@ export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVeri
                     const session = await issueSession(tx, canonicalUser, env.JWT_SECRET);
                     return { user: canonicalUser, session };
                 }
-                if (!parsed.data.orgName)
-                    return { error: "google_signup_required" };
                 const userId = cuid("usr");
                 const [user] = await tx.insert(users).values({
                     id: userId,
@@ -175,17 +179,14 @@ export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVeri
                     providerSubject: googleIdentity.subject,
                     providerEmail: email,
                 });
-                const [org] = await tx.insert(organizations).values({ name: parsed.data.orgName }).returning();
-                await tx.insert(memberships).values({ userId, orgId: org.id, role: "OWNER" });
                 const session = await issueSession(tx, user, env.JWT_SECRET);
-                return { user, org, session, created: true };
+                return { user, session, created: true };
             }));
             if ("error" in result) {
-                return reply.code(result.error === "google_signup_required" ? 409 : 401).send({ error: result.error });
+                return reply.code(401).send({ error: result.error });
             }
             return reply.code(result.created ? 201 : 200).send({
                 user: userJson(result.user),
-                ...(result.org ? { org: { id: result.org.id, name: result.org.name } } : {}),
                 ...result.session,
             });
         }
@@ -193,6 +194,40 @@ export function registerAuthRoutes(app, db, verifyGoogleCredential = defaultVeri
             request.log.error({ err: error }, "Google authentication failed after credential verification");
             return reply.code(500).send({ error: "google_auth_failed" });
         }
+    });
+    app.get("/auth/onboarding", { preHandler: authenticate }, async (request, reply) => {
+        const orgRows = await db.select().from(memberships).where(eq(memberships.userId, request.user.id));
+        if (!orgRows.length)
+            return reply.send({ complete: false, organization: null, site: null });
+        const [organization] = await db.select().from(organizations).where(eq(organizations.id, orgRows[0].orgId)).limit(1);
+        const orgSites = organization ? await db.select().from(sites).where(eq(sites.orgId, organization.id)) : [];
+        const complete = Boolean(organization?.onboardingCompletedAt);
+        return reply.send({ complete, organization: organization ? { id: organization.id, name: organization.name } : null, site: orgSites[0] ? { id: orgSites[0].id, siteId: orgSites[0].publicId, name: orgSites[0].name, domain: orgSites[0].domain } : null });
+    });
+    app.post("/auth/onboarding", { preHandler: authenticate }, async (request, reply) => {
+        const parsed = onboardingSchema.safeParse(request.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+        const domain = parsed.data.domain;
+        try {
+            new URL(/^https?:\/\//i.test(domain) ? domain : `https://${domain}`);
+        }
+        catch {
+            return reply.code(400).send({ error: "invalid_domain" });
+        }
+        const result = await runInTransaction(db, async (tx) => {
+            const existing = await tx.select().from(memberships).where(eq(memberships.userId, request.user.id)).limit(1);
+            if (existing.length)
+                return { error: "onboarding_already_started" };
+            const [org] = await tx.insert(organizations).values({ name: parsed.data.workspaceName }).returning();
+            await tx.insert(memberships).values({ userId: request.user.id, orgId: org.id, role: "OWNER" });
+            await createGrowthTrial(tx, org.id);
+            const [site] = await tx.insert(sites).values({ orgId: org.id, publicId: generateSitePublicId(), name: parsed.data.siteName, domain, publicConfig: {} }).returning();
+            return { org, site };
+        });
+        if ("error" in result)
+            return reply.code(409).send(result);
+        return reply.code(201).send({ organization: { id: result.org.id, name: result.org.name }, site: { id: result.site.id, siteId: result.site.publicId, name: result.site.name, domain: result.site.domain } });
     });
     // Refresh token rotation: every refresh both issues a new pair AND
     // revokes the token that was just used. A reused (already-revoked)

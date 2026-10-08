@@ -8,6 +8,7 @@ import { widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import { matchesRules } from "../lib/pages/pageMatcher.js";
 import { evaluateSegment } from "../lib/segments/evaluator.js";
 import { deliveredChecklist } from "./public-checklists.js";
+import { getOrganizationSubscription, subscriptionIsActive } from "../lib/entitlements/subscription.js";
 function rawTokenHash(token) {
     return crypto.createHash("sha256").update(token).digest("hex");
 }
@@ -107,6 +108,10 @@ export function registerPublicExperienceRoutes(app, db) {
         const [site] = await db.select().from(sites).where(eq(sites.publicId, siteId)).limit(1);
         if (!site)
             return reply.code(404).send({ error: "site_not_found" });
+        if (!subscriptionIsActive(await getOrganizationSubscription(db, site.orgId))) {
+            reply.header("Cache-Control", "private, no-store");
+            return reply.send({ experiences: [], checklists: [], hasChecklists: false });
+        }
         let pagePath;
         let requestUrl;
         try {
