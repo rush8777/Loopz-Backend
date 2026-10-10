@@ -59,7 +59,7 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
         origin: isPublicRoute ? true : [...dashboardOrigins],
         methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
         allowedHeaders: ["Content-Type", "Authorization"],
-        credentials: !isPublicRoute,
+        credentials: true,
       });
     },
   });
