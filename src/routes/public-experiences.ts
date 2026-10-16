@@ -1,3 +1,5 @@
+import { DraftWriteError, saveExperienceDraft } from "../lib/experiences/draftWrites.js";
+import { sendEntitlementError } from "../lib/entitlements/http.js";
 import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -107,6 +109,9 @@ async function validateEditorAccess(request: FastifyRequest, db: Db) {
     if (!origin || origin !== payload.origin) return null;
     const [session] = await db.select().from(experienceEditorSessions).where(eq(experienceEditorSessions.id, payload.sub)).limit(1);
     if (!session || session.revokedAt || session.expiresAt <= new Date() || session.allowedOrigin !== origin || !session.usedAt) return null;
+    const [experience] = await db.select().from(experiences).where(eq(experiences.id, session.experienceId)).limit(1);
+    const [site] = await db.select().from(sites).where(eq(sites.id, session.siteId)).limit(1);
+    if (!site || !experience || experience.siteId !== site.id) return null;
     return session;
   } catch {
     return null;
@@ -307,9 +312,11 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!draft) return reply.code(404).send({ error: "draft_not_found" });
     if (draft.revision !== parsed.data.revision) return reply.code(409).send({ error: "draft_conflict", currentRevision: draft.revision });
     if (experience.builderMode === "grapesjs" && !grapesLiveEditorChangeAllowed(draft.definition as ExperienceDefinition, definition.data)) return reply.code(409).send({ error: "builder_mode_mismatch" });
-    const [saved] = await db.update(experienceVersions).set({ definition: definition.data, revision: draft.revision + 1 }).where(and(eq(experienceVersions.id, draft.id), eq(experienceVersions.revision, draft.revision))).returning();
-    if (!saved) return reply.code(409).send({ error: "draft_conflict" });
-    await db.update(experiences).set({ updatedAt: new Date() }).where(eq(experiences.id, experience.id));
-    return reply.send({ version: { id: draft.id, versionNumber: draft.versionNumber, revision: saved.revision, definition: definition.data } });
+    const [site] = await db.select().from(sites).where(eq(sites.id, experience.siteId)).limit(1);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+    try {
+      const saved = await saveExperienceDraft(db, site, experience, draft, definition.data, parsed.data.revision);
+      return reply.send({ version: { id: saved.id, versionNumber: saved.versionNumber, revision: saved.revision, definition: saved.definition } });
+    } catch (error) { if (error instanceof DraftWriteError) return reply.code(error.status).send({ error: error.message }); return sendEntitlementError(reply, error); }
   });
 }

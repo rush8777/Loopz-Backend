@@ -1,7 +1,8 @@
+import { publishReviewed } from "./reviewedPublish.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestApp, signup } from "./helpers.js";
 import { eq } from "drizzle-orm";
-import { experienceEditorSessions, surveyResponses } from "../src/db/schema.js";
+import { experienceEditorSessions, organizationSubscriptions, surveyResponses } from "../src/db/schema.js";
 
 async function setup(app: Awaited<ReturnType<typeof createTestApp>>["app"], suffix = "a") {
   const owner = await signup(app, { email: `experience-${suffix}@example.com` });
@@ -17,12 +18,60 @@ describe("visual experiences", () => {
     ctx.cleanup();
   });
 
+  it("rejects missing or stale reviewed revisions and leaves published content immutable", async () => {
+    const { owner, site } = await setup(ctx.app, "review-lock"); const headers = { authorization: `Bearer ${owner.accessToken}` };
+    const url = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
+    const created = (await ctx.app.inject({ method: "POST", url, headers, payload: { kind: "widget", widgetType: "modal", name: "Review", buildUrl: "https://review-lock.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
+    const endpoint = `${url}/${created.id}`; const reviewed = { draftVersionId: created.draftVersion.id, revision: created.draftVersion.revision };
+    expect((await ctx.app.inject({ method: "POST", url: endpoint + "/publish", headers })).json().error).toBe("reviewed_revision_required");
+    const definition = structuredClone(created.draftVersion.definition); definition.content.heading = "New revision";
+    const changed = await ctx.app.inject({ method: "PATCH", url: endpoint, headers, payload: { definition, revision: reviewed.revision } }); expect(changed.statusCode).toBe(200);
+    const rejected = await ctx.app.inject({ method: "POST", url: endpoint + "/publish", headers, payload: reviewed });
+    expect(rejected.statusCode).toBe(409); expect(rejected.json().error).toBe("reviewed_draft_changed");
+    const noOp = await ctx.app.inject({ method: "PATCH", url: endpoint, headers, payload: { definition, revision: changed.json().draftVersion.revision } });
+    expect(noOp.statusCode).toBe(200); expect(noOp.json().draftVersion.revision).toBe(changed.json().draftVersion.revision);
+    const version = noOp.json().draftVersion;
+    const published = await ctx.app.inject({ method: "POST", url: endpoint + "/publish", headers, payload: { draftVersionId: version.id, revision: version.revision } }); expect(published.statusCode).toBe(200);
+    const repeated = await ctx.app.inject({ method: "POST", url: endpoint + "/publish", headers, payload: { draftVersionId: version.id, revision: version.revision } }); expect(repeated.statusCode).toBe(409);
+    expect(published.json().publishedVersion.definition.content.heading).toBe("New revision");
+  });
+
+  it("applies reference, projection and ownership checks to direct editor requests", async () => {
+    const { owner, site } = await setup(ctx.app, "editor-forgery"); const headers = { authorization: `Bearer ${owner.accessToken}` };
+    const url = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
+    const created = (await ctx.app.inject({ method: "POST", url, headers, payload: { kind: "widget", widgetType: "modal", builderMode: "onsite", name: "Direct editor", buildUrl: "https://editor-forgery.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
+    const session = (await ctx.app.inject({ method: "POST", url: `${url}/${created.id}/editor-sessions`, headers })).json();
+    const token = new URL(session.launchUrl).searchParams.get("movcues_editor_token");
+    const access = (await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://editor-forgery.example.com" }, payload: { token } })).json();
+    const editorHeaders = { origin: "https://editor-forgery.example.com", authorization: `Bearer ${access.accessToken}` }; const endpoint = `/public/experience-editor/${session.sessionId}/draft`;
+    const request = (definition: unknown, revision = 1) => ctx.app.inject({ method: "PATCH", url: endpoint, headers: editorHeaders, payload: { definition, revision } });
+    const inconsistent = structuredClone(created.draftVersion.definition); inconsistent.content.heading = "Contradictory";
+    expect((await request(inconsistent)).json().error).toBe("inconsistent_onsite_content");
+    const invalidRef = structuredClone(created.draftVersion.definition); invalidRef.targeting.audience = { type: "segment", segmentId: "nonexistent" };
+    expect((await request(invalidRef)).json().error).toBe("invalid_segment");
+    expect((await request(created.draftVersion.definition)).json().version.revision).toBe(1);
+    const unsafe = structuredClone(created.draftVersion.definition); unsafe.builder.html += '<img src="/x" onerror="alert(1)">';
+    expect((await request(unsafe)).statusCode).toBe(400);
+    const modified = structuredClone(created.draftVersion.definition); modified.behavior.dismissible = false;
+    expect((await request(modified)).json().version.revision).toBe(2);
+    expect((await request(modified)).statusCode).toBe(409);
+    expect((await ctx.app.inject({ method: "PATCH", url: endpoint, headers: { ...editorHeaders, origin: "https://evil.test" }, payload: { definition: modified, revision: 2 } })).statusCode).toBe(401);
+    await ctx.db.update(organizationSubscriptions).set({ planId: "starter", status: "active", trialEndsAt: null }).where(eq(organizationSubscriptions.orgId, owner.org.id));
+    const advanced = structuredClone(modified); advanced.targeting.schedule = { startsAt: new Date(Date.now() + 86400000).toISOString() };
+    const denied = await request(advanced, 2); expect(denied.statusCode).toBe(403); expect(denied.json().error).toBe("feature_unavailable");
+    await ctx.db.update(organizationSubscriptions).set({ status: "trialing", trialEndsAt: new Date(Date.now() - 1000) }).where(eq(organizationSubscriptions.orgId, owner.org.id));
+    const inactive = await request(modified, 2); expect(inactive.statusCode).toBe(402); expect(inactive.json().error).toBe("subscription_inactive");
+    const b = await setup(ctx.app, "editor-other-site");
+    await ctx.db.update(experienceEditorSessions).set({ siteId: b.site.id }).where(eq(experienceEditorSessions.id, session.sessionId));
+    expect((await request(modified, 2)).statusCode).toBe(401);
+  });
+
   it("creates an isolated draft without silently adding build-page targeting, then publishes a new immutable version", async () => {
     const { owner, site } = await setup(ctx.app, "draft");
     const page = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/pages`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { name: "Home", rules: [{ id: "r1", kind: "include", operator: "equals", value: "/home" }] } })).json();
     const created = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType: "toast", name: "Welcome", buildPageId: page.id, template: "blank", useBuildPageAsTarget: false } });
     expect(created.statusCode).toBe(201); expect(created.json().draftVersion.definition.targeting.pageRules).toEqual([]);
-    const published = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.json().id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } });
+    const published = await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.json().id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } });
     expect(published.statusCode).toBe(200); expect(published.json().publishedVersion.versionNumber).toBe(1); expect(published.json().draftVersion.versionNumber).toBe(2);
   });
 
@@ -190,13 +239,13 @@ describe("visual experiences", () => {
     const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition, revision: created.draftVersion.revision } });
     expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.steps[0]).toMatchObject({ builder: { html: expect.stringContaining("First builder") }, advance: { type: "element_hover", durationMs: 500 }, target: { targetContext: { pagePath: "/dashboard" } } });
     definition.steps[0].builder.css = "body{color:red}"; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition, revision: saved.json().draftVersion.revision } })).statusCode).toBe(400); definition.steps[0].builder.css = ".movcues-widget{color:#111}";
-    expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).json().error).toBe("target_required");
+    expect((await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).json().error).toBe("target_required");
     const invalidPattern = structuredClone(definition); invalidPattern.steps[1].pattern = "slideout";
     expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition: invalidPattern, revision: saved.json().draftVersion.revision } })).statusCode).toBe(400);
     definition.steps[1].pattern = "modal";
     const modalSaved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition, revision: saved.json().draftVersion.revision } });
     expect(modalSaved.statusCode).toBe(200); expect(modalSaved.json().draftVersion.definition.steps[1]).toMatchObject({ pattern: "modal" }); expect(modalSaved.json().draftVersion.definition.steps[1]).not.toHaveProperty("target");
-    expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
+    expect((await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
   });
 
   it("hashes and exchanges an editor token once, removes access after revocation, and enforces origin", async () => {
@@ -232,7 +281,7 @@ describe("visual experiences", () => {
       const item = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType: "toast", name, buildUrl: "https://priority.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
       const definition = item.draftVersion.definition; definition.targeting.priority = priority; if (interruptPolicy) definition.targeting.interruptPolicy = interruptPolicy;
       await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition, revision: item.draftVersion.revision } });
-      await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } });
+      await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } });
       return item;
     }
     const low = await create("Low", 1); const high = await create("High", 20, "interrupt");
@@ -245,7 +294,7 @@ describe("visual experiences", () => {
     const a = await setup(ctx.app, "site-a"); const b = await setup(ctx.app, "site-b");
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${a.owner.org.id}/sites/${a.site.id}/experiences`, headers: { authorization: `Bearer ${a.owner.accessToken}` }, payload: { kind: "widget", widgetType: "toast", name: "Toast", buildUrl: "https://site-a.example.com/home", template: "blank", useBuildPageAsTarget: false } })).json();
     expect((await ctx.app.inject({ method: "GET", url: `/public/sites/${a.site.siteId}/experiences?url=https%3A%2F%2Fsite-a.example.com%2Fhome&anonymousId=anon_1&sessionId=sess_1` })).json().experiences).toEqual([]);
-    await ctx.app.inject({ method: "POST", url: `/orgs/${a.owner.org.id}/sites/${a.site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${a.owner.accessToken}` } });
+    await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${a.owner.org.id}/sites/${a.site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${a.owner.accessToken}` } });
     const manifest = await ctx.app.inject({ method: "GET", url: `/public/sites/${a.site.siteId}/experiences?url=https%3A%2F%2Fsite-a.example.com%2Fhome&anonymousId=anon_1&sessionId=sess_1` });
     expect(manifest.statusCode).toBe(200); expect(manifest.json().experiences).toHaveLength(1); expect(manifest.json().experiences[0].definition).not.toHaveProperty("targeting");
     expect((await ctx.app.inject({ method: "GET", url: `/public/sites/${b.site.siteId}/experiences?url=https%3A%2F%2Fsite-b.example.com%2Fhome&anonymousId=anon_1&sessionId=sess_1` })).json().experiences).toEqual([]);
@@ -263,7 +312,7 @@ describe("visual experiences", () => {
       { id: "step_2", content: { heading: "Second", body: "Second page" }, target: { primarySelector: "#second", fallbackSelectors: [], reliability: "reliable", targetContext: { pagePath: "/pricing" } }, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } },
       { id: "step_3", content: { heading: "Third", body: "Third page" }, target: { primarySelector: "#third", fallbackSelectors: [], reliability: "reliable", targetContext: { pagePath: "/integrations" } }, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } },
     );
-    await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: created.draftVersion.revision } }); const published = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
+    await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: created.draftVersion.revision } }); const published = await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
     const first = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fguide-resume.example.com%2Fhome&anonymousId=guide_anon&sessionId=guide_session` }); const versionId = first.json().experiences[0].versionId;
     const shown = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/experience-events`, payload: { experienceId: created.id, versionId, anonymousId: "guide_anon", sessionId: "guide_session", event: "shown" } }); expect(shown.statusCode).toBe(201);
     const withoutProgress = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fguide-resume.example.com%2Fpricing&anonymousId=guide_anon&sessionId=guide_session` }); expect(withoutProgress.json().experiences).toEqual([]);
@@ -281,7 +330,7 @@ describe("visual experiences", () => {
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: authorization, payload: { kind: "widget", widgetType: "modal", name: "Builder", buildUrl: "https://builder-data.example.com/home", template: "blank", useBuildPageAsTarget: false } })).json();
     const definition = created.draftVersion.definition; definition.builder = { version: 1, projectData: { pages: [{ id: "main", component: { type: "wrapper" } }] }, html: '<section class="movcues-widget"><button data-movcues-action-id="primary">Continue</button></section>', css: ".movcues-widget .button{color:#fff}" };
     const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: created.draftVersion.revision } }); expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.builder.html).toContain("data-movcues-action-id");
-    const published = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
+    const published = await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
     const manifest = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fbuilder-data.example.com%2Fhome&anonymousId=builder_anon&sessionId=builder_session` }); expect(manifest.json().experiences[0].definition.builder.projectData.pages[0].id).toBe("main");
     const nextDraft = published.json().draftVersion.definition; nextDraft.builder.html = '<section class="movcues-widget">Unpublished draft builder</section>'; const nextSaved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition: nextDraft, revision: published.json().draftVersion.revision } }); expect(nextSaved.statusCode).toBe(200);
     const productionAfterDraftEdit = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fbuilder-data.example.com%2Fhome&anonymousId=builder_anon_2&sessionId=builder_session_2` }); expect(productionAfterDraftEdit.json().experiences[0].definition.builder.html).not.toContain("Unpublished draft builder");
@@ -303,14 +352,14 @@ describe("visual experiences", () => {
       const create = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType, name: widgetType, buildUrl: "https://adoption-widgets.example.com/home", template: "blank", useBuildPageAsTarget: false } });
       expect(create.statusCode).toBe(201); const item = create.json();
       expect(item.draftVersion.definition.design.size).toEqual(expectedSize[widgetType]);
-      expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
+      expect((await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
     }
     const hotspotCreate = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType: "hotspot", name: "hotspot", buildUrl: "https://adoption-widgets.example.com/home", template: "blank", useBuildPageAsTarget: false } });
     expect(hotspotCreate.statusCode).toBe(201); const hotspot = hotspotCreate.json();
-    const rejected = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } }); expect(rejected.statusCode).toBe(400); expect(rejected.json().error).toBe("target_required");
+    const rejected = await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } }); expect(rejected.statusCode).toBe(400); expect(rejected.json().error).toBe("target_required");
     hotspot.draftVersion.definition.target = { primarySelector: "#new-feature", fallbackSelectors: ["[data-feature='new']"], reliability: "reliable" };
     expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition: hotspot.draftVersion.definition, revision: hotspot.draftVersion.revision } })).statusCode).toBe(200);
-    expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
+    expect((await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
   });
 
   it("round-trips valid sizing and rejects widget-specific constraint bypasses", async () => {
@@ -332,7 +381,7 @@ describe("visual experiences", () => {
     expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition: duplicate, revision: created.draftVersion.revision } })).statusCode).toBe(400);
     definition.survey.steps[0].builder.html = definition.survey.steps[0].builder.html.replace('class="movcues-survey-footer"', 'class="movcues-survey-footer" data-movcues-survey-controls="builder"');
     const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: created.draftVersion.revision } }); expect(saved.statusCode).toBe(200);
-    const published = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
+    const published = await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
     const manifest = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fsurvey.example.com%2Ftask&anonymousId=survey_anon&sessionId=survey_session` }); expect(manifest.statusCode).toBe(200); const delivered = manifest.json().experiences[0]; expect(delivered.widgetType).toBe("survey");
     const shown = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/experience-events`, payload: { experienceId: created.id, versionId: delivered.versionId, anonymousId: "survey_anon", sessionId: "survey_session", event: "shown" } }); expect(shown.statusCode).toBe(201);
     const identity = { experienceId: created.id, versionId: delivered.versionId, impressionId: shown.json().impressionId, anonymousId: "survey_anon", sessionId: "survey_session" };

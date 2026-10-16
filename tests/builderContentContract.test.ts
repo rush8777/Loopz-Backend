@@ -18,4 +18,17 @@ describe("builder rich-text contract", () => {
     expect(builderHtmlIsSafe('<section class="movcues-widget"><a href="/docs" onclick="alert(1)">Bad</a></section>')).toBe(false);
     expect(builderHtmlIsSafe('<section class="movcues-widget"><a href="/docs" target="popup">Bad</a></section>')).toBe(false);
   });
+  it("parses entity-encoded URLs and rejects malformed or nested interactive markup", () => {
+    for (const html of [
+      '<a href="jav&#x61;script:alert(1)">Bad</a>',
+      '<img src="https&#x3a;\n//example.com/x">',
+      '<button><ul><li>Bad</li></ul></button>',
+      '<a href="/one"><a href="/two">Nested</a></a>',
+      '<p><div>Malformed</div></p>',
+      '<img src="/safe" src="javascript:alert(1)">',
+      '<a href="/safe" target="_blank">Missing rel</a>',
+      '<span contenteditable="true">Editor attribute</span>',
+    ]) expect(builderHtmlIsSafe(html), html).toBe(false);
+  });
+
 });

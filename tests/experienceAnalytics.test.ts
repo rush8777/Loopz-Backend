@@ -1,3 +1,4 @@
+import { publishReviewed } from "./reviewedPublish.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestApp, signup } from "./helpers.js";
 import { surveyResponses } from "../src/db/schema.js";
@@ -14,7 +15,7 @@ describe("experience analytics", () => {
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: authorization, payload: { kind: "guide", name: "Onboarding", buildUrl: "https://analytics.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
     const definition = created.draftVersion.definition; definition.steps[0].pattern = "modal"; definition.steps[0].advance = { type: "button" };
     await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: created.draftVersion.revision } });
-    const published = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization })).json(); const versionId = published.publishedVersion.id;
+    const published = (await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization })).json(); const versionId = published.publishedVersion.id;
     const base = { experienceId: created.id, versionId, anonymousId: "anon_1", sessionId: "session_1", pageViewId: "page_1", timestamp: Date.now() };
     const shown = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/experience-events`, payload: { ...base, event: "shown", eventType: "experience_shown" } }); expect(shown.statusCode).toBe(201); const impressionId = shown.json().impressionId;
     for (let index = 0; index < 2; index++) { const response = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/experience-events`, payload: { ...base, impressionId, event: "interaction", eventType: "guide_step_shown", stepId: definition.steps[0].id, stepIndex: 0 } }); expect(response.statusCode, response.body).toBe(204); }
@@ -30,7 +31,7 @@ describe("experience analytics", () => {
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: authorization, payload: { kind: "widget", widgetType: "survey", name: "Onboarding feedback", buildUrl: "https://survey-results.example.com/task", template: "blank", useBuildPageAsTarget: false } })).json();
     const definition = created.draftVersion.definition; definition.survey.steps[0].builder.html = definition.survey.steps[0].builder.html.replace('class="movcues-survey-footer"', 'class="movcues-survey-footer" data-movcues-survey-controls="builder"');
     expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: created.draftVersion.revision } })).statusCode).toBe(200);
-    const published = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization })).json();
+    const published = (await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization })).json();
     const versionId = published.publishedVersion.id; const rating = definition.survey.steps[0].questions[0]; const text = definition.survey.steps[0].questions[1];
     const shown = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/experience-events`, payload: { experienceId: created.id, versionId, anonymousId: "survey_result_anon", sessionId: "survey_result_session", event: "shown" } });
     const identity = { experienceId: created.id, versionId, impressionId: shown.json().impressionId, anonymousId: "survey_result_anon", sessionId: "survey_result_session" };

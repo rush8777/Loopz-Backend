@@ -1,3 +1,4 @@
+import { publishReviewed } from "./reviewedPublish.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { createTestApp, signup } from "./helpers.js";
@@ -77,7 +78,7 @@ describe("plans and entitlements", () => {
   it("makes an expired trial read-only and stops public experience delivery", async () => {
     const { owner, auth, site } = await setup("expired");
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: auth, payload: { kind: "widget", widgetType: "toast", name: "Live", buildUrl: "https://expired.example.test", template: "blank", useBuildPageAsTarget: false } })).json();
-    expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: auth })).statusCode).toBe(200);
+    expect((await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: auth })).statusCode).toBe(200);
     await setSubscription(owner.org.id, { status: "trialing", trialEndsAt: new Date(Date.now() - 1_000) });
     const mutation = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}`, headers: auth, payload: { name: "Blocked" } });
     expect(mutation.statusCode).toBe(402);

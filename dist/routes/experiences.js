@@ -1,22 +1,20 @@
+import { DraftWriteError, onsiteCompatible, saveExperienceDraft, validateReferences, assertNewDefinitionFeatures } from "../lib/experiences/draftWrites.js";
 import crypto from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { experienceEditorSessions, experiences, experienceVersions, pageDefinitions, segments, sites, siteThemes } from "../db/schema.js";
+import { experienceEditorSessions, experiences, experienceVersions, pageDefinitions, sites, siteThemes } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
 import { guideStepRequiresTarget } from "../lib/experiences/types.js";
-import { isChecklistDefinition } from "../lib/experiences/types.js";
 import { initialChecklistDefinition } from "../lib/experiences/checklistPresets.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import { getExperienceAnalytics, listExperienceAnalytics, listSurveyResponses } from "../lib/experiences/analytics.js";
 import { runEntitlementTransaction } from "../db/transaction.js";
 import { assertSubscriptionActive, createEntitlementService } from "../lib/entitlements/service.js";
 import { sendEntitlementError } from "../lib/entitlements/http.js";
-import { requiredExperienceFeatures } from "../lib/entitlements/experienceFeatures.js";
 import { siteThemeCss } from "../lib/themes/css.js";
 const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
-const ONSITE_WIDGET_TYPES = new Set(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "banner"]);
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
     return site?.orgId === orgId ? site : null;
@@ -67,9 +65,6 @@ const DEFAULT_DESIGN = {
 };
 function targeting(pageRules) {
     return { pageRules, audience: { type: "all" }, trigger: { type: "page_load" }, frequency: { mode: "once" }, priority: 0 };
-}
-function onsiteCompatible(kind, widgetType) {
-    return kind === "guide" || (kind === "widget" && !!widgetType && ONSITE_WIDGET_TYPES.has(widgetType));
 }
 const ONSITE_BUILDER_CSS = [
     ".movcues-widget{box-sizing:border-box;width:100%;max-width:100%;padding:18px;background:var(--movcues-bg);color:var(--movcues-fg);border-radius:inherit}",
@@ -186,42 +181,6 @@ async function serializeExperience(db, row) {
         publishedVersion: published ? { ...published, definition: published.definition, createdAt: published.createdAt.toISOString(), publishedAt: published.publishedAt?.toISOString() ?? null } : null,
     };
 }
-async function validateReferences(db, siteId, definition, publishing = false) {
-    for (const rule of definition.targeting.pageRules) {
-        if (!rule.value.trim())
-            return "invalid_page_targeting";
-    }
-    if (definition.targeting.pageRules.length > 0 && !definition.targeting.pageRules.some((rule) => rule.kind === "include"))
-        return "invalid_page_targeting";
-    const audience = definition.targeting.audience;
-    const segmentIds = audience.type === "segment" ? [audience.segmentId] : audience.type === "segment_rules" ? audience.conditions.map(condition => condition.segmentId) : [];
-    if (isChecklistDefinition(definition))
-        for (const item of definition.items)
-            if (item.completion.type === "segment")
-                segmentIds.push(item.completion.segmentId);
-    for (const segmentId of new Set(segmentIds)) {
-        const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1);
-        if ((!segment && publishing) || (segment && segment.siteId !== siteId))
-            return "invalid_segment";
-    }
-    if (isChecklistDefinition(definition)) {
-        const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
-        const origin = siteOrigin(site?.domain ?? null);
-        for (const item of definition.items)
-            if (item.action.type === "navigate" && /^https?:\/\//i.test(item.action.url) && (!origin || new URL(item.action.url).origin !== origin))
-                return "navigate_url_outside_site_domain";
-        const completionGuideIds = new Set(definition.items.filter(item => item.completion.type === "guide_completed").map(item => item.completion.experienceId));
-        const launchGuideIds = new Set(definition.items.filter(item => item.action.type === "launch_guide").map(item => item.action.experienceId));
-        for (const guideId of new Set([...completionGuideIds, ...launchGuideIds])) {
-            const [guide] = await db.select().from(experiences).where(eq(experiences.id, guideId)).limit(1);
-            if ((!guide && publishing) || (guide && (guide.siteId !== siteId || guide.kind !== "guide")))
-                return "invalid_guide";
-            if (publishing && guide && launchGuideIds.has(guideId) && (guide.status !== "published" || !guide.publishedVersionId))
-                return "guide_unavailable";
-        }
-    }
-    return null;
-}
 function validatePublishRequirements(kind, widgetType, definition) {
     if (kind === "guide") {
         if (!("steps" in definition) || definition.steps.some((step) => guideStepRequiresTarget(step) && !step.target))
@@ -231,13 +190,6 @@ function validatePublishRequirements(kind, widgetType, definition) {
         return "target_required";
     }
     return null;
-}
-async function assertNewDefinitionFeatures(db, orgId, previous, next) {
-    const previousFeatures = previous ? requiredExperienceFeatures(previous) : new Set();
-    const service = createEntitlementService(db);
-    for (const feature of requiredExperienceFeatures(next))
-        if (!previousFeatures.has(feature))
-            await service.assertFeature({ orgId }, feature);
 }
 export function registerExperienceRoutes(app, db) {
     const analyticsRangeSchema = z.object({ since: z.coerce.date().optional(), until: z.coerce.date().optional(), limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0) });
@@ -381,17 +333,12 @@ export function registerExperienceRoutes(app, db) {
                 return reply.code(400).send({ error: "invalid_definition", details: { ...definition.error.flatten(), issues: definition.error.issues } });
             if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType, definition.data))
                 return reply.code(400).send({ error: "invalid_widget_size" });
-            const referenceError = await validateReferences(db, site.id, definition.data, false);
-            if (referenceError)
-                return reply.code(400).send({ error: referenceError });
             try {
-                await assertSubscriptionActive(db, site.orgId);
-                await assertNewDefinitionFeatures(db, site.orgId, draft.definition, definition.data);
-                const [saved] = await db.update(experienceVersions).set({ definition: definition.data, revision: draft.revision + 1 }).where(and(eq(experienceVersions.id, draft.id), eq(experienceVersions.revision, draft.revision))).returning();
-                if (!saved)
-                    return reply.code(409).send({ error: "draft_conflict" });
+                await saveExperienceDraft(db, site, row, draft, definition.data, parsed.data.revision);
             }
             catch (error) {
+                if (error instanceof DraftWriteError)
+                    return reply.code(error.status).send({ error: error.message });
                 return sendEntitlementError(reply, error);
             }
         }
@@ -434,6 +381,11 @@ export function registerExperienceRoutes(app, db) {
         const draft = versions.find((version) => version.state === "draft");
         if (!draft)
             return reply.code(409).send({ error: "draft_not_found" });
+        const review = z.object({ draftVersionId: z.string().min(1), revision: z.number().int().positive() }).strict().safeParse(request.body);
+        if (!review.success)
+            return reply.code(400).send({ error: "reviewed_revision_required" });
+        if (review.data.draftVersionId !== draft.id || review.data.revision !== draft.revision)
+            return reply.code(409).send({ error: "reviewed_draft_changed" });
         const checked = definitionSchemaFor(row.kind, row.widgetType).safeParse(draft.definition);
         if (!checked.success)
             return reply.code(400).send({ error: "invalid_definition", details: { ...checked.error.flatten(), issues: checked.error.issues } });
@@ -457,13 +409,17 @@ export function registerExperienceRoutes(app, db) {
                 const alreadyReservesCapacity = row.status === "published" && Boolean(previousVersion && previousVersion.state === "published" && (!previousEndsAt || new Date(previousEndsAt) > now));
                 if (!alreadyReservesCapacity)
                     await createEntitlementService(tx).assertCanPublishExperience({ orgId: site.orgId, siteId: site.id, resourceId: row.id });
-                await tx.update(experienceVersions).set({ state: "published", publishedAt: now }).where(eq(experienceVersions.id, draft.id));
+                const [acknowledged] = await tx.update(experienceVersions).set({ state: "published", publishedAt: now }).where(and(eq(experienceVersions.id, review.data.draftVersionId), eq(experienceVersions.revision, review.data.revision), eq(experienceVersions.state, "draft"))).returning();
+                if (!acknowledged)
+                    throw new DraftWriteError(409, "reviewed_draft_changed");
                 await tx.insert(experienceVersions).values({ experienceId: row.id, versionNumber: draft.versionNumber + 1, state: "draft", definition: checked.data, createdBy: request.user.id });
                 const [published] = await tx.update(experiences).set({ status: "published", publishedVersionId: draft.id, updatedAt: now }).where(eq(experiences.id, row.id)).returning();
                 return published;
             });
         }
         catch (error) {
+            if (error instanceof DraftWriteError)
+                return reply.code(error.status).send({ error: error.message });
             return sendEntitlementError(reply, error);
         }
         return reply.send(await serializeExperience(db, updated));

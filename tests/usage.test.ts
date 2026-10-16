@@ -1,3 +1,4 @@
+import { publishReviewed } from "./reviewedPublish.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { createTestApp, signup } from "./helpers.js";
@@ -123,7 +124,7 @@ describe("pricing usage foundations", () => {
     const future = await create("Future");
     const expired = await create("Expired");
     const paused = await create("Paused");
-    await Promise.all([current, future, expired, paused].map((experience) => ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${experience.id}/publish`, headers: auth })));
+    await Promise.all([current, future, expired, paused].map((experience) => publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${experience.id}/publish`, headers: auth })));
     await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${paused.id}/pause`, headers: auth });
     const setSchedule = async (experience: any, schedule: { startsAt?: string; endsAt?: string }) => {
       const published = (await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${experience.id}`, headers: auth })).json().publishedVersion;
