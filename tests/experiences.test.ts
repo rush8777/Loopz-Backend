@@ -44,6 +44,101 @@ describe("visual experiences", () => {
     expect(repeated.json().launchSetupCompletedAt).toBe(completed.json().launchSetupCompletedAt);
   });
 
+  it("keeps builder ownership immutable and rejects stale cross-surface writes", async () => {
+    const { owner, site } = await setup(ctx.app, "onsite-mode");
+    const authorization = { authorization: `Bearer ${owner.accessToken}` };
+    const url = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
+    const createdResponse = await ctx.app.inject({
+      method: "POST",
+      url,
+      headers: authorization,
+      payload: {
+        kind: "widget",
+        widgetType: "modal",
+        builderMode: "onsite",
+        name: "On-site modal",
+        buildUrl: "https://onsite-mode.example.com/home",
+        template: "blank",
+        useBuildPageAsTarget: false,
+      },
+    });
+    expect(createdResponse.statusCode).toBe(201);
+    const created = createdResponse.json();
+    expect(created).toMatchObject({ builderMode: "onsite", draftVersion: { revision: 1 } });
+    expect(created.draftVersion.definition.builder).toMatchObject({
+      projectData: { movcues: { authoringSurface: "onsite", schemaVersion: 1 } },
+    });
+    expect(created.draftVersion.definition.builder.html).toContain('data-movcues-content="heading"');
+    expect(created.draftVersion.definition.content.primaryAction).toEqual({ label: "Got it", type: "dismiss" });
+
+    const modalGuideResponse = await ctx.app.inject({
+      method: "POST",
+      url,
+      headers: authorization,
+      payload: {
+        kind: "guide",
+        builderMode: "onsite",
+        guidePattern: "modal",
+        name: "On-site modal guide",
+        buildUrl: "https://onsite-mode.example.com/home",
+        template: "blank",
+        useBuildPageAsTarget: false,
+      },
+    });
+    expect(modalGuideResponse.statusCode).toBe(201);
+    expect(modalGuideResponse.json().draftVersion.definition.steps[0]).toMatchObject({
+      pattern: "modal",
+      behavior: { dismissible: true },
+      builder: { projectData: { movcues: { authoringSurface: "onsite" } } },
+    });
+
+    const incompatible = await ctx.app.inject({
+      method: "POST",
+      url,
+      headers: authorization,
+      payload: {
+        kind: "widget",
+        widgetType: "survey",
+        builderMode: "onsite",
+        name: "Unsupported survey",
+        buildUrl: "https://onsite-mode.example.com/home",
+        template: "blank",
+        useBuildPageAsTarget: false,
+      },
+    });
+    expect(incompatible.statusCode).toBe(400);
+    expect(incompatible.json().error).toBe("onsite_builder_unsupported");
+
+    const locked = await ctx.app.inject({ method: "PATCH", url: `${url}/${created.id}`, headers: authorization, payload: { builderMode: "grapesjs" } });
+    expect(locked.statusCode).toBe(409);
+    expect(locked.json().error).toBe("builder_mode_locked");
+    const dashboardContent = await ctx.app.inject({ method: "PATCH", url: `${url}/${created.id}`, headers: authorization, payload: { definition: created.draftVersion.definition, revision: 1 } });
+    expect(dashboardContent.statusCode).toBe(409);
+    expect(dashboardContent.json().error).toBe("builder_mode_mismatch");
+
+    const settings = structuredClone(created.draftVersion.definition.targeting);
+    settings.priority = 12;
+    const settingsSaved = await ctx.app.inject({ method: "PATCH", url: `${url}/${created.id}`, headers: authorization, payload: { settings: { targeting: settings }, revision: 1 } });
+    expect(settingsSaved.statusCode, JSON.stringify(settingsSaved.json())).toBe(200);
+    expect(settingsSaved.json().draftVersion).toMatchObject({ revision: 2, definition: { targeting: { priority: 12 } } });
+    const stale = await ctx.app.inject({ method: "PATCH", url: `${url}/${created.id}`, headers: authorization, payload: { settings: { targeting: settings }, revision: 1 } });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({ error: "draft_conflict", currentRevision: 2 });
+
+    const session = (await ctx.app.inject({ method: "POST", url: `${url}/${created.id}/editor-sessions`, headers: authorization })).json();
+    const raw = new URL(session.launchUrl).searchParams.get("movcues_editor_token")!;
+    const exchanged = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://onsite-mode.example.com" }, payload: { token: raw } });
+    const editorHeaders = { origin: "https://onsite-mode.example.com", authorization: `Bearer ${exchanged.json().accessToken}` };
+    const loaded = await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders });
+    expect(loaded.json().experience.builderMode).toBe("onsite");
+    const edited = loaded.json().version.definition;
+    edited.content.heading = "Edited on the product page";
+    edited.builder.html = edited.builder.html.replace("A helpful message", "Edited on the product page");
+    const editorSaved = await ctx.app.inject({ method: "PATCH", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders, payload: { definition: edited, revision: loaded.json().version.revision } });
+    expect(editorSaved.statusCode).toBe(200);
+    expect(editorSaved.json().version).toMatchObject({ revision: 3, definition: { content: { heading: "Edited on the product page" } } });
+  });
+
   it("filters unified widget experiences by a supported widget type", async () => {
     const { owner, site } = await setup(ctx.app, "collection-filter");
     for (const widgetType of ["modal", "banner"] as const) {
@@ -92,14 +187,14 @@ describe("visual experiences", () => {
     definition.steps[0].builder = { version: 1, projectData: { pages: [] }, html: '<section class="movcues-widget">First builder</section>', css: ".movcues-widget{color:#111}" };
     definition.steps[0].advance = { type: "element_hover", durationMs: 500 }; definition.targeting.interruptPolicy = "interrupt";
     definition.steps[0].target = { primarySelector: "#first", fallbackSelectors: [], reliability: "reliable", targetContext: { pagePath: "/dashboard" } };
-    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
+    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition, revision: created.draftVersion.revision } });
     expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.steps[0]).toMatchObject({ builder: { html: expect.stringContaining("First builder") }, advance: { type: "element_hover", durationMs: 500 }, target: { targetContext: { pagePath: "/dashboard" } } });
-    definition.steps[0].builder.css = "body{color:red}"; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } })).statusCode).toBe(400); definition.steps[0].builder.css = ".movcues-widget{color:#111}";
+    definition.steps[0].builder.css = "body{color:red}"; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition, revision: saved.json().draftVersion.revision } })).statusCode).toBe(400); definition.steps[0].builder.css = ".movcues-widget{color:#111}";
     expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).json().error).toBe("target_required");
     const invalidPattern = structuredClone(definition); invalidPattern.steps[1].pattern = "slideout";
-    expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition: invalidPattern } })).statusCode).toBe(400);
+    expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition: invalidPattern, revision: saved.json().draftVersion.revision } })).statusCode).toBe(400);
     definition.steps[1].pattern = "modal";
-    const modalSaved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
+    const modalSaved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition, revision: saved.json().draftVersion.revision } });
     expect(modalSaved.statusCode).toBe(200); expect(modalSaved.json().draftVersion.definition.steps[1]).toMatchObject({ pattern: "modal" }); expect(modalSaved.json().draftVersion.definition.steps[1]).not.toHaveProperty("target");
     expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
   });
@@ -113,8 +208,10 @@ describe("visual experiences", () => {
     const exchanged = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://editor.example.com" }, payload: { token: raw } }); expect(exchanged.statusCode).toBe(200);
     const reused = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://editor.example.com" }, payload: { token: raw } }); expect(reused.statusCode).toBe(401);
     const editorHeaders = { origin: "https://editor.example.com", authorization: `Bearer ${exchanged.json().accessToken}` }; const loadedDraft = await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders }); expect(loadedDraft.statusCode).toBe(200);
-    const editorDefinition = loadedDraft.json().version.definition; editorDefinition.builder = { version: 1, projectData: { pages: [{ id: "main" }] }, html: '<section class="movcues-widget">Editor content</section>', css: ".movcues-widget{color:#111}" };
-    const editorSaved = await ctx.app.inject({ method: "PATCH", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders, payload: { definition: editorDefinition } }); expect(editorSaved.statusCode).toBe(200); expect(editorSaved.json().version.definition.builder.projectData.pages[0].id).toBe("main");
+    const editorDefinition = loadedDraft.json().version.definition; editorDefinition.behavior.dismissible = false;
+    const editorSaved = await ctx.app.inject({ method: "PATCH", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders, payload: { definition: editorDefinition, revision: loadedDraft.json().version.revision } }); expect(editorSaved.statusCode, JSON.stringify(editorSaved.json())).toBe(200); expect(editorSaved.json().version.definition.behavior.dismissible).toBe(false);
+    editorDefinition.content.heading = "Wrong builder";
+    const rejectedContent = await ctx.app.inject({ method: "PATCH", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders, payload: { definition: editorDefinition, revision: editorSaved.json().version.revision } }); expect(rejectedContent.statusCode).toBe(409); expect(rejectedContent.json().error).toBe("builder_mode_mismatch");
     await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/editor-sessions/${session.sessionId}/revoke`, headers: { authorization: `Bearer ${owner.accessToken}` } });
     const draft = await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${session.sessionId}/draft`, headers: { origin: "https://editor.example.com", authorization: `Bearer ${exchanged.json().accessToken}` } }); expect(draft.statusCode).toBe(401);
   });
@@ -134,7 +231,7 @@ describe("visual experiences", () => {
     async function create(name: string, priority: number, interruptPolicy?: "queue" | "interrupt") {
       const item = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { kind: "widget", widgetType: "toast", name, buildUrl: "https://priority.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
       const definition = item.draftVersion.definition; definition.targeting.priority = priority; if (interruptPolicy) definition.targeting.interruptPolicy = interruptPolicy;
-      await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition } });
+      await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition, revision: item.draftVersion.revision } });
       await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${item.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } });
       return item;
     }
@@ -166,7 +263,7 @@ describe("visual experiences", () => {
       { id: "step_2", content: { heading: "Second", body: "Second page" }, target: { primarySelector: "#second", fallbackSelectors: [], reliability: "reliable", targetContext: { pagePath: "/pricing" } }, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } },
       { id: "step_3", content: { heading: "Third", body: "Third page" }, target: { primarySelector: "#third", fallbackSelectors: [], reliability: "reliable", targetContext: { pagePath: "/integrations" } }, behavior: { placement: "auto", alignment: "center", offset: 8, dismissible: true } },
     );
-    await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); const published = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
+    await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: created.draftVersion.revision } }); const published = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
     const first = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fguide-resume.example.com%2Fhome&anonymousId=guide_anon&sessionId=guide_session` }); const versionId = first.json().experiences[0].versionId;
     const shown = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/experience-events`, payload: { experienceId: created.id, versionId, anonymousId: "guide_anon", sessionId: "guide_session", event: "shown" } }); expect(shown.statusCode).toBe(201);
     const withoutProgress = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fguide-resume.example.com%2Fpricing&anonymousId=guide_anon&sessionId=guide_session` }); expect(withoutProgress.json().experiences).toEqual([]);
@@ -183,20 +280,20 @@ describe("visual experiences", () => {
     const { owner, site } = await setup(ctx.app, "builder-data"); const authorization = { authorization: `Bearer ${owner.accessToken}` };
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: authorization, payload: { kind: "widget", widgetType: "modal", name: "Builder", buildUrl: "https://builder-data.example.com/home", template: "blank", useBuildPageAsTarget: false } })).json();
     const definition = created.draftVersion.definition; definition.builder = { version: 1, projectData: { pages: [{ id: "main", component: { type: "wrapper" } }] }, html: '<section class="movcues-widget"><button data-movcues-action-id="primary">Continue</button></section>', css: ".movcues-widget .button{color:#fff}" };
-    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.builder.html).toContain("data-movcues-action-id");
+    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: created.draftVersion.revision } }); expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.builder.html).toContain("data-movcues-action-id");
     const published = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
     const manifest = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fbuilder-data.example.com%2Fhome&anonymousId=builder_anon&sessionId=builder_session` }); expect(manifest.json().experiences[0].definition.builder.projectData.pages[0].id).toBe("main");
-    const nextDraft = published.json().draftVersion.definition; nextDraft.builder.html = '<section class="movcues-widget">Unpublished draft builder</section>'; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition: nextDraft } })).statusCode).toBe(200);
+    const nextDraft = published.json().draftVersion.definition; nextDraft.builder.html = '<section class="movcues-widget">Unpublished draft builder</section>'; const nextSaved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition: nextDraft, revision: published.json().draftVersion.revision } }); expect(nextSaved.statusCode).toBe(200);
     const productionAfterDraftEdit = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fbuilder-data.example.com%2Fhome&anonymousId=builder_anon_2&sessionId=builder_session_2` }); expect(productionAfterDraftEdit.json().experiences[0].definition.builder.html).not.toContain("Unpublished draft builder");
     const editorSession = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/editor-sessions`, headers: authorization })).json(); const editorToken = new URL(editorSession.launchUrl).searchParams.get("movcues_editor_token")!;
     const editorAccess = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://builder-data.example.com" }, payload: { token: editorToken } }); const editorDraft = await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${editorSession.sessionId}/draft`, headers: { origin: "https://builder-data.example.com", authorization: `Bearer ${editorAccess.json().accessToken}` } }); expect(editorDraft.json().version.definition.builder.html).toContain("Unpublished draft builder");
-    definition.builder.html = '<section class="movcues-widget"><script>alert(1)</script></section>'; const invalidMarkup = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); expect(invalidMarkup.statusCode).toBe(400); expect(invalidMarkup.json().details.issues.length).toBeGreaterThan(0);
+    definition.builder.html = '<section class="movcues-widget"><script>alert(1)</script></section>'; const invalidMarkup = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: nextSaved.json().draftVersion.revision } }); expect(invalidMarkup.statusCode).toBe(400); expect(invalidMarkup.json().details.issues.length).toBeGreaterThan(0);
     const afterInvalid = await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization }); expect(afterInvalid.json().draftVersion.definition.builder.html).toContain("Unpublished draft builder");
-    definition.builder.html = '<section class="movcues-widget"><iframe src="https://example.test"></iframe></section>'; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
-    definition.builder.html = '<section class="movcues-widget"><img src="data:image/svg+xml;base64,unsafe"></section>'; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
-    definition.builder.html = '<section class="movcues-widget">Safe</section>'; definition.builder.css = "button{color:red}"; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
-    definition.builder.css = ".movcues-widget{color:red}"; definition.builder.projectData = { pages: [{ component: { script: "alert(1)" } }] }; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
-    definition.builder.projectData = { pages: [{ component: { attributes: { onpointerdown: "alert(1)" } } }] }; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(400);
+    definition.builder.html = '<section class="movcues-widget"><iframe src="https://example.test"></iframe></section>'; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: nextSaved.json().draftVersion.revision } })).statusCode).toBe(400);
+    definition.builder.html = '<section class="movcues-widget"><img src="data:image/svg+xml;base64,unsafe"></section>'; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: nextSaved.json().draftVersion.revision } })).statusCode).toBe(400);
+    definition.builder.html = '<section class="movcues-widget">Safe</section>'; definition.builder.css = "button{color:red}"; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: nextSaved.json().draftVersion.revision } })).statusCode).toBe(400);
+    definition.builder.css = ".movcues-widget{color:red}"; definition.builder.projectData = { pages: [{ component: { script: "alert(1)" } }] }; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: nextSaved.json().draftVersion.revision } })).statusCode).toBe(400);
+    definition.builder.projectData = { pages: [{ component: { attributes: { onpointerdown: "alert(1)" } } }] }; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: nextSaved.json().draftVersion.revision } })).statusCode).toBe(400);
   });
 
   it("creates the new widget defaults and requires a DOM target only for hotspots", async () => {
@@ -212,7 +309,7 @@ describe("visual experiences", () => {
     expect(hotspotCreate.statusCode).toBe(201); const hotspot = hotspotCreate.json();
     const rejected = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } }); expect(rejected.statusCode).toBe(400); expect(rejected.json().error).toBe("target_required");
     hotspot.draftVersion.definition.target = { primarySelector: "#new-feature", fallbackSelectors: ["[data-feature='new']"], reliability: "reliable" };
-    expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition: hotspot.draftVersion.definition } })).statusCode).toBe(200);
+    expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}`, headers: { authorization: `Bearer ${owner.accessToken}` }, payload: { definition: hotspot.draftVersion.definition, revision: hotspot.draftVersion.revision } })).statusCode).toBe(200);
     expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${hotspot.id}/publish`, headers: { authorization: `Bearer ${owner.accessToken}` } })).statusCode).toBe(200);
   });
 
@@ -220,10 +317,10 @@ describe("visual experiences", () => {
     const { owner, site } = await setup(ctx.app, "widget-sizing"); const authorization = { authorization: `Bearer ${owner.accessToken}` };
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: authorization, payload: { kind: "widget", widgetType: "modal", name: "Sized modal", buildUrl: "https://widget-sizing.example.com/home", template: "blank", useBuildPageAsTarget: false } })).json();
     const definition = created.draftVersion.definition; definition.design.size = { width: { mode: "full" }, height: { mode: "viewport" } };
-    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.design.size.width.mode).toBe("full");
+    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: created.draftVersion.revision } }); expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.design.size.width.mode).toBe("full");
     definition.design.size = { width: { mode: "fixed", value: 961 }, height: { mode: "auto" } };
-    const oversized = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); expect(oversized.statusCode).toBe(400); expect(oversized.json().error).toBe("invalid_widget_size");
-    delete definition.design.size; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } })).statusCode).toBe(200);
+    const oversized = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: saved.json().draftVersion.revision } }); expect(oversized.statusCode).toBe(400); expect(oversized.json().error).toBe("invalid_widget_size");
+    delete definition.design.size; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: saved.json().draftVersion.revision } })).statusCode).toBe(200);
   });
 
   it("creates and publishes a validated multi-step survey and persists submitted or abandoned structured responses", async () => {
@@ -232,9 +329,9 @@ describe("visual experiences", () => {
     expect(createdResponse.statusCode).toBe(201); const created = createdResponse.json(); const definition = created.draftVersion.definition;
     expect(definition.survey.steps).toHaveLength(2); expect(definition.design.size.width.value).toBe(700); expect(definition.behavior).toMatchObject({ modalLayout: "center", backdrop: true, backdropOpacity: 0.45, closeOnBackdrop: false, dismissible: true });
     const duplicate = structuredClone(definition); duplicate.survey.steps[1].questions = [{ ...duplicate.survey.steps[0].questions[0] }];
-    expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition: duplicate } })).statusCode).toBe(400);
+    expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition: duplicate, revision: created.draftVersion.revision } })).statusCode).toBe(400);
     definition.survey.steps[0].builder.html = definition.survey.steps[0].builder.html.replace('class="movcues-survey-footer"', 'class="movcues-survey-footer" data-movcues-survey-controls="builder"');
-    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition } }); expect(saved.statusCode).toBe(200);
+    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: created.draftVersion.revision } }); expect(saved.statusCode).toBe(200);
     const published = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization }); expect(published.statusCode).toBe(200);
     const manifest = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fsurvey.example.com%2Ftask&anonymousId=survey_anon&sessionId=survey_session` }); expect(manifest.statusCode).toBe(200); const delivered = manifest.json().experiences[0]; expect(delivered.widgetType).toBe("survey");
     const shown = await ctx.app.inject({ method: "POST", url: `/public/sites/${site.siteId}/experience-events`, payload: { experienceId: created.id, versionId: delivered.versionId, anonymousId: "survey_anon", sessionId: "survey_session", event: "shown" } }); expect(shown.statusCode).toBe(201);

@@ -63,12 +63,13 @@ describe("plans and entitlements", () => {
     const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: auth, payload: { kind: "widget", widgetType: "toast", name: "Triggered", buildUrl: "https://features.example.test", template: "blank", useBuildPageAsTarget: false } })).json();
     const advanced = structuredClone(created.draftVersion.definition);
     advanced.targeting.trigger = { type: "custom_event", eventName: "activated" };
-    expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: auth, payload: { definition: advanced } })).statusCode).toBe(200);
+    const advancedSaved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: auth, payload: { definition: advanced, revision: created.draftVersion.revision } });
+    expect(advancedSaved.statusCode).toBe(200);
     await setSubscription(owner.org.id, { planId: "starter", status: "active", trialEndsAt: null });
-    const preserved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: auth, payload: { definition: advanced } });
+    const preserved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: auth, payload: { definition: advanced, revision: advancedSaved.json().draftVersion.revision } });
     expect(preserved.statusCode).toBe(200);
     const newlyAdded = structuredClone(advanced); newlyAdded.targeting.schedule = { startsAt: new Date(Date.now() + 86_400_000).toISOString() };
-    const blocked = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: auth, payload: { definition: newlyAdded } });
+    const blocked = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: auth, payload: { definition: newlyAdded, revision: preserved.json().draftVersion.revision } });
     expect(blocked.statusCode).toBe(403);
     expect(blocked.json()).toMatchObject({ error: "feature_unavailable", entitlement: { feature: "experience_scheduling", planId: "starter" } });
   });

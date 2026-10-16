@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { and, eq } from "drizzle-orm";
 import { experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, surveyResponses, trackedUsers } from "../db/schema.js";
 import { env } from "../config.js";
@@ -22,6 +23,34 @@ function requestOrigin(request) {
     catch {
         return null;
     }
+}
+function sameJson(left, right) {
+    return isDeepStrictEqual(left, right);
+}
+/** GrapesJS experiences may still use the live session as a placement/targeting
+ * companion, but that session must never become an alternate content builder. */
+function grapesLiveEditorChangeAllowed(previous, next) {
+    const previousCopy = structuredClone(previous);
+    const nextCopy = structuredClone(next);
+    if ("steps" in previousCopy && "steps" in nextCopy) {
+        if (previousCopy.steps.length !== nextCopy.steps.length)
+            return false;
+        previousCopy.steps.forEach(step => { delete step.target; step.behavior = {}; });
+        nextCopy.steps.forEach(step => { delete step.target; step.behavior = {}; });
+        return sameJson(previousCopy, nextCopy);
+    }
+    if ("content" in previousCopy && "content" in nextCopy) {
+        delete previousCopy.target;
+        delete nextCopy.target;
+        previousCopy.behavior = {};
+        nextCopy.behavior = {};
+        if (previousCopy.survey && nextCopy.survey) {
+            previousCopy.survey.steps.forEach(step => { delete step.behavior; });
+            nextCopy.survey.steps.forEach(step => { delete step.behavior; });
+        }
+        return sameJson(previousCopy, nextCopy);
+    }
+    return false;
 }
 async function resolveTrackedUserId(db, siteId, externalId) {
     if (!externalId)
@@ -312,7 +341,7 @@ export function registerPublicExperienceRoutes(app, db) {
         const draft = versions.find((item) => item.state === "draft");
         if (!experience || !draft)
             return reply.code(404).send({ error: "draft_not_found" });
-        return reply.send({ experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType }, version: { id: draft.id, versionNumber: draft.versionNumber, definition: draft.definition } });
+        return reply.send({ experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType, builderMode: experience.builderMode }, version: { id: draft.id, versionNumber: draft.versionNumber, revision: draft.revision, definition: draft.definition } });
     });
     app.patch("/public/experience-editor/:sessionId/draft", async (request, reply) => {
         const session = await validateEditorAccess(request, db);
@@ -334,9 +363,15 @@ export function registerPublicExperienceRoutes(app, db) {
         const draft = versions.find((item) => item.state === "draft");
         if (!draft)
             return reply.code(404).send({ error: "draft_not_found" });
-        await db.update(experienceVersions).set({ definition: definition.data }).where(eq(experienceVersions.id, draft.id));
+        if (draft.revision !== parsed.data.revision)
+            return reply.code(409).send({ error: "draft_conflict", currentRevision: draft.revision });
+        if (experience.builderMode === "grapesjs" && !grapesLiveEditorChangeAllowed(draft.definition, definition.data))
+            return reply.code(409).send({ error: "builder_mode_mismatch" });
+        const [saved] = await db.update(experienceVersions).set({ definition: definition.data, revision: draft.revision + 1 }).where(and(eq(experienceVersions.id, draft.id), eq(experienceVersions.revision, draft.revision))).returning();
+        if (!saved)
+            return reply.code(409).send({ error: "draft_conflict" });
         await db.update(experiences).set({ updatedAt: new Date() }).where(eq(experiences.id, experience.id));
-        return reply.send({ version: { id: draft.id, versionNumber: draft.versionNumber, definition: definition.data } });
+        return reply.send({ version: { id: draft.id, versionNumber: draft.versionNumber, revision: saved.revision, definition: definition.data } });
     });
 }
 //# sourceMappingURL=public-experiences.js.map

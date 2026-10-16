@@ -253,16 +253,20 @@ export const checklistDefinitionSchema = z.object({
 export const createExperienceSchema = z.object({
     kind: z.enum(["guide", "widget", "checklist"]),
     widgetType: z.enum(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"]).nullable().optional(),
+    builderMode: z.enum(["grapesjs", "onsite"]).default("grapesjs"),
+    guidePattern: z.enum(["anchored_card", "modal"]).optional(),
     name: z.string().trim().min(1).max(200),
     buildPageId: z.string().min(1).max(64).nullable().optional(),
     buildUrl: z.url().max(2000).nullable().optional(),
     template: z.enum(["blank", "default", "minimal", "soft", "compact"]).default("blank"),
     useBuildPageAsTarget: z.boolean().default(false),
-}).superRefine((value, ctx) => {
+}).strict().superRefine((value, ctx) => {
     if (value.kind === "widget" && !value.widgetType)
         ctx.addIssue({ code: "custom", path: ["widgetType"], message: "widgetType is required" });
     if (value.kind !== "widget" && value.widgetType)
         ctx.addIssue({ code: "custom", path: ["widgetType"], message: `${value.kind}s do not have a widgetType` });
+    if (value.kind !== "guide" && value.guidePattern)
+        ctx.addIssue({ code: "custom", path: ["guidePattern"], message: "guidePattern is only valid for guides" });
     if (value.kind !== "checklist" && !value.buildPageId && !value.buildUrl)
         ctx.addIssue({ code: "custom", path: ["buildUrl"], message: "a build page or URL is required" });
     if (value.kind === "checklist" && value.template === "blank")
@@ -273,7 +277,16 @@ export const createExperienceSchema = z.object({
 export const updateDraftSchema = z.object({
     name: z.string().trim().min(1).max(200).optional(),
     definition: z.unknown().optional(),
-}).refine((value) => value.name !== undefined || value.definition !== undefined, "at least one field is required");
+    settings: z.object({ targeting: targetingSchema }).strict().optional(),
+    revision: z.number().int().positive().optional(),
+}).strict().superRefine((value, ctx) => {
+    if (value.name === undefined && value.definition === undefined && value.settings === undefined)
+        ctx.addIssue({ code: "custom", message: "at least one field is required" });
+    if (value.definition !== undefined && value.settings !== undefined)
+        ctx.addIssue({ code: "custom", path: ["settings"], message: "definition and settings cannot be updated together" });
+    if ((value.definition !== undefined || value.settings !== undefined) && value.revision === undefined)
+        ctx.addIssue({ code: "custom", path: ["revision"], message: "revision is required for draft changes" });
+});
 export const manifestQuerySchema = z.object({
     url: z.url().max(2000),
     anonymousId: z.string().min(1).max(200),

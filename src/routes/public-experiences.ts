@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
@@ -22,6 +23,35 @@ function requestOrigin(request: FastifyRequest): string | null {
   const origin = request.headers.origin;
   if (!origin || Array.isArray(origin)) return null;
   try { return new URL(origin).origin; } catch { return null; }
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return isDeepStrictEqual(left, right);
+}
+
+/** GrapesJS experiences may still use the live session as a placement/targeting
+ * companion, but that session must never become an alternate content builder. */
+function grapesLiveEditorChangeAllowed(previous: ExperienceDefinition, next: ExperienceDefinition): boolean {
+  const previousCopy = structuredClone(previous) as ExperienceDefinition;
+  const nextCopy = structuredClone(next) as ExperienceDefinition;
+  if ("steps" in previousCopy && "steps" in nextCopy) {
+    if (previousCopy.steps.length !== nextCopy.steps.length) return false;
+    previousCopy.steps.forEach(step => { delete step.target; step.behavior = {} as typeof step.behavior; });
+    nextCopy.steps.forEach(step => { delete step.target; step.behavior = {} as typeof step.behavior; });
+    return sameJson(previousCopy, nextCopy);
+  }
+  if ("content" in previousCopy && "content" in nextCopy) {
+    delete previousCopy.target;
+    delete nextCopy.target;
+    previousCopy.behavior = {} as typeof previousCopy.behavior;
+    nextCopy.behavior = {} as typeof nextCopy.behavior;
+    if (previousCopy.survey && nextCopy.survey) {
+      previousCopy.survey.steps.forEach(step => { delete step.behavior; });
+      nextCopy.survey.steps.forEach(step => { delete step.behavior; });
+    }
+    return sameJson(previousCopy, nextCopy);
+  }
+  return false;
 }
 
 async function resolveTrackedUserId(db: Db, siteId: string, externalId?: string): Promise<string | null> {
@@ -258,7 +288,7 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
     const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, session.experienceId));
     const draft = versions.find((item) => item.state === "draft");
     if (!experience || !draft) return reply.code(404).send({ error: "draft_not_found" });
-    return reply.send({ experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType }, version: { id: draft.id, versionNumber: draft.versionNumber, definition: draft.definition } });
+    return reply.send({ experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType, builderMode: experience.builderMode }, version: { id: draft.id, versionNumber: draft.versionNumber, revision: draft.revision, definition: draft.definition } });
   });
 
   app.patch("/public/experience-editor/:sessionId/draft", async (request, reply) => {
@@ -275,8 +305,11 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
     const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, experience.id));
     const draft = versions.find((item) => item.state === "draft");
     if (!draft) return reply.code(404).send({ error: "draft_not_found" });
-    await db.update(experienceVersions).set({ definition: definition.data }).where(eq(experienceVersions.id, draft.id));
+    if (draft.revision !== parsed.data.revision) return reply.code(409).send({ error: "draft_conflict", currentRevision: draft.revision });
+    if (experience.builderMode === "grapesjs" && !grapesLiveEditorChangeAllowed(draft.definition as ExperienceDefinition, definition.data)) return reply.code(409).send({ error: "builder_mode_mismatch" });
+    const [saved] = await db.update(experienceVersions).set({ definition: definition.data, revision: draft.revision + 1 }).where(and(eq(experienceVersions.id, draft.id), eq(experienceVersions.revision, draft.revision))).returning();
+    if (!saved) return reply.code(409).send({ error: "draft_conflict" });
     await db.update(experiences).set({ updatedAt: new Date() }).where(eq(experiences.id, experience.id));
-    return reply.send({ version: { id: draft.id, versionNumber: draft.versionNumber, definition: definition.data } });
+    return reply.send({ version: { id: draft.id, versionNumber: draft.versionNumber, revision: saved.revision, definition: definition.data } });
   });
 }

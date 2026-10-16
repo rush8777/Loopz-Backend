@@ -1,9 +1,10 @@
 /** Backend-authoritative builder security contract, mirrored by dashboard and SDK. */
-export const BUILDER_ALLOWED_TAGS = new Set(["div", "section", "header", "h1", "h2", "h3", "h4", "p", "span", "br", "button", "img", "hr", "label", "ul", "li"]);
+export const BUILDER_ALLOWED_TAGS = new Set(["div", "section", "header", "h1", "h2", "h3", "h4", "p", "span", "br", "button", "img", "hr", "label", "strong", "em", "u", "a", "ul", "ol", "li"]);
 export const BUILDER_SURVEY_INPUT_TAGS = new Set(["input", "textarea"]);
-export const BUILDER_ALLOWED_ATTRIBUTES = new Set(["class", "id", "title", "role", "aria-label", "aria-live", "aria-hidden", "aria-pressed", "alt", "src", "width", "height", "type", "placeholder", "maxlength", "data-movcues-action-id", "data-movcues-content", "data-movcues-widget-type", "data-movcues-question-id", "data-movcues-question-type", "data-movcues-question-input", "data-movcues-option-id", "data-movcues-survey-action", "data-movcues-survey-controls", "data-movcues-survey-progress", "data-movcues-survey-progress-bar", "data-movcues-survey-step-id", "data-movcues-checklist-role", "data-movcues-checklist-item-id", "data-movcues-checklist-item-role", "data-movcues-checklist-view"]);
+export const BUILDER_ALLOWED_ATTRIBUTES = new Set(["class", "id", "title", "role", "aria-label", "aria-live", "aria-hidden", "aria-pressed", "alt", "src", "href", "target", "rel", "width", "height", "type", "placeholder", "maxlength", "data-movcues-action-id", "data-movcues-content", "data-movcues-widget-type", "data-movcues-question-id", "data-movcues-question-type", "data-movcues-question-input", "data-movcues-option-id", "data-movcues-survey-action", "data-movcues-survey-controls", "data-movcues-survey-progress", "data-movcues-survey-progress-bar", "data-movcues-survey-step-id", "data-movcues-checklist-role", "data-movcues-checklist-item-id", "data-movcues-checklist-item-role", "data-movcues-checklist-view"]);
 export const BUILDER_UNSAFE_CSS = /@import|expression\s*\(|javascript\s*:|behavior\s*:|-moz-binding/i;
 export function builderImageUrlIsSafe(value) { return !value || /^(https?:|data:image\/(?:png|gif|jpeg|webp);base64,|\/)/i.test(value); }
+export function builderLinkUrlIsSafe(value) { return /^(https?:\/\/|mailto:|tel:|\/|#|\?|\.\.?\/)/i.test(value.trim()); }
 export function builderInputTypeIsSafe(value) { return ["text", "radio", "checkbox", "number"].includes(value.toLowerCase()); }
 export function builderCssIsSafe(value) {
     const css = value.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -35,6 +36,12 @@ export function builderHtmlIsSafe(value, allowSurveyInputs = false) {
             if (!BUILDER_ALLOWED_ATTRIBUTES.has(name))
                 return false;
             if (name === "src" && (tag !== "img" || !builderImageUrlIsSafe(attributeValue)))
+                return false;
+            if (name === "href" && (tag !== "a" || !builderLinkUrlIsSafe(attributeValue)))
+                return false;
+            if (name === "target" && (tag !== "a" || (attributeValue !== "_blank" && attributeValue !== "_self")))
+                return false;
+            if (name === "rel" && (tag !== "a" || !/^(?:noopener|noreferrer|nofollow|\s)+$/i.test(attributeValue)))
                 return false;
             if (name === "data-movcues-action-id" && attributeValue !== "primary" && attributeValue !== "secondary")
                 return false;

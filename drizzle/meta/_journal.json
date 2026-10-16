@@ -253,6 +253,13 @@
       "when": 1791141516319,
       "tag": "0035_site_themes",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1792152000000,
+      "tag": "0036_experience_builder_mode_revision",
+      "breakpoints": true
     }
   ]
 }

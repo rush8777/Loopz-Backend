@@ -7,7 +7,7 @@ import { experienceEditorSessions, experiences, experienceVersions, pageDefiniti
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
-import { guideStepRequiresTarget, type ExperienceDefinition, type ExperienceKind, type ExperienceTargeting, type WidgetType } from "../lib/experiences/types.js";
+import { guideStepRequiresTarget, type BuilderMode, type ExperienceContent, type ExperienceDefinition, type ExperienceKind, type ExperienceTargeting, type GuideStepPattern, type WidgetBuilderState, type WidgetType } from "../lib/experiences/types.js";
 import { isChecklistDefinition } from "../lib/experiences/types.js";
 import { initialChecklistDefinition, type ChecklistPreset } from "../lib/experiences/checklistPresets.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
@@ -21,6 +21,7 @@ import type { SiteThemeTokens } from "../lib/themes/types.js";
 import { siteThemeCss } from "../lib/themes/css.js";
 
 const SUPPORTED_WIDGET_TYPES: WidgetType[] = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
+const ONSITE_WIDGET_TYPES = new Set<WidgetType>(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "banner"]);
 
 async function loadSiteInOrg(db: Db, siteId: string, orgId: string) {
   const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
@@ -75,11 +76,52 @@ function targeting(pageRules: PageRule[]): ExperienceTargeting {
   return { pageRules, audience: { type: "all" }, trigger: { type: "page_load" }, frequency: { mode: "once" }, priority: 0 };
 }
 
-function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, pageRules: PageRule[], siteTheme?: SiteThemeTokens): ExperienceDefinition {
+function onsiteCompatible(kind: ExperienceKind, widgetType: WidgetType | null): boolean {
+  return kind === "guide" || (kind === "widget" && !!widgetType && ONSITE_WIDGET_TYPES.has(widgetType));
+}
+
+const ONSITE_BUILDER_CSS = [
+  ".movcues-widget{box-sizing:border-box;width:100%;max-width:100%;padding:18px;background:var(--movcues-bg);color:var(--movcues-fg);border-radius:inherit}",
+  ".movcues-widget .movcues-widget__heading{margin:0 24px 7px 0;font:600 17px/1.3 ui-sans-serif,system-ui,sans-serif}",
+  ".movcues-widget .movcues-widget__body{margin:0;white-space:pre-wrap}",
+  ".movcues-widget .movcues-widget__actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}",
+  ".movcues-widget .movcues-widget__button{border:0;border-radius:7px;padding:8px 12px;font:600 13px ui-sans-serif,system-ui,sans-serif;cursor:pointer}",
+  ".movcues-widget .movcues-widget__button--primary{background:var(--movcues-primary);color:#fff}",
+  ".movcues-widget .movcues-widget__button--secondary{background:transparent;color:inherit}",
+  ".movcues-widget .movcues-align-left{text-align:left}",
+  ".movcues-widget .movcues-align-center{text-align:center}",
+  ".movcues-widget .movcues-align-right{text-align:right}",
+].join("");
+
+function escapeBuilderText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
+}
+
+function onsiteBuilder(content: ExperienceContent, widgetType: string): WidgetBuilderState {
+  const actions = [
+    content.secondaryAction ? `<button type="button" class="movcues-widget__button movcues-widget__button--secondary" data-movcues-action-id="secondary">${escapeBuilderText(content.secondaryAction.label)}</button>` : "",
+    content.primaryAction ? `<button type="button" class="movcues-widget__button movcues-widget__button--primary" data-movcues-action-id="primary">${escapeBuilderText(content.primaryAction.label)}</button>` : "",
+  ].join("");
+  return {
+    version: 1,
+    projectData: { movcues: { authoringSurface: "onsite", schemaVersion: 1 } },
+    html: `<section class="movcues-widget movcues-widget--${widgetType}" data-movcues-widget-type="${widgetType}"><h2 class="movcues-widget__heading" data-movcues-content="heading">${escapeBuilderText(content.heading)}</h2><p class="movcues-widget__body" data-movcues-content="body">${escapeBuilderText(content.body)}</p>${actions ? `<div class="movcues-widget__actions">${actions}</div>` : ""}</section>`,
+    css: ONSITE_BUILDER_CSS,
+  };
+}
+
+function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, pageRules: PageRule[], siteTheme?: SiteThemeTokens, builderMode: BuilderMode = "grapesjs", guidePattern: GuideStepPattern = "anchored_card"): ExperienceDefinition {
   if (kind === "checklist") return initialChecklistDefinition("default", siteTheme);
-  const content = { heading: kind === "guide" ? "Welcome" : "A helpful message", body: "Add a concise message for your visitors." };
+  const content: ExperienceContent = {
+    heading: kind === "guide" ? "Welcome" : "A helpful message",
+    body: "Add a concise message for your visitors.",
+    ...(builderMode === "onsite" ? { primaryAction: { label: kind === "guide" ? "Next" : "Got it", type: kind === "guide" ? "next_step" as const : "dismiss" as const } } : {}),
+  };
   if (kind === "guide") {
-    return { steps: [{ id: "step_1", pattern: "anchored_card", content, behavior: { placement: "auto", alignment: "center", offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true } }], design: themedDesign(siteTheme), behavior: { layer: { mode: "auto" } }, targeting: targeting(pageRules) };
+    const behavior = guidePattern === "modal"
+      ? { dismissible: true }
+      : { placement: "auto" as const, alignment: "center" as const, offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true };
+    return { steps: [{ id: "step_1", pattern: guidePattern, content, ...(builderMode === "onsite" ? { builder: onsiteBuilder(content, guidePattern) } : {}), behavior }], design: themedDesign(siteTheme), behavior: { layer: { mode: "auto" } }, targeting: targeting(pageRules) };
   }
   const definition: ExperienceDefinition = {
     content,
@@ -97,6 +139,7 @@ function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, 
       ...(widgetType === "hotspot" ? { hotspotStyle: "pulse" as const, hotspotColor: siteTheme?.colors.primary ?? DEFAULT_DESIGN.theme.primary } : {}),
     },
     targeting: targeting(pageRules),
+    ...(builderMode === "onsite" ? { builder: onsiteBuilder(content, widgetType!) } : {}),
   };
   if (widgetType === "survey" && "content" in definition) {
     const firstId = `survey_step_${crypto.randomBytes(6).toString("hex")}`;
@@ -257,13 +300,14 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
       : [];
     const [storedTheme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
     const activeTheme = (storedTheme?.activeTokens ?? undefined) as SiteThemeTokens | undefined;
-    const definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(parsed.data.template as ChecklistPreset, activeTheme) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules, activeTheme);
+    if (parsed.data.builderMode === "onsite" && !onsiteCompatible(parsed.data.kind, parsed.data.widgetType ?? null)) return reply.code(400).send({ error: "onsite_builder_unsupported" });
+    const definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(parsed.data.template as ChecklistPreset, activeTheme) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules, activeTheme, parsed.data.builderMode, parsed.data.guidePattern);
 
     let experience: typeof experiences.$inferSelect;
     try {
       experience = await runEntitlementTransaction(db, async tx => {
         await assertSubscriptionActive(tx, site.orgId);
-        const [created] = await tx.insert(experiences).values({ siteId: site.id, kind: parsed.data.kind, widgetType: parsed.data.kind === "widget" ? parsed.data.widgetType! : null, name: parsed.data.name, buildPageId: page?.id ?? null, buildUrl: buildUrl ?? null, createdBy: request.user!.id }).returning();
+        const [created] = await tx.insert(experiences).values({ siteId: site.id, kind: parsed.data.kind, widgetType: parsed.data.kind === "widget" ? parsed.data.widgetType! : null, builderMode: parsed.data.builderMode, name: parsed.data.name, buildPageId: page?.id ?? null, buildUrl: buildUrl ?? null, createdBy: request.user!.id }).returning();
         await tx.insert(experienceVersions).values({ experienceId: created.id, versionNumber: 1, state: "draft", definition, createdBy: request.user!.id });
         return created;
       });
@@ -286,14 +330,20 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!site) return reply.code(404).send({ error: "site_not_found" });
     const row = await loadExperience(db, site.id, experienceId);
     if (!row) return reply.code(404).send({ error: "experience_not_found" });
+    if (request.body && typeof request.body === "object" && "builderMode" in request.body) return reply.code(409).send({ error: "builder_mode_locked" });
     const parsed = updateDraftSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
     if (parsed.data.name && await experienceNameExists(db, site.id, parsed.data.name, row.id)) return reply.code(409).send({ error: "experience_name_exists", message: "An experience with this name already exists." });
     const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, row.id)).orderBy(desc(experienceVersions.versionNumber));
     const draft = versions.find((version) => version.state === "draft");
     if (!draft) return reply.code(409).send({ error: "draft_not_found" });
-    if (parsed.data.definition !== undefined) {
-      const definition = definitionSchemaFor(row.kind as ExperienceKind, row.widgetType).safeParse(parsed.data.definition);
+    if (parsed.data.definition !== undefined || parsed.data.settings !== undefined) {
+      if (parsed.data.definition !== undefined && row.builderMode !== "grapesjs") return reply.code(409).send({ error: "builder_mode_mismatch" });
+      if (draft.revision !== parsed.data.revision) return reply.code(409).send({ error: "draft_conflict", currentRevision: draft.revision });
+      const candidate = parsed.data.settings
+        ? { ...(draft.definition as ExperienceDefinition), targeting: parsed.data.settings.targeting }
+        : parsed.data.definition;
+      const definition = definitionSchemaFor(row.kind as ExperienceKind, row.widgetType).safeParse(candidate);
       if (!definition.success) return reply.code(400).send({ error: "invalid_definition", details: { ...definition.error.flatten(), issues: definition.error.issues } });
       if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType as WidgetType, definition.data)) return reply.code(400).send({ error: "invalid_widget_size" });
       const referenceError = await validateReferences(db, site.id, definition.data, false);
@@ -301,7 +351,8 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
       try {
         await assertSubscriptionActive(db, site.orgId);
         await assertNewDefinitionFeatures(db, site.orgId, draft.definition as ExperienceDefinition, definition.data);
-        await db.update(experienceVersions).set({ definition: definition.data }).where(eq(experienceVersions.id, draft.id));
+        const [saved] = await db.update(experienceVersions).set({ definition: definition.data, revision: draft.revision + 1 }).where(and(eq(experienceVersions.id, draft.id), eq(experienceVersions.revision, draft.revision))).returning();
+        if (!saved) return reply.code(409).send({ error: "draft_conflict" });
       } catch (error) { return sendEntitlementError(reply, error); }
     }
     const [updated] = await db.update(experiences).set({ ...(parsed.data.name ? { name: parsed.data.name } : {}), updatedAt: new Date() }).where(eq(experiences.id, row.id)).returning();

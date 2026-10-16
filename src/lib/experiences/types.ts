@@ -3,6 +3,7 @@ import type { SiteThemeTokens } from "../themes/types.js";
 
 export type ExperienceKind = "guide" | "widget" | "checklist";
 export type WidgetType = "anchored_card" | "toast" | "cursor_follow" | "modal" | "slideout" | "hotspot" | "banner" | "survey";
+export type BuilderMode = "grapesjs" | "onsite";
 export type ExperienceStatus = "draft" | "published" | "paused" | "archived";
 
 export interface ExperienceAction {
