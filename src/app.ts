@@ -32,6 +32,7 @@ import { registerAnalyticsRoutes } from "./routes/analytics.js";
 import { registerInvitationRoutes } from "./routes/invitations.js";
 import { registerBillingRoutes } from "./routes/billing.js";
 import { registerPublicSdkVerificationRoutes, registerSdkVerificationRoutes } from "./routes/sdk-verifications.js";
+import { registerPublicThemeRoutes, registerThemeRoutes } from "./routes/themes.js";
 import type { VerifyGoogleCredential } from "./lib/google-auth.js";
 
 export async function buildApp(db: Db, options: { verifyGoogleCredential?: VerifyGoogleCredential } = {}) {
@@ -91,11 +92,13 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
   registerDashboardRoutes(app, db);
   registerAnalyticsRoutes(app, db);
   registerSdkVerificationRoutes(app, db);
+  registerThemeRoutes(app, db);
 
   await app.register(async (publicScope) => {
     await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
     registerPublicConfigRoutes(publicScope, db);
     registerPublicSdkVerificationRoutes(publicScope, db);
+    registerPublicThemeRoutes(publicScope, db);
   });
 
   await app.register(async (publicEventsScope) => {

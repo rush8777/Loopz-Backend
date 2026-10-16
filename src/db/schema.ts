@@ -126,6 +126,29 @@ export const sites = sqliteTable("sites", {
     .default(sql`(unixepoch('now') * 1000)`),
 });
 
+export const siteThemes = sqliteTable("site_themes", {
+  id: text("id").primaryKey().$defaultFn(() => cuid("theme")),
+  siteId: text("site_id").notNull().unique().references(() => sites.id, { onDelete: "cascade" }),
+  activeTokens: text("active_tokens", { mode: "json" }),
+  activeUpdatedAt: integer("active_updated_at", { mode: "timestamp_ms" }),
+  candidateTokens: text("candidate_tokens", { mode: "json" }),
+  candidateCaptureId: text("candidate_capture_id"),
+  candidateEvidence: text("candidate_evidence", { mode: "json" }),
+  candidateOrigin: text("candidate_origin"),
+  candidateCapturedAt: integer("candidate_captured_at", { mode: "timestamp_ms" }),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
+});
+
+export const themeCaptureRequests = sqliteTable("theme_capture_requests", {
+  id: text("id").primaryKey(),
+  siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+  createdBy: text("created_by").notNull().references(() => users.id, { onDelete: "cascade" }),
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+  errorCode: text("error_code"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
+}, table => [index("theme_capture_requests_site_created_idx").on(table.siteId, table.createdAt)]);
+
 /** Billing belongs to the organization. Provider identifiers are stored here,
  * but plan policy remains internal and provider-neutral. */
 export const organizationSubscriptions = sqliteTable(

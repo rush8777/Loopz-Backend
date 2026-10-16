@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { builderCssIsSafe, builderHtmlIsSafe } from "./builderContentContract.js";
 import { pageRuleSchema } from "../pages/validation.js";
+import { siteThemeTokensSchema } from "../themes/validation.js";
 
 const selectorSchema = z.string().trim().min(1).max(1000);
 const safeColorSchema = z.string().trim().min(1).max(40).regex(/^(#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([0-9.,%\s-]+\)|[a-z]{1,20})$/i, "unsupported color value");
@@ -46,6 +47,7 @@ const designSchema = z.object({
     foreground: safeColorSchema,
     primary: safeColorSchema,
     borderRadius: z.enum(["sm", "md", "lg"]),
+    siteTheme: siteThemeTokensSchema.optional(),
   }),
 });
 

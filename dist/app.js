@@ -31,6 +31,7 @@ import { registerAnalyticsRoutes } from "./routes/analytics.js";
 import { registerInvitationRoutes } from "./routes/invitations.js";
 import { registerBillingRoutes } from "./routes/billing.js";
 import { registerPublicSdkVerificationRoutes, registerSdkVerificationRoutes } from "./routes/sdk-verifications.js";
+import { registerPublicThemeRoutes, registerThemeRoutes } from "./routes/themes.js";
 export async function buildApp(db, options = {}) {
     const app = Fastify({ logger: false });
     const dashboardOrigin = new URL(env.DASHBOARD_URL).origin;
@@ -83,10 +84,12 @@ export async function buildApp(db, options = {}) {
     registerDashboardRoutes(app, db);
     registerAnalyticsRoutes(app, db);
     registerSdkVerificationRoutes(app, db);
+    registerThemeRoutes(app, db);
     await app.register(async (publicScope) => {
         await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
         registerPublicConfigRoutes(publicScope, db);
         registerPublicSdkVerificationRoutes(publicScope, db);
+        registerPublicThemeRoutes(publicScope, db);
     });
     await app.register(async (publicEventsScope) => {
         // Higher ceiling than /public/config: this fires on every batch

@@ -1,4 +1,5 @@
 import type { PageRule } from "../pages/types.js";
+import type { SiteThemeTokens } from "../themes/types.js";
 
 export type ExperienceKind = "guide" | "widget" | "checklist";
 export type WidgetType = "anchored_card" | "toast" | "cursor_follow" | "modal" | "slideout" | "hotspot" | "banner" | "survey";
@@ -43,6 +44,7 @@ export interface ExperienceDesign {
     foreground: string;
     primary: string;
     borderRadius: "sm" | "md" | "lg";
+    siteTheme?: SiteThemeTokens;
   };
 }
 

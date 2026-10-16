@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, isNull } from "drizzle-orm";
-import { sites, pageDefinitions, pageHeatmapStates, sdkVerificationChallenges } from "../db/schema.js";
+import { sites, pageDefinitions, pageHeatmapStates, sdkVerificationChallenges, themeCaptureRequests } from "../db/schema.js";
 /**
  * The one endpoint in this service with NO authentication at all -
  * called directly by the SDK from anonymous visitors' browsers on
@@ -36,6 +36,12 @@ export function registerPublicConfigRoutes(app, db) {
             .where(and(eq(sdkVerificationChallenges.siteId, site.id), isNull(sdkVerificationChallenges.acknowledgedAt), gt(sdkVerificationChallenges.expiresAt, now)))
             .orderBy(desc(sdkVerificationChallenges.createdAt))
             .limit(1);
+        const [themeCapture] = await db
+            .select({ id: themeCaptureRequests.id, expiresAt: themeCaptureRequests.expiresAt })
+            .from(themeCaptureRequests)
+            .where(and(eq(themeCaptureRequests.siteId, site.id), isNull(themeCaptureRequests.completedAt), gt(themeCaptureRequests.expiresAt, now)))
+            .orderBy(desc(themeCaptureRequests.createdAt))
+            .limit(1);
         const heatmapStates = await db
             .select({ id: pageHeatmapStates.id, selector: pageHeatmapStates.selector })
             .from(pageHeatmapStates)
@@ -46,6 +52,7 @@ export function registerPublicConfigRoutes(app, db) {
             config: site.publicConfig,
             heatmapStates,
             ...(sdkVerification ? { sdkVerification } : {}),
+            ...(themeCapture ? { themeCapture } : {}),
         });
     });
 }

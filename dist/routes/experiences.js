@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { experienceEditorSessions, experiences, experienceVersions, pageDefinitions, segments, sites } from "../db/schema.js";
+import { experienceEditorSessions, experiences, experienceVersions, pageDefinitions, segments, sites, siteThemes } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
@@ -14,6 +14,7 @@ import { runEntitlementTransaction } from "../db/transaction.js";
 import { assertSubscriptionActive, createEntitlementService } from "../lib/entitlements/service.js";
 import { sendEntitlementError } from "../lib/entitlements/http.js";
 import { requiredExperienceFeatures } from "../lib/entitlements/experienceFeatures.js";
+import { siteThemeCss } from "../lib/themes/css.js";
 const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
@@ -66,16 +67,16 @@ const DEFAULT_DESIGN = {
 function targeting(pageRules) {
     return { pageRules, audience: { type: "all" }, trigger: { type: "page_load" }, frequency: { mode: "once" }, priority: 0 };
 }
-function initialDefinition(kind, widgetType, pageRules) {
+function initialDefinition(kind, widgetType, pageRules, siteTheme) {
     if (kind === "checklist")
-        return initialChecklistDefinition();
+        return initialChecklistDefinition("default", siteTheme);
     const content = { heading: kind === "guide" ? "Welcome" : "A helpful message", body: "Add a concise message for your visitors." };
     if (kind === "guide") {
-        return { steps: [{ id: "step_1", pattern: "anchored_card", content, behavior: { placement: "auto", alignment: "center", offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true } }], design: DEFAULT_DESIGN, behavior: { layer: { mode: "auto" } }, targeting: targeting(pageRules) };
+        return { steps: [{ id: "step_1", pattern: "anchored_card", content, behavior: { placement: "auto", alignment: "center", offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true } }], design: themedDesign(siteTheme), behavior: { layer: { mode: "auto" } }, targeting: targeting(pageRules) };
     }
     const definition = {
         content,
-        design: { ...DEFAULT_DESIGN, size: defaultWidgetSize(widgetType) },
+        design: { ...themedDesign(siteTheme), size: defaultWidgetSize(widgetType) },
         behavior: {
             dismissible: true,
             layer: { mode: "auto" },
@@ -86,7 +87,7 @@ function initialDefinition(kind, widgetType, pageRules) {
             ...(widgetType === "modal" || widgetType === "survey" ? { modalLayout: "center", backdrop: true, backdropOpacity: 0.45, closeOnBackdrop: false } : {}),
             ...(widgetType === "slideout" ? { slideoutPosition: "bottom-right", backdrop: false, backdropOpacity: 0.35, closeOnBackdrop: false } : {}),
             ...(widgetType === "banner" ? { bannerPosition: "top" } : {}),
-            ...(widgetType === "hotspot" ? { hotspotStyle: "pulse", hotspotColor: DEFAULT_DESIGN.theme.primary } : {}),
+            ...(widgetType === "hotspot" ? { hotspotStyle: "pulse", hotspotColor: siteTheme?.colors.primary ?? DEFAULT_DESIGN.theme.primary } : {}),
         },
         targeting: targeting(pageRules),
     };
@@ -106,27 +107,32 @@ function initialDefinition(kind, widgetType, pageRules) {
                         { id: ratingId, type: "rating", label: "How easy was it to complete this task?", required: true, min: 1, max: 5 },
                         { id: detailId, type: "long_text", label: "What was the most challenging part?", required: false, placeholder: "Tell us more (optional)", maxLength: 2000 },
                     ],
-                    builder: surveyStarter(firstId, ratingId, detailId, false),
+                    builder: surveyStarter(firstId, ratingId, detailId, false, siteTheme),
                 },
                 {
                     id: secondId,
                     content: { heading: "Anything else to share?", body: "Add more questions here, or use this as a simple follow-up slide." },
                     questions: [],
-                    builder: surveyStarter(secondId, null, null, true),
+                    builder: surveyStarter(secondId, null, null, true, siteTheme),
                 },
             ],
         };
     }
     return definition;
 }
-function surveyStarter(stepId, ratingId, detailId, final) {
+function surveyStarter(stepId, ratingId, detailId, final, theme) {
     const questions = ratingId && detailId ? `<div class="movcues-survey-question movcues-survey-question--rating" data-movcues-question-id="${ratingId}" data-movcues-question-type="rating"><p class="movcues-survey-question__label">How easy was it to complete this task? <span aria-hidden="true">*</span></p><div class="movcues-survey-options" role="group" aria-label="Rating">${[1, 2, 3, 4, 5].map(value => `<button type="button" class="movcues-survey-option" data-movcues-option-id="${value}" aria-pressed="false">${value}</button>`).join("")}</div></div><div class="movcues-survey-question movcues-survey-question--long_text" data-movcues-question-id="${detailId}" data-movcues-question-type="long_text"><label class="movcues-survey-question__label">What was the most challenging part?</label><textarea class="movcues-survey-input" data-movcues-question-input placeholder="Tell us more (optional)" maxlength="2000" aria-label="What was the most challenging part?"></textarea></div>` : `<p class="movcues-widget__body" data-movcues-content="body">Add more questions here, or use this as a simple follow-up slide.</p>`;
     const back = final ? `<button type="button" class="movcues-survey-button movcues-survey-button--back" data-movcues-survey-action="back">Back</button>` : "";
     const action = final ? "submit" : "next";
     const label = final ? "Submit feedback" : "Next →";
     const html = `<section class="movcues-widget movcues-widget--survey" data-movcues-widget-type="survey" data-movcues-survey-step-id="${stepId}"><span class="movcues-widget__eyebrow">We'd love your feedback</span><h2 class="movcues-widget__heading" data-movcues-content="heading">${final ? "Anything else to share?" : "How easy was it to complete this task?"}</h2>${questions}<div class="movcues-survey-validation" role="status" aria-live="polite"></div><div class="movcues-survey-footer">${back}<div class="movcues-survey-progress" data-movcues-survey-progress><span>Step ${final ? 2 : 1} of 2</span><span class="movcues-survey-progress__track"><span data-movcues-survey-progress-bar></span></span></div><button type="button" class="movcues-survey-button" data-movcues-survey-action="${action}">${label}</button></div></section>`;
     const css = `.movcues-widget{box-sizing:border-box;width:100%;padding:36px;background:#fff;color:#111827;border:1px solid rgba(15,23,42,.1);border-radius:16px;font-family:ui-sans-serif,system-ui,sans-serif;box-shadow:0 24px 70px rgba(15,23,42,.22)}.movcues-widget .movcues-widget__eyebrow{display:block;margin-bottom:10px;color:#2563eb;font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase}.movcues-widget .movcues-widget__heading{margin:0 0 26px;font-size:28px;line-height:1.2}.movcues-widget .movcues-widget__body{margin:0 0 28px;color:#64748b;line-height:1.6}.movcues-widget .movcues-survey-question{margin:0 0 24px}.movcues-widget .movcues-survey-question__label{display:block;margin:0 0 10px;font-size:14px;font-weight:650}.movcues-widget .movcues-survey-options{display:grid;grid-template-columns:repeat(5,minmax(44px,1fr));gap:9px}.movcues-widget .movcues-survey-option{min-height:46px;border:1px solid #dbe2ea;border-radius:10px;background:#fff;color:#334155;font:700 14px inherit;cursor:pointer}.movcues-widget .movcues-survey-option:hover,.movcues-widget .movcues-survey-option.is-selected{border-color:#2563eb;background:#eff6ff;color:#1d4ed8}.movcues-widget .movcues-survey-input{box-sizing:border-box;width:100%;min-height:110px;padding:12px 14px;resize:vertical;border:1px solid #dbe2ea;border-radius:10px;background:#fff;color:#111827;font:14px/1.5 inherit}.movcues-widget .movcues-survey-input:focus{outline:2px solid #bfdbfe;border-color:#2563eb}.movcues-widget .movcues-survey-validation{min-height:18px;color:#b91c1c;font-size:12px}.movcues-widget .movcues-survey-footer{display:flex;align-items:center;gap:12px;margin-top:10px}.movcues-widget .movcues-survey-progress{display:flex;flex:1;align-items:center;gap:12px;color:#64748b;font-size:12px}.movcues-widget .movcues-survey-progress__track{height:5px;flex:1;overflow:hidden;border-radius:99px;background:#e2e8f0}.movcues-widget [data-movcues-survey-progress-bar]{display:block;width:${final ? 100 : 50}%;height:100%;background:#2563eb}.movcues-widget .movcues-survey-button{border:0;border-radius:9px;padding:10px 16px;background:#2563eb;color:#fff;font:700 13px inherit;cursor:pointer}.movcues-widget .movcues-survey-button--back{background:#f1f5f9;color:#334155}@media(max-width:600px){.movcues-widget{padding:24px}.movcues-widget .movcues-widget__heading{font-size:23px}.movcues-widget .movcues-survey-footer{flex-wrap:wrap}.movcues-widget .movcues-survey-progress{order:-1;flex-basis:100%}}`;
-    return { version: 1, projectData: {}, html, css };
+    return { version: 1, projectData: {}, html, css: theme ? `${css}${siteThemeCss(theme)}` : css };
+}
+function themedDesign(theme) {
+    if (!theme)
+        return DEFAULT_DESIGN;
+    return { width: "md", theme: { background: theme.colors.background, foreground: theme.colors.text, primary: theme.colors.primary, borderRadius: (theme.radii.md <= 6 ? "sm" : theme.radii.md >= 18 ? "lg" : "md"), siteTheme: theme } };
 }
 async function serializeExperience(db, row) {
     const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, row.id)).orderBy(desc(experienceVersions.versionNumber));
@@ -275,7 +281,9 @@ export function registerExperienceRoutes(app, db) {
                 ? page.rules
                 : [{ id: "build_page", kind: "include", operator: "equals", value: new URL(buildUrl).pathname }]
             : [];
-        const definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(parsed.data.template) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules);
+        const [storedTheme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
+        const activeTheme = (storedTheme?.activeTokens ?? undefined);
+        const definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(parsed.data.template, activeTheme) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules, activeTheme);
         let experience;
         try {
             experience = await runEntitlementTransaction(db, async (tx) => {
