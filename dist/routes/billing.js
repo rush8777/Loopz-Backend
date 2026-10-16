@@ -59,13 +59,26 @@ export function registerBillingRoutes(app, db) {
         if (existingSubscription.paddleSubscriptionId && subscriptionIsActive(existingSubscription)) {
             return reply.code(409).send({ error: "manage_subscription_in_portal" });
         }
-        const transaction = await paddle.transactions.create({
-            items: [{ priceId, quantity: 1 }],
-            customData: { movcuesOrgId: request.membership.orgId, movcuesPlanId: parsed.data.planId },
-        });
+        let transaction;
+        try {
+            transaction = await paddle.transactions.create({
+                items: [{ priceId, quantity: 1 }],
+                customData: { movcuesOrgId: request.membership.orgId, movcuesPlanId: parsed.data.planId },
+            });
+        }
+        catch (error) {
+            const code = error && typeof error === "object" && "code" in error ? error.code : null;
+            if (code === "transaction_default_checkout_url_not_set" || code === "transaction_checkout_url_domain_is_not_approved") {
+                return reply.code(503).send({
+                    error: "billing_checkout_not_configured", code,
+                    message: "Checkout is not configured yet. Set the default payment link to your dashboard's /checkout page in Paddle → Checkout → Checkout configuration, using the same sandbox or live account as the backend. Live accounts require an approved domain.",
+                });
+            }
+            throw error;
+        }
         // The dashboard passes this transaction to Paddle.js, which opens an
-        // embedded checkout on dash.movcues.com. This avoids relying on hosted
-        // payment-link access and never exposes the secret API key to browsers.
+        // overlay checkout on dash.movcues.com. Paddle still requires its account
+        // default payment link; the secret API key is never sent to browsers.
         return reply.code(201).send({ transactionId: transaction.id });
     });
     app.post("/orgs/:orgId/billing/portal", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
