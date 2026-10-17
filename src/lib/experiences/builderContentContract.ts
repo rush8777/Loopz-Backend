@@ -2,7 +2,7 @@ import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
 /** Backend-authoritative builder security contract, mirrored by dashboard and SDK. */
 export const BUILDER_ALLOWED_TAGS = new Set(["div", "section", "header", "h1", "h2", "h3", "h4", "p", "span", "br", "button", "img", "hr", "label", "strong", "em", "u", "a", "ul", "ol", "li"]);
 export const BUILDER_SURVEY_INPUT_TAGS = new Set(["input", "textarea"]);
-export const BUILDER_ALLOWED_ATTRIBUTES = new Set(["class", "id", "title", "role", "aria-label", "aria-live", "aria-hidden", "aria-pressed", "alt", "src", "href", "target", "rel", "width", "height", "type", "placeholder", "maxlength", "data-movcues-action-id", "data-movcues-content", "data-movcues-widget-type", "data-movcues-question-id", "data-movcues-question-type", "data-movcues-question-input", "data-movcues-option-id", "data-movcues-survey-action", "data-movcues-survey-controls", "data-movcues-survey-progress", "data-movcues-survey-progress-bar", "data-movcues-survey-step-id", "data-movcues-checklist-role", "data-movcues-checklist-item-id", "data-movcues-checklist-item-role", "data-movcues-checklist-view"]);
+export const BUILDER_ALLOWED_ATTRIBUTES = new Set(["class", "id", "title", "role", "aria-label", "aria-live", "aria-hidden", "aria-pressed", "alt", "src", "href", "target", "rel", "width", "height", "type", "placeholder", "maxlength", "data-movcues-action-id", "data-movcues-content", "data-movcues-widget-type", "data-movcues-document-version", "data-movcues-node-id", "data-movcues-block-id", "data-movcues-sizing", "data-movcues-responsive-stack", "data-movcues-question-id", "data-movcues-question-type", "data-movcues-question-input", "data-movcues-option-id", "data-movcues-survey-action", "data-movcues-survey-controls", "data-movcues-survey-progress", "data-movcues-survey-progress-bar", "data-movcues-survey-step-id", "data-movcues-checklist-role", "data-movcues-checklist-item-id", "data-movcues-checklist-item-role", "data-movcues-checklist-view"]);
 export const BUILDER_UNSAFE_CSS = /@import|expression\s*\(|javascript\s*:|behavior\s*:|-moz-binding/i;
 
 export function builderImageUrlIsSafe(value: string): boolean { return !value || (!/[\u0000-\u0020\u007f]/.test(value) && /^(https?:\/\/|data:image\/(?:png|gif|jpeg|webp);base64,|\/)/i.test(value)); }
@@ -43,7 +43,7 @@ export function builderHtmlIsSafe(value: string, allowSurveyInputs = false): boo
       if (name === "href" && (tag !== "a" || !builderLinkUrlIsSafe(attributeValue))) valid = false;
       if (name === "target" && (tag !== "a" || !["_blank", "_self"].includes(attributeValue))) valid = false;
       if (name === "rel" && (tag !== "a" || !/^(?:noopener|noreferrer|nofollow|\s)+$/i.test(attributeValue))) valid = false;
-      if (name === "data-movcues-action-id" && !["primary", "secondary"].includes(attributeValue)) valid = false;
+      if (name === "data-movcues-action-id" && !["primary", "secondary"].includes(attributeValue) && !/^[A-Za-z][A-Za-z0-9_-]{2,63}$/.test(attributeValue)) valid = false;
       if (name === "data-movcues-survey-action" && !["back", "next", "submit"].includes(attributeValue)) valid = false;
     }
     if (tag === "a" && attrs.get("target") === "_blank" && !["noopener", "noreferrer"].every(token => attrs.get("rel")?.split(/\s+/).includes(token))) valid = false;

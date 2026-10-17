@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestApp, signup } from "./helpers.js";
 import { eq } from "drizzle-orm";
 import { experienceEditorSessions, organizationSubscriptions, surveyResponses } from "../src/db/schema.js";
+import { applyOnsiteDocument, listBlocks, onsiteDocumentFromBuilder } from "../src/lib/experiences/onsiteDocument.js";
 
 async function setup(app: Awaited<ReturnType<typeof createTestApp>>["app"], suffix = "a") {
   const owner = await signup(app, { email: `experience-${suffix}@example.com` });
@@ -115,7 +116,7 @@ describe("visual experiences", () => {
     const created = createdResponse.json();
     expect(created).toMatchObject({ builderMode: "onsite", draftVersion: { revision: 1 } });
     expect(created.draftVersion.definition.builder).toMatchObject({
-      projectData: { movcues: { authoringSurface: "onsite", schemaVersion: 1 } },
+      projectData: { movcues: { authoringSurface: "onsite", schemaVersion: 2 } },
     });
     expect(created.draftVersion.definition.builder.html).toContain('data-movcues-content="heading"');
     expect(created.draftVersion.definition.content.primaryAction).toEqual({ label: "Got it", type: "dismiss" });
@@ -181,8 +182,7 @@ describe("visual experiences", () => {
     const loaded = await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders });
     expect(loaded.json().experience.builderMode).toBe("onsite");
     const edited = loaded.json().version.definition;
-    edited.content.heading = "Edited on the product page";
-    edited.builder.html = edited.builder.html.replace("A helpful message", "Edited on the product page");
+    const onsite = onsiteDocumentFromBuilder(edited.builder)!; const heading = listBlocks(onsite.root).find(block => block.type === "heading"); if (heading?.type === "heading") heading.html = "Edited on the product page"; edited.content = applyOnsiteDocument(edited.builder, onsite, "modal").content;
     const editorSaved = await ctx.app.inject({ method: "PATCH", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders, payload: { definition: edited, revision: loaded.json().version.revision } });
     expect(editorSaved.statusCode).toBe(200);
     expect(editorSaved.json().version).toMatchObject({ revision: 3, definition: { content: { heading: "Edited on the product page" } } });

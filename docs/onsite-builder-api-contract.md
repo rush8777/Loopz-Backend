@@ -41,3 +41,15 @@ HTML validation uses parse5 so encoded protocols, duplicate/malformed attributes
 Publishing now **requires** `{ "draftVersionId": "<reviewed draft id>", "revision": <reviewed revision> }`. Missing payload returns 400 `reviewed_revision_required`. A changed draft or new draft version returns 409 `reviewed_draft_changed`. The check is repeated in the transactional publish update, preserving capacity/feature checks and immutable published versions. API clients must review again after a mismatch. Dashboard list actions now enter the editor/review workflow rather than publishing unseen drafts.
 
 Migration 0036 is unchanged. No new migration, production data mutation, merge or deployment was performed. Focused regression tests pass (41/41); full backend has 479 pass, 7 existing unrelated failures and 22 skipped. The full implementation/QA report is in the SDK repository at `docs/onsite-builder-hardening.md` on the matching hardening branch. Real-browser verification remains pending because browser downloads were unavailable.
+
+## Structured on-site documents (schema version 2)
+
+New on-site Widgets and Guide steps are initialized with a strict cell document at `builder.projectData.movcues.onsiteDocument`. The outer `WidgetBuilderState.version` stays at `1` for transport compatibility; `projectData.movcues.schemaVersion` identifies the v2 authoring schema.
+
+Every write is validated and deterministically recompiled server-side. The submitted `builder.html`, `builder.css`, structured `content`, and `projectData.movcues.actionBindings` must exactly match the compiler output. Draft writes reject inconsistent representations with the existing `inconsistent_onsite_content` response rather than accepting a tree with stale published output.
+
+The v2 validator enforces exact object fields, one root cell, container-or-leaf semantics, unique IDs, no cycles or reused references, maximum depth 8, maximum 120 cells, 10,000-character rich-text blocks, 2,000-character image URLs, a 250 KB serialized document, safe rich-text/link/image protocols, controlled CSS values, and finite bounded dimensions. `next_step` and `previous_step` actions are valid only in Guides. Guide step IDs must be unique and labels are optional editor metadata capped at 80 characters.
+
+For v2 only, compatibility heading/body fields may be empty because they are compiler projections of the actual block tree. Legacy on-site and GrapesJS content keeps the prior nonempty requirements. `builderMode` remains immutable and no GrapesJS project can be presented as a v2 on-site document.
+
+New Widgets are created atomically with a valid initial v2 document and compiled output. No database migration is needed because the document remains inside the existing JSON definition.

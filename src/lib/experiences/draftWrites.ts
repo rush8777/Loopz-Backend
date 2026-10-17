@@ -5,6 +5,7 @@ import { experiences, experienceVersions, segments, sites } from "../../db/schem
 import type { ExperienceDefinition, ExperienceKind, WidgetType } from "./types.js";
 import { isChecklistDefinition } from "./types.js";
 import { onsiteProjectionIsConsistent } from "./builderContentContract.js";
+import { rawOnsiteDocument, validateCompiledOnsiteBuilder } from "./onsiteDocument.js";
 import { definitionSchemaFor } from "./validation.js";
 import { widgetSizeIsValid } from "./widgetSizing.js";
 import { assertSubscriptionActive, createEntitlementService } from "../entitlements/service.js";
@@ -55,7 +56,9 @@ export async function saveExperienceDraft(db: Db, site: typeof sites.$inferSelec
   const definition = result.data;
   if (experience.builderMode === "onsite" && !isChecklistDefinition(definition)) {
     const parts = "steps" in definition ? definition.steps : [definition];
-    if (parts.some(part => !part.builder || !onsiteProjectionIsConsistent(part.builder.html, part.content))) throw new DraftWriteError(400, "inconsistent_onsite_content");
+    if (parts.some(part => !part.builder || (rawOnsiteDocument(part.builder) !== undefined
+      ? validateCompiledOnsiteBuilder(part.builder, part.content, "pattern" in part ? part.pattern ?? "anchored_card" : experience.widgetType as WidgetType, "pattern" in part).length > 0
+      : !onsiteProjectionIsConsistent(part.builder.html, part.content)))) throw new DraftWriteError(400, "inconsistent_onsite_content");
   }
   if (experience.kind === "widget" && experience.widgetType && !widgetSizeIsValid(experience.widgetType as WidgetType, definition)) throw new DraftWriteError(400, "invalid_widget_size");
   return runEntitlementTransaction(db, async tx => {

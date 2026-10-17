@@ -7,8 +7,9 @@ export type BuilderMode = "grapesjs" | "onsite";
 export type ExperienceStatus = "draft" | "published" | "paused" | "archived";
 
 export interface ExperienceAction {
+  id?: string;
   label: string;
-  type: "dismiss" | "next_step" | "open_url" | "track_event";
+  type: "dismiss" | "next_step" | "previous_step" | "open_url" | "track_event";
   url?: string;
   eventName?: string;
 }
@@ -138,6 +139,7 @@ export interface ChecklistExperienceDefinition {
 
 export interface GuideStep {
   id: string;
+  label?: string;
   pattern?: GuideStepPattern;
   content: ExperienceContent;
   builder?: WidgetBuilderState;

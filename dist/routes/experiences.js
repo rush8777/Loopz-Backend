@@ -14,6 +14,7 @@ import { runEntitlementTransaction } from "../db/transaction.js";
 import { assertSubscriptionActive, createEntitlementService } from "../lib/entitlements/service.js";
 import { sendEntitlementError } from "../lib/entitlements/http.js";
 import { siteThemeCss } from "../lib/themes/css.js";
+import { applyOnsiteDocument, createOnsiteDocument, listBlocks } from "../lib/experiences/onsiteDocument.js";
 const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
@@ -66,32 +67,28 @@ const DEFAULT_DESIGN = {
 function targeting(pageRules) {
     return { pageRules, audience: { type: "all" }, trigger: { type: "page_load" }, frequency: { mode: "once" }, priority: 0 };
 }
-const ONSITE_BUILDER_CSS = [
-    ".movcues-widget{box-sizing:border-box;width:100%;max-width:100%;padding:18px;background:var(--movcues-bg);color:var(--movcues-fg);border-radius:inherit}",
-    ".movcues-widget .movcues-widget__heading{margin:0 24px 7px 0;font:600 17px/1.3 ui-sans-serif,system-ui,sans-serif}",
-    ".movcues-widget .movcues-widget__body{margin:0;white-space:pre-wrap}",
-    ".movcues-widget .movcues-widget__actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}",
-    ".movcues-widget .movcues-widget__button{border:0;border-radius:7px;padding:8px 12px;font:600 13px ui-sans-serif,system-ui,sans-serif;cursor:pointer}",
-    ".movcues-widget .movcues-widget__button--primary{background:var(--movcues-primary);color:#fff}",
-    ".movcues-widget .movcues-widget__button--secondary{background:transparent;color:inherit}",
-    ".movcues-widget .movcues-align-left{text-align:left}",
-    ".movcues-widget .movcues-align-center{text-align:center}",
-    ".movcues-widget .movcues-align-right{text-align:right}",
-].join("");
 function escapeBuilderText(value) {
     return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
 }
 function onsiteBuilder(content, widgetType) {
-    const actions = [
-        content.secondaryAction ? `<button type="button" class="movcues-widget__button movcues-widget__button--secondary" data-movcues-action-id="secondary">${escapeBuilderText(content.secondaryAction.label)}</button>` : "",
-        content.primaryAction ? `<button type="button" class="movcues-widget__button movcues-widget__button--primary" data-movcues-action-id="primary">${escapeBuilderText(content.primaryAction.label)}</button>` : "",
-    ].join("");
-    return {
-        version: 1,
-        projectData: { movcues: { authoringSurface: "onsite", schemaVersion: 1 } },
-        html: `<section class="movcues-widget movcues-widget--${widgetType}" data-movcues-widget-type="${widgetType}"><h2 class="movcues-widget__heading" data-movcues-content="heading">${escapeBuilderText(content.heading)}</h2><p class="movcues-widget__body" data-movcues-content="body">${escapeBuilderText(content.body)}</p>${actions ? `<div class="movcues-widget__actions">${actions}</div>` : ""}</section>`,
-        css: ONSITE_BUILDER_CSS,
-    };
+    const guide = content.primaryAction?.type === "next_step";
+    const document = createOnsiteDocument(guide);
+    const blocks = listBlocks(document.root);
+    const heading = blocks.find(block => block.type === "heading");
+    if (heading?.type === "heading")
+        heading.html = escapeBuilderText(content.heading);
+    const body = blocks.find(block => block.type === "text");
+    if (body?.type === "text")
+        body.html = escapeBuilderText(content.body);
+    const button = blocks.find(block => block.type === "button");
+    if (button?.type === "button" && content.primaryAction) {
+        const action = content.primaryAction;
+        button.label = action.label;
+        button.action = { id: button.action.id, ...(action.type === "open_url" && action.url ? { type: "open_url", url: action.url } : action.type === "track_event" && action.eventName ? { type: "track_event", eventName: action.eventName } : { type: action.type === "next_step" ? "next_step" : "dismiss" }) };
+    }
+    const builder = { version: 1, projectData: {}, html: "", css: "" };
+    applyOnsiteDocument(builder, document, widgetType);
+    return builder;
 }
 function initialDefinition(kind, widgetType, pageRules, siteTheme, builderMode = "grapesjs", guidePattern = "anchored_card") {
     if (kind === "checklist")

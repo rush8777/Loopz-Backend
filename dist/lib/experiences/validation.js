@@ -2,11 +2,12 @@ import { z } from "zod";
 import { builderCssIsSafe, builderHtmlIsSafe } from "./builderContentContract.js";
 import { pageRuleSchema } from "../pages/validation.js";
 import { siteThemeTokensSchema } from "../themes/validation.js";
+import { rawOnsiteDocument, validateCompiledOnsiteBuilder } from "./onsiteDocument.js";
 const selectorSchema = z.string().trim().min(1).max(1000);
 const safeColorSchema = z.string().trim().min(1).max(40).regex(/^(#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([0-9.,%\s-]+\)|[a-z]{1,20})$/i, "unsupported color value");
 const actionSchema = z.object({
     label: z.string().trim().min(1).max(80),
-    type: z.enum(["dismiss", "next_step", "open_url", "track_event"]),
+    type: z.enum(["dismiss", "next_step", "previous_step", "open_url", "track_event"]),
     url: z.url().max(2000).optional(),
     eventName: z.string().trim().min(1).max(200).optional(),
 }).superRefine((action, ctx) => {
@@ -18,8 +19,8 @@ const actionSchema = z.object({
         ctx.addIssue({ code: "custom", path: ["eventName"], message: "eventName is required" });
 });
 export const contentSchema = z.object({
-    heading: z.string().trim().min(1).max(160),
-    body: z.string().trim().min(1).max(2000),
+    heading: z.string().trim().max(160),
+    body: z.string().trim().max(2000),
     primaryAction: actionSchema.optional(),
     secondaryAction: z.object({ label: z.string().trim().min(1).max(80), type: z.literal("dismiss") }).optional(),
 });
@@ -54,7 +55,7 @@ function builderProjectValueIsSafe(value) {
         return value.every(builderProjectValueIsSafe);
     if (!value || typeof value !== "object")
         return true;
-    return Object.entries(value).every(([key, nested]) => !/^on[a-z]+$/i.test(key) && !/^script(?:-|$)/i.test(key) && builderProjectValueIsSafe(nested));
+    return Object.entries(value).every(([key, nested]) => (key === "onsiteDocument" || !/^on[a-z]+$/i.test(key)) && !/^script(?:-|$)/i.test(key) && builderProjectValueIsSafe(nested));
 }
 const builderShape = {
     version: z.literal(1),
@@ -122,8 +123,8 @@ export const widgetDefinitionSchema = z.object({
     targeting: targetingSchema,
     survey: z.lazy(() => surveyConfigSchema).optional(),
 }).strict().superRefine((definition, ctx) => {
-    if (definition.content.primaryAction?.type === "next_step")
-        ctx.addIssue({ code: "custom", path: ["content", "primaryAction", "type"], message: "next_step is only supported by guides" });
+    if (definition.content.primaryAction?.type === "next_step" || definition.content.primaryAction?.type === "previous_step")
+        ctx.addIssue({ code: "custom", path: ["content", "primaryAction", "type"], message: "step navigation is only supported by guides" });
 });
 const surveyIdSchema = z.string().trim().min(1).max(64);
 const surveyOptionSchema = z.object({ id: surveyIdSchema, label: z.string().trim().min(1).max(200) }).strict();
@@ -188,6 +189,7 @@ export const surveyConfigSchema = z.object({
 });
 const guideStepSchema = z.object({
     id: z.string().min(1).max(64),
+    label: z.string().trim().min(1).max(80).optional(),
     pattern: z.enum(["anchored_card", "modal"]).optional(),
     content: contentSchema,
     builder: builderSchema.optional(),
@@ -204,13 +206,22 @@ const guideStepSchema = z.object({
 }).superRefine((step, ctx) => {
     if (step.pattern === "modal" && (step.advance?.type === "element_click" || step.advance?.type === "element_hover"))
         ctx.addIssue({ code: "custom", path: ["advance"], message: "modal guide steps cannot advance from a DOM target" });
+    if (step.builder && rawOnsiteDocument(step.builder) !== undefined)
+        validateCompiledOnsiteBuilder(step.builder, step.content, step.pattern ?? "anchored_card", true).filter(message => !message.includes("does not match")).forEach(message => ctx.addIssue({ code: "custom", path: ["builder"], message }));
+    else {
+        if (!step.content.heading.trim())
+            ctx.addIssue({ code: "custom", path: ["content", "heading"], message: "heading is required for legacy content" });
+        if (!step.content.body.trim())
+            ctx.addIssue({ code: "custom", path: ["content", "body"], message: "body is required for legacy content" });
+    }
 });
 export const guideDefinitionSchema = z.object({
     steps: z.array(guideStepSchema).min(1).max(20),
     design: designSchema,
     behavior: z.object({ layer: layerSchema.optional() }).strict().optional(),
     targeting: targetingSchema,
-}).strict();
+}).strict().superRefine((guide, ctx) => { const ids = new Set(); guide.steps.forEach((step, index) => { if (ids.has(step.id))
+    ctx.addIssue({ code: "custom", path: ["steps", index, "id"], message: "Guide step IDs must be unique" }); ids.add(step.id); }); });
 const checklistTargetingSchema = targetingSchema.pick({ pageRules: true, audience: true, priority: true, schedule: true, allowedOrigins: true });
 const checklistIdSchema = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/, "IDs may contain only letters, numbers, underscores, and hyphens");
 const checklistActionSchema = z.discriminatedUnion("type", [
@@ -343,6 +354,14 @@ export function definitionSchemaFor(kind, widgetType) {
             ctx.addIssue({ code: "custom", path: ["survey"], message: "survey config is required for survey widgets" });
         if (widgetType !== "survey" && definition.survey)
             ctx.addIssue({ code: "custom", path: ["survey"], message: "survey config is only supported by survey widgets" });
+        if (definition.builder && rawOnsiteDocument(definition.builder) !== undefined)
+            validateCompiledOnsiteBuilder(definition.builder, definition.content, (widgetType ?? "modal"), false).filter(message => !message.includes("does not match")).forEach(message => ctx.addIssue({ code: "custom", path: ["builder"], message }));
+        else if (widgetType !== "survey") {
+            if (!definition.content.heading.trim())
+                ctx.addIssue({ code: "custom", path: ["content", "heading"], message: "heading is required for legacy content" });
+            if (!definition.content.body.trim())
+                ctx.addIssue({ code: "custom", path: ["content", "body"], message: "body is required for legacy content" });
+        }
     });
 }
 //# sourceMappingURL=validation.js.map
