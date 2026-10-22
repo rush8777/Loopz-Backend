@@ -23,6 +23,13 @@ describe("experience layer validation", () => {
     expect(guideDefinitionSchema.safeParse({ ...definition, steps: [{ ...definition.steps[0], behavior: { dismissible: true, layer: { mode: "custom", zIndex: 0 } } }] }).success).toBe(false);
   });
 
+  it("preserves validated backdrop settings for anchored Guide steps", () => {
+    const definition = { design, targeting, steps: [{ id: "one", pattern: "anchored_card" as const, content: { heading: "One", body: "Body" }, target, behavior: { dismissible: true, backdrop: true, backdropOpacity: 0.55, closeOnBackdrop: false } }] };
+    const parsed = guideDefinitionSchema.parse(definition);
+    expect(parsed.steps[0].behavior).toMatchObject({ backdrop: true, backdropOpacity: 0.55, closeOnBackdrop: false });
+    expect(guideDefinitionSchema.safeParse({ ...definition, steps: [{ ...definition.steps[0], behavior: { ...definition.steps[0].behavior, backdropOpacity: 1 } }] }).success).toBe(false);
+  });
+
   it("accepts validated per-step Survey overrides", () => {
     const definition = { content: { heading: "Survey", body: "Body" }, design, behavior: { dismissible: true, layer: { mode: "auto" } }, targeting, survey: { showProgress: true, allowBack: true, submitLabel: "Submit", steps: [{ id: "one", content: { heading: "One", body: "Body" }, questions: [], behavior: { layer: { mode: "custom", zIndex: 1500 } } }] } };
     const parsed = widgetDefinitionSchema.parse(definition);

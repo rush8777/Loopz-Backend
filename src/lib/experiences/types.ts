@@ -146,7 +146,7 @@ export interface GuideStep {
   size?: ExperienceSize;
   advance?: { type: "button" } | { type: "element_click" } | { type: "element_hover"; durationMs?: number } | { type: "custom_event"; eventName: string } | { type: "route"; pageRules: PageRule[] };
   target?: ExperienceTarget;
-  behavior: Pick<ExperienceBehavior, "placement" | "alignment" | "offset" | "pointer" | "dismissible" | "layer">;
+  behavior: Pick<ExperienceBehavior, "placement" | "alignment" | "offset" | "pointer" | "dismissible" | "layer" | "backdrop" | "backdropOpacity" | "closeOnBackdrop">;
 }
 
 export type GuideStepPattern = "anchored_card" | "modal";

@@ -202,7 +202,7 @@ const guideStepSchema = z.object({
         z.object({ type: z.literal("route"), pageRules: z.array(pageRuleSchema).min(1).max(30).refine(rules => rules.some(rule => rule.kind === "include"), "at least one include rule is required") }).strict(),
     ]).optional(),
     target: targetSchema.optional(),
-    behavior: behaviorSchema.pick({ placement: true, alignment: true, offset: true, pointer: true, dismissible: true, layer: true }),
+    behavior: behaviorSchema.pick({ placement: true, alignment: true, offset: true, pointer: true, dismissible: true, layer: true, backdrop: true, backdropOpacity: true, closeOnBackdrop: true }),
 }).superRefine((step, ctx) => {
     if (step.pattern === "modal" && (step.advance?.type === "element_click" || step.advance?.type === "element_hover"))
         ctx.addIssue({ code: "custom", path: ["advance"], message: "modal guide steps cannot advance from a DOM target" });
