@@ -8,6 +8,7 @@ export const ONSITE_LIMITS = {
   maxNodes: 120,
   maxRichText: 10_000,
   maxImageUrl: 2_000,
+  maxInlineImage: 65_536,
   maxSerializedBytes: 250_000,
   minFixedSize: 24,
   maxFixedSize: 1_200,
@@ -229,13 +230,31 @@ function validateBlock(block: OnsiteBlock, path: string, addId: (id: unknown, pa
     if (block.action?.type === "track_event" && (!block.action.eventName?.trim() || block.action.eventName.length > 200)) errors.push(`${path} custom event must contain 1–200 characters.`);
     if (!["primary", "secondary", "outline"].includes(block.variant)) errors.push(`${path} has an invalid variant.`); if (!["hug", "full"].includes(block.width)) errors.push(`${path} has an invalid width behavior.`); number(block.radius, 0, 48, `${path} radius`); number(block.paddingX, 4, 48, `${path} horizontal padding`); number(block.paddingY, 4, 32, `${path} vertical padding`);
   } else if (block.type === "image") {
-    if (block.src.length > ONSITE_LIMITS.maxImageUrl || !builderImageUrlIsSafe(block.src)) errors.push(`${path} image URL is not allowed.`);
+    if (!onsiteImageSourceIsSafe(block.src)) errors.push(`${path} image must use a safe URL (up to 2,000 characters) or a small PNG, JPEG, WebP or GIF image (up to 64 KB encoded).`);
     if (block.alt.length > 500) errors.push(`${path} alt text exceeds 500 characters.`);
     if (!["contain", "cover"].includes(block.fit)) errors.push(`${path} has an invalid image fit.`); number(block.width, 1, 100, `${path} width`); if (block.height !== undefined) number(block.height, 24, 1_200, `${path} height`); number(block.radius, 0, 100, `${path} radius`);
   } else if (block.type === "divider") { if (!["horizontal", "vertical"].includes(block.orientation)) errors.push(`${path} has an invalid divider orientation.`); number(block.thickness, 1, 16, `${path} thickness`); }
   else if (block.type === "spacer") number(block.size, 4, 240, `${path} size`);
   else if (block.type === "icon") { if (!(block.icon in ICONS)) errors.push(`${path} icon is not supported.`); number(block.size, 12, 96, `${path} size`); }
   if ("color" in block && block.color && !COLOR_PATTERN.test(block.color)) errors.push(`${path} color is not supported.`);
+}
+
+export function onsiteImageSourceIsSafe(src: string): boolean {
+  if (typeof src !== "string") return false;
+  if (!/^data:/i.test(src)) return src.length <= ONSITE_LIMITS.maxImageUrl && builderImageUrlIsSafe(src);
+  if (src.length > ONSITE_LIMITS.maxInlineImage) return false;
+  const match = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(src);
+  if (!match || match[2].length % 4 !== 0) return false;
+  try {
+    const bytes = atob(match[2]);
+    switch (match[1].toLowerCase()) {
+      case "png": return bytes.startsWith("\x89PNG\r\n\x1a\n");
+      case "jpeg": return bytes.startsWith("\xff\xd8\xff");
+      case "webp": return bytes.startsWith("RIFF") && bytes.slice(8, 12) === "WEBP";
+      case "gif": return bytes.startsWith("GIF87a") || bytes.startsWith("GIF89a");
+    }
+  } catch { /* Invalid base64 must never become authored content. */ }
+  return false;
 }
 
 function unexpectedKeys(value: Record<string, unknown>, allowed: string[], path: string, errors: string[]): void { const extra = Object.keys(value).filter(key => !allowed.includes(key)); if (extra.length) errors.push(`${path} contains unsupported fields: ${extra.join(", ")}.`); }

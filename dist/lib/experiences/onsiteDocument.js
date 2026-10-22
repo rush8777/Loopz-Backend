@@ -6,6 +6,7 @@ export const ONSITE_LIMITS = {
     maxNodes: 120,
     maxRichText: 10_000,
     maxImageUrl: 2_000,
+    maxInlineImage: 65_536,
     maxSerializedBytes: 250_000,
     minFixedSize: 24,
     maxFixedSize: 1_200,
@@ -291,8 +292,8 @@ function validateBlock(block, path, addId, number, errors) {
         number(block.paddingY, 4, 32, `${path} vertical padding`);
     }
     else if (block.type === "image") {
-        if (block.src.length > ONSITE_LIMITS.maxImageUrl || !builderImageUrlIsSafe(block.src))
-            errors.push(`${path} image URL is not allowed.`);
+        if (!onsiteImageSourceIsSafe(block.src))
+            errors.push(`${path} image must use a safe URL (up to 2,000 characters) or a small PNG, JPEG, WebP or GIF image (up to 64 KB encoded).`);
         if (block.alt.length > 500)
             errors.push(`${path} alt text exceeds 500 characters.`);
         if (!["contain", "cover"].includes(block.fit))
@@ -316,6 +317,28 @@ function validateBlock(block, path, addId, number, errors) {
     }
     if ("color" in block && block.color && !COLOR_PATTERN.test(block.color))
         errors.push(`${path} color is not supported.`);
+}
+export function onsiteImageSourceIsSafe(src) {
+    if (typeof src !== "string")
+        return false;
+    if (!/^data:/i.test(src))
+        return src.length <= ONSITE_LIMITS.maxImageUrl && builderImageUrlIsSafe(src);
+    if (src.length > ONSITE_LIMITS.maxInlineImage)
+        return false;
+    const match = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(src);
+    if (!match || match[2].length % 4 !== 0)
+        return false;
+    try {
+        const bytes = atob(match[2]);
+        switch (match[1].toLowerCase()) {
+            case "png": return bytes.startsWith("\x89PNG\r\n\x1a\n");
+            case "jpeg": return bytes.startsWith("\xff\xd8\xff");
+            case "webp": return bytes.startsWith("RIFF") && bytes.slice(8, 12) === "WEBP";
+            case "gif": return bytes.startsWith("GIF87a") || bytes.startsWith("GIF89a");
+        }
+    }
+    catch { /* Invalid base64 must never become authored content. */ }
+    return false;
 }
 function unexpectedKeys(value, allowed, path, errors) { const extra = Object.keys(value).filter(key => !allowed.includes(key)); if (extra.length)
     errors.push(`${path} contains unsupported fields: ${extra.join(", ")}.`); }

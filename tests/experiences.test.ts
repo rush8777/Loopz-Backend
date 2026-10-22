@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestApp, signup } from "./helpers.js";
 import { eq } from "drizzle-orm";
 import { experienceEditorSessions, organizationSubscriptions, surveyResponses } from "../src/db/schema.js";
-import { applyOnsiteDocument, listBlocks, onsiteDocumentFromBuilder } from "../src/lib/experiences/onsiteDocument.js";
+import { applyOnsiteDocument, createBlock, emptyCell, listBlocks, onsiteDocumentFromBuilder } from "../src/lib/experiences/onsiteDocument.js";
 
 async function setup(app: Awaited<ReturnType<typeof createTestApp>>["app"], suffix = "a") {
   const owner = await signup(app, { email: `experience-${suffix}@example.com` });
@@ -182,10 +182,18 @@ describe("visual experiences", () => {
     const loaded = await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders });
     expect(loaded.json().experience.builderMode).toBe("onsite");
     const edited = loaded.json().version.definition;
-    const onsite = onsiteDocumentFromBuilder(edited.builder)!; const heading = listBlocks(onsite.root).find(block => block.type === "heading"); if (heading?.type === "heading") heading.html = "Edited on the product page"; edited.content = applyOnsiteDocument(edited.builder, onsite, "modal").content;
+    const onsite = onsiteDocumentFromBuilder(edited.builder)!; const heading = listBlocks(onsite.root).find(block => block.type === "heading"); if (heading?.type === "heading") heading.html = "Edited on the product page";
+    const localImage = "data:image/png;base64," + btoa("\x89PNG\r\n\x1a\n" + "a".repeat(3000));
+    const image = createBlock("image"); if (image.type === "image") { image.src = localImage; image.alt = "Feature preview"; } onsite.root.children!.push(emptyCell(image));
+    edited.content = applyOnsiteDocument(edited.builder, onsite, "modal").content;
     const editorSaved = await ctx.app.inject({ method: "PATCH", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders, payload: { definition: edited, revision: loaded.json().version.revision } });
     expect(editorSaved.statusCode).toBe(200);
     expect(editorSaved.json().version).toMatchObject({ revision: 3, definition: { content: { heading: "Edited on the product page" } } });
+    const reloaded = await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders });
+    expect(reloaded.json().version.definition.builder.html).toContain(localImage);
+    const published = await publishReviewed(ctx.app, { method: "POST", url: `${url}/${created.id}/publish`, headers: authorization });
+    expect(published.statusCode, JSON.stringify(published.json())).toBe(200);
+    expect(published.json().publishedVersion.definition.builder.html).toContain(localImage);
   });
 
   it("filters unified widget experiences by a supported widget type", async () => {
