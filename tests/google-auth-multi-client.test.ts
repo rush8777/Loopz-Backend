@@ -6,14 +6,14 @@ import { buildApp } from "../src/app.js";
 import { env } from "../src/config.js";
 import { closeDb, createDb } from "../src/db/client.js";
 import { runMigrations } from "../src/db/migrate.js";
-import { memberships, organizations, userAuthIdentities, users } from "../src/db/schema.js";
+import { memberships, organizations, organizationSubscriptions, sites, userAuthIdentities, users } from "../src/db/schema.js";
 import { signup } from "./helpers.js";
 
 describe("Google authentication across separate libSQL clients", () => {
   const originalGoogleClientId = env.GOOGLE_CLIENT_ID;
   afterEach(() => { env.GOOGLE_CLIENT_ID = originalGoogleClientId; });
 
-  it("resolves simultaneous signups to one canonical account and workspace", async () => {
+  it("resolves simultaneous signups to one canonical account and creates one workspace during concurrent onboarding", async () => {
     env.GOOGLE_CLIENT_ID = "test-client-id";
     const file = path.join(os.tmpdir(), `google-multi-client-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
     const dbA = createDb(`file:${file}`);
@@ -33,8 +33,16 @@ describe("Google authentication across separate libSQL clients", () => {
       expect(first.json().user.id).toBe(second.json().user.id);
       expect(await dbA.select().from(users)).toHaveLength(1);
       expect(await dbA.select().from(userAuthIdentities)).toHaveLength(1);
+      expect(await dbA.select().from(organizations)).toHaveLength(0);
+      expect(await dbA.select().from(memberships)).toHaveLength(0);
+      const onboard = (app: typeof appA, token: string) => app.inject({ method: "POST", url: "/auth/onboarding", headers: { authorization: `Bearer ${token}` }, payload: { workspaceName: "Shared", siteName: "Product", domain: "https://shared.example.test" } });
+      const results = await Promise.all([onboard(appA, first.json().accessToken), onboard(appB, second.json().accessToken)]);
+      expect(results.map(result => result.statusCode).sort()).toEqual([201, 409]);
+      expect(results.find(result => result.statusCode === 409)!.json().error).toBe("onboarding_already_started");
       expect(await dbA.select().from(organizations)).toHaveLength(1);
       expect(await dbA.select().from(memberships)).toHaveLength(1);
+      expect(await dbA.select().from(sites)).toHaveLength(1);
+      expect(await dbA.select().from(organizationSubscriptions)).toHaveLength(1);
     } finally {
       await Promise.all([appA.close(), appB.close()]);
       await Promise.all([closeDb(dbA), closeDb(dbB)]);

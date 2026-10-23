@@ -110,7 +110,10 @@ describe("pricing usage foundations", () => {
     await ctx.db.insert(dashboards).values({ siteId: site.id, name: "One", createdBy: owner.user.id });
     await ctx.db.insert(segments).values({ siteId: site.id, name: "One", definition: { logic: "all", conditions: [] } });
     await ctx.db.insert(funnels).values({ siteId: site.id, name: "One", steps: [] });
-    expect(await getSiteUsage(ctx.db, owner.org.id)).toBe(1);
+    expect(await getSiteUsage(ctx.db, owner.org.id)).toBe(2); // Onboarding site plus the fixture’s product site.
+    const other = await signup(ctx.app, { email: "other-usage@example.test" });
+    expect(await getSiteUsage(ctx.db, other.org.id)).toBe(1);
+    expect(await getSiteUsage(ctx.db, owner.org.id)).toBe(2);
     expect(await getDashboardUsage(ctx.db, site.id)).toBe(1);
     expect(await getSegmentUsage(ctx.db, site.id)).toBe(1);
     expect(await getFunnelUsage(ctx.db, site.id)).toBe(1);

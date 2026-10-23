@@ -68,7 +68,12 @@ describe("org RBAC and tenant isolation", () => {
       url: `/orgs/${orgB.org.id}/sites`,
       headers: { authorization: `Bearer ${orgB.accessToken}` },
     });
-    expect(listB.json().sites).toEqual([]);
+    const ownSites = listB.json().sites;
+    expect(ownSites).toHaveLength(1); // Required onboarding creates B’s first site.
+    expect(ownSites[0]).toMatchObject({ name: "Test site", domain: "https://example.test" });
+    const listA = await ctx.app.inject({ method: "GET", url: `/orgs/${orgA.org.id}/sites`, headers: { authorization: `Bearer ${orgA.accessToken}` } });
+    expect(listA.json().sites).toHaveLength(2);
+    expect(listA.json().sites.map((site: { id: string }) => site.id)).not.toContain(ownSites[0].id);
 
     // Org B's owner also can't just read org A's sites by guessing the org ID.
     const crossRead = await ctx.app.inject({

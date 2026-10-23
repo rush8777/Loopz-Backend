@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { runMigrations } from "../src/db/migrate.js";
 import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { organizations } from "../src/db/schema.js";
@@ -9,7 +11,13 @@ describe("local libSQL database", () => {
     const ctx = await createTestDb();
     try {
       const migrations = await ctx.db.all<{ count: number }>(sql`SELECT count(*) AS count FROM __drizzle_migrations`);
-      expect(Number(migrations[0].count)).toBe(32);
+      const journal = JSON.parse(readFileSync(new URL("../drizzle/meta/_journal.json", import.meta.url), "utf8"));
+      expect(Number(migrations[0].count)).toBe(journal.entries.length);
+      await runMigrations(ctx.db);
+      const again = await ctx.db.all<{ count: number }>(sql`SELECT count(*) AS count FROM __drizzle_migrations`);
+      expect(Number(again[0].count)).toBe(journal.entries.length);
+      const columns = await ctx.db.all<{ name: string }>(sql`PRAGMA table_info(experience_versions)`);
+      expect(columns.map(column => column.name)).toContain("revision");
       await expect(ctx.db.run(sql`SELECT 1`)).resolves.toBeTruthy();
     } finally {
       ctx.cleanup();

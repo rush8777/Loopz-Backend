@@ -36,12 +36,15 @@ describe("plans and entitlements", () => {
   });
 
   it("enforces Starter site capacity without affecting reads", async () => {
-    const { owner, auth } = await setup("site-limit");
+    const owner = await signup(ctx.app, { email: "plans-site-limit@example.test" });
+    const auth = { authorization: `Bearer ${owner.accessToken}` };
+    expect((await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites`, headers: auth })).json().sites).toHaveLength(1);
     await setSubscription(owner.org.id, { planId: "starter", status: "active", trialEndsAt: null });
     const blocked = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites`, headers: auth, payload: { name: "Second", domain: "https://second.example.test" } });
     expect(blocked.statusCode).toBe(403);
     expect(blocked.json()).toMatchObject({ error: "resource_limit", entitlement: { resource: "site", current: 1, limit: 1 } });
-    expect((await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites`, headers: auth })).statusCode).toBe(200);
+    const listed = await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites`, headers: auth });
+    expect(listed.statusCode).toBe(200); expect(listed.json().sites).toHaveLength(1);
   });
 
   it("enforces resource capacity across the organization rather than per site", async () => {
