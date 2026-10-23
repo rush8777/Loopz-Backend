@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestApp, signup } from "./helpers.js";
 import { eq } from "drizzle-orm";
 import { experienceEditorSessions, organizationSubscriptions, surveyResponses } from "../src/db/schema.js";
-import { applyOnsiteDocument, createBlock, emptyCell, listBlocks, onsiteDocumentFromBuilder } from "../src/lib/experiences/onsiteDocument.js";
+import { applyOnsiteDocument, createBlock, duplicateDocument, emptyCell, listBlocks, moveCell, onsiteDocumentFromBuilder, resizeSiblings, splitCell } from "../src/lib/experiences/onsiteDocument.js";
 
 async function setup(app: Awaited<ReturnType<typeof createTestApp>>["app"], suffix = "a") {
   const owner = await signup(app, { email: `experience-${suffix}@example.com` });
@@ -35,6 +35,34 @@ describe("visual experiences", () => {
     const published = await ctx.app.inject({ method: "POST", url: endpoint + "/publish", headers, payload: { draftVersionId: version.id, revision: version.revision } }); expect(published.statusCode).toBe(200);
     const repeated = await ctx.app.inject({ method: "POST", url: endpoint + "/publish", headers, payload: { draftVersionId: version.id, revision: version.revision } }); expect(repeated.statusCode).toBe(409);
     expect(published.json().publishedVersion.definition.content.heading).toBe("New revision");
+  });
+
+  it("persists nested Guide layouts, images and independent actions through editor save, settings and publish", async () => {
+    const { owner, site } = await setup(ctx.app, "ux-guide"); const headers = { authorization: `Bearer ${owner.accessToken}` };
+    const url = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
+    const created = (await ctx.app.inject({ method: "POST", url, headers, payload: { kind: "guide", guidePattern: "modal", builderMode: "onsite", name: "UX guide", buildUrl: "https://ux-guide.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
+    const session = (await ctx.app.inject({ method: "POST", url: `${url}/${created.id}/editor-sessions`, headers })).json();
+    const access = (await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://ux-guide.example.com" }, payload: { token: new URL(session.launchUrl).searchParams.get("movcues_editor_token") } })).json();
+    const editorHeaders = { origin: "https://ux-guide.example.com", authorization: `Bearer ${access.accessToken}` }; const endpoint = `/public/experience-editor/${session.sessionId}/draft`;
+    const definition = structuredClone(created.draftVersion.definition); const first = definition.steps[0]; const doc = onsiteDocumentFromBuilder(first.builder)!;
+    const row = doc.root.children![0]; expect(splitCell(doc, row.id, "row")).toBeTruthy();
+    const image = createBlock("image"); if (image.type !== "image") throw new Error("Expected image");
+    image.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="; image.alt = "Guide illustration"; row.children![1].block = image;
+    expect(resizeSiblings(doc, row.children![0].id, row.children![1].id, .7)).toBe(true);
+    const event = createBlock("button", true); if (event.type !== "button") throw new Error("Expected button"); event.label = "Track"; event.action = { id: event.action.id, type: "track_event", eventName: "guide_clicked" };
+    doc.root.children!.push(emptyCell(event)); expect(moveCell(doc, doc.root.children!.at(-1)!.id, -1)).toBe(true);
+    first.content = applyOnsiteDocument(first.builder, doc, "modal").content;
+    const second = structuredClone(first); second.id = "ux_step_two"; const copied = duplicateDocument(doc);
+    for (const block of listBlocks(copied.root)) if (block.type === "button" && block.action.type === "next_step") block.action.type = "previous_step";
+    second.content = applyOnsiteDocument(second.builder, copied, "modal").content; definition.steps.push(second);
+    const saved = await ctx.app.inject({ method: "PATCH", url: endpoint, headers: editorHeaders, payload: { definition, revision: 1 } }); expect(saved.statusCode, saved.body).toBe(200);
+    expect((await ctx.app.inject({ method: "PATCH", url: endpoint, headers: editorHeaders, payload: { definition, revision: 1 } })).statusCode).toBe(409);
+    const reloaded = (await ctx.app.inject({ method: "GET", url: endpoint, headers: editorHeaders })).json().version;
+    expect(reloaded.definition.steps).toEqual(definition.steps);
+    const settings = await ctx.app.inject({ method: "PATCH", url: `${url}/${created.id}`, headers, payload: { revision: reloaded.revision, settings: { targeting: { ...definition.targeting, priority: 3 } } } }); expect(settings.statusCode, settings.body).toBe(200);
+    expect(settings.json().draftVersion.definition.steps).toEqual(definition.steps);
+    const published = await publishReviewed(ctx.app, { method: "POST", url: `${url}/${created.id}/publish`, headers }); expect(published.statusCode, published.body).toBe(200);
+    expect(published.json().publishedVersion.definition.steps).toEqual(definition.steps);
   });
 
   it("applies reference, projection and ownership checks to direct editor requests", async () => {
