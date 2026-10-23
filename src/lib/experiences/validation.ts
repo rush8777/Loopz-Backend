@@ -193,15 +193,17 @@ const guideStepSchema = z.object({
   size: sizeSchema.optional(),
   advance: z.discriminatedUnion("type", [
     z.object({ type: z.literal("button") }).strict(),
-    z.object({ type: z.literal("element_click") }).strict(),
-    z.object({ type: z.literal("element_hover"), durationMs: z.number().int().min(100).max(60_000).optional() }).strict(),
-    z.object({ type: z.literal("custom_event"), eventName: z.string().trim().min(1).max(200) }).strict(),
-    z.object({ type: z.literal("route"), pageRules: z.array(pageRuleSchema).min(1).max(30).refine(rules => rules.some(rule => rule.kind === "include"), "at least one include rule is required") }).strict(),
+    z.object({ type: z.literal("element_click"), target: targetSchema.optional() }).strict(),
+    z.object({ type: z.literal("element_hover"), target: targetSchema.optional(), durationMs: z.number().int().min(100).max(60_000).optional() }).strict(),
+    z.object({ type: z.literal("custom_event"), eventName: z.string().trim().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/, "event names cannot contain control characters") }).strict(),
+    z.object({ type: z.literal("route"), pageRules: z.array(pageRuleSchema).min(1).max(30).refine(rules => rules.some(rule => rule.kind === "include"), "at least one include rule is required").refine(rules => rules.every(rule => Boolean(rule.value.trim())), "page rules cannot be blank") }).strict(),
   ]).optional(),
+  presentation: z.object({ delayMs: z.number().int().min(0).max(30_000).optional(), missingTarget: z.object({ action: z.enum(["wait", "skip", "dismiss"]), timeoutMs: z.number().int().min(100).max(60_000) }).strict().optional() }).strict().optional(),
   target: targetSchema.optional(),
   behavior: behaviorSchema.pick({ placement: true, alignment: true, offset: true, pointer: true, dismissible: true, layer: true, backdrop: true, backdropOpacity: true, closeOnBackdrop: true }),
 }).superRefine((step, ctx) => {
   if (step.pattern === "modal" && (step.advance?.type === "element_click" || step.advance?.type === "element_hover")) ctx.addIssue({ code: "custom", path: ["advance"], message: "modal guide steps cannot advance from a DOM target" });
+  if (step.pattern === "modal" && step.presentation?.missingTarget) ctx.addIssue({ code: "custom", path: ["presentation", "missingTarget"], message: "missing-target behavior applies only to Anchored Card steps" });
   if (step.builder && rawOnsiteDocument(step.builder) !== undefined) validateCompiledOnsiteBuilder(step.builder, step.content, step.pattern ?? "anchored_card", true).filter(message => !message.includes("does not match")).forEach(message => ctx.addIssue({ code: "custom", path: ["builder"], message }));
   else { if (!step.content.heading.trim()) ctx.addIssue({ code: "custom", path: ["content", "heading"], message: "heading is required for legacy content" }); if (!step.content.body.trim()) ctx.addIssue({ code: "custom", path: ["content", "body"], message: "body is required for legacy content" }); }
 });
@@ -212,6 +214,17 @@ export const guideDefinitionSchema = z.object({
   behavior: z.object({ layer: layerSchema.optional() }).strict().optional(),
   targeting: targetingSchema,
 }).strict().superRefine((guide, ctx) => { const ids = new Set<string>(); guide.steps.forEach((step, index) => { if (ids.has(step.id)) ctx.addIssue({ code: "custom", path: ["steps", index, "id"], message: "Guide step IDs must be unique" }); ids.add(step.id); }); });
+
+export function guidePublishIssues(guide: z.infer<typeof guideDefinitionSchema>) {
+  const issues: Array<{ path: (string | number)[]; message: string }> = [];
+  guide.steps.forEach((step, index) => {
+    const label = `Step ${index + 1}${step.label ? ` (${step.label})` : ""}`;
+    if (step.pattern !== "modal" && !step.target) issues.push({ path: ["steps", index, "target"], message: `${label}: select a positioning target.` });
+    if ((step.advance?.type === "element_click" || step.advance?.type === "element_hover") && !(step.advance.target ?? step.target)) issues.push({ path: ["steps", index, "advance", "target"], message: `${label}: select the website element that advances this step.` });
+    if (step.presentation?.missingTarget?.action === "skip" && index === guide.steps.length - 1) issues.push({ path: ["steps", index, "presentation", "missingTarget"], message: `${label}: add a following step before choosing Skip, or choose Wait/Dismiss.` });
+  });
+  return issues;
+}
 
 const checklistTargetingSchema = targetingSchema.pick({ pageRules: true, audience: true, priority: true, schedule: true, allowedOrigins: true });
 const checklistIdSchema = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/, "IDs may contain only letters, numbers, underscores, and hyphens");

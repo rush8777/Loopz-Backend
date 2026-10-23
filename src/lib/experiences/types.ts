@@ -144,7 +144,8 @@ export interface GuideStep {
   content: ExperienceContent;
   builder?: WidgetBuilderState;
   size?: ExperienceSize;
-  advance?: { type: "button" } | { type: "element_click" } | { type: "element_hover"; durationMs?: number } | { type: "custom_event"; eventName: string } | { type: "route"; pageRules: PageRule[] };
+  advance?: { type: "button" } | { type: "element_click"; target?: ExperienceTarget } | { type: "element_hover"; durationMs?: number; target?: ExperienceTarget } | { type: "custom_event"; eventName: string } | { type: "route"; pageRules: PageRule[] };
+  presentation?: { delayMs?: number; missingTarget?: { action: "wait" | "skip" | "dismiss"; timeoutMs: number } };
   target?: ExperienceTarget;
   behavior: Pick<ExperienceBehavior, "placement" | "alignment" | "offset" | "pointer" | "dismissible" | "layer" | "backdrop" | "backdropOpacity" | "closeOnBackdrop">;
 }

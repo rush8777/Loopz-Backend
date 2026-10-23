@@ -7,7 +7,7 @@ import type { Db } from "../db/client.js";
 import { experienceEditorSessions, experiences, experienceVersions, pageDefinitions, segments, sites, siteThemes } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
-import { createExperienceSchema, definitionSchemaFor, updateDraftSchema } from "../lib/experiences/validation.js";
+import { createExperienceSchema, definitionSchemaFor, guidePublishIssues, updateDraftSchema } from "../lib/experiences/validation.js";
 import { guideStepRequiresTarget, type BuilderMode, type ExperienceContent, type ExperienceDefinition, type ExperienceKind, type ExperienceTargeting, type GuideStepPattern, type WidgetBuilderState, type WidgetType } from "../lib/experiences/types.js";
 import { isChecklistDefinition } from "../lib/experiences/types.js";
 import { initialChecklistDefinition, type ChecklistPreset } from "../lib/experiences/checklistPresets.js";
@@ -344,6 +344,10 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const checked = definitionSchemaFor(row.kind as ExperienceKind, row.widgetType).safeParse(draft.definition);
     if (!checked.success) return reply.code(400).send({ error: "invalid_definition", details: { ...checked.error.flatten(), issues: checked.error.issues } });
     if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType as WidgetType, checked.data)) return reply.code(400).send({ error: "invalid_widget_size" });
+    if ("steps" in checked.data) {
+      const issues = guidePublishIssues(checked.data);
+      if (issues.length) return reply.code(400).send({ error: issues.some(issue => issue.path.at(-1) === "target") ? "target_required" : "invalid_guide_step_configuration", message: issues.map(issue => issue.message).join(" "), details: { issues } });
+    }
     const requirementError = validatePublishRequirements(row.kind as ExperienceKind, row.widgetType as WidgetType | null, checked.data);
     if (requirementError) return reply.code(400).send({ error: requirementError });
     const referenceError = await validateReferences(db, site.id, checked.data, true);

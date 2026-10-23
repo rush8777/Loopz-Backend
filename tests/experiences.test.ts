@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestApp, signup } from "./helpers.js";
 import { eq } from "drizzle-orm";
 import { experienceEditorSessions, organizationSubscriptions, surveyResponses } from "../src/db/schema.js";
-import { applyOnsiteDocument, createBlock, duplicateDocument, emptyCell, listBlocks, moveCell, onsiteDocumentFromBuilder, resizeSiblings, splitCell } from "../src/lib/experiences/onsiteDocument.js";
+import { applyOnsiteDocument, createBlock, createOnsiteDocument, duplicateDocument, emptyCell, listBlocks, moveCell, onsiteDocumentFromBuilder, resizeSiblings, splitCell } from "../src/lib/experiences/onsiteDocument.js";
 
 async function setup(app: Awaited<ReturnType<typeof createTestApp>>["app"], suffix = "a") {
   const owner = await signup(app, { email: `experience-${suffix}@example.com` });
@@ -35,6 +35,28 @@ describe("visual experiences", () => {
     const published = await ctx.app.inject({ method: "POST", url: endpoint + "/publish", headers, payload: { draftVersionId: version.id, revision: version.revision } }); expect(published.statusCode).toBe(200);
     const repeated = await ctx.app.inject({ method: "POST", url: endpoint + "/publish", headers, payload: { draftVersionId: version.id, revision: version.revision } }); expect(repeated.statusCode).toBe(409);
     expect(published.json().publishedVersion.definition.content.heading).toBe("New revision");
+  });
+
+  it("saves, reloads and publishes the three-step Guide logic journey without stripping settings", async () => {
+    const { owner, site } = await setup(ctx.app, "guide-logic"); const headers = { authorization: `Bearer ${owner.accessToken}` }; const url = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
+    const created = (await ctx.app.inject({ method: "POST", url, headers, payload: { kind: "guide", guidePattern: "modal", builderMode: "onsite", name: "Interactive onboarding", buildUrl: "https://guide-logic.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
+    const session = (await ctx.app.inject({ method: "POST", url: `${url}/${created.id}/editor-sessions`, headers })).json();
+    const access = (await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://guide-logic.example.com" }, payload: { token: new URL(session.launchUrl).searchParams.get("movcues_editor_token") } })).json();
+    const editorHeaders = { origin: "https://guide-logic.example.com", authorization: `Bearer ${access.accessToken}` }; const endpoint = `/public/experience-editor/${session.sessionId}/draft`;
+    const definition = structuredClone(created.draftVersion.definition);
+    definition.steps = ["Welcome", "Feature", "Completion"].map((label, index) => {
+      const builder = { version: 1, projectData: {}, html: "", css: "" }; const doc = createOnsiteDocument(true); const heading = listBlocks(doc.root).find(block => block.type === "heading"); if (heading?.type === "heading") heading.html = label;
+      return { id: `logic_${index}`, label, pattern: index === 1 ? "anchored_card" : "modal", builder, content: applyOnsiteDocument(builder, doc, index === 1 ? "anchored_card" : "modal").content, behavior: { dismissible: true }, advance: index === 0 ? { type: "button" } : index === 1 ? { type: "element_click", target: { primarySelector: "#use-feature", fallbackSelectors: [], reliability: "reliable" } } : { type: "custom_event", eventName: "project_created" }, ...(index === 1 ? { target: { primarySelector: "#feature-card", fallbackSelectors: [], reliability: "reliable" }, presentation: { delayMs: 200, missingTarget: { action: "skip", timeoutMs: 2500 } } } : { presentation: { delayMs: 0 } }) };
+    });
+    const saved = await ctx.app.inject({ method: "PATCH", url: endpoint, headers: editorHeaders, payload: { definition, revision: 1 } }); expect(saved.statusCode, saved.body).toBe(200);
+    const reloaded = (await ctx.app.inject({ method: "GET", url: endpoint, headers: editorHeaders })).json().version;
+    expect(reloaded.definition.steps).toEqual(definition.steps);
+    const published = await publishReviewed(ctx.app, { method: "POST", url: `${url}/${created.id}/publish`, headers }); expect(published.statusCode, published.body).toBe(200); expect(published.json().publishedVersion.definition.steps).toEqual(definition.steps);
+    const draft = (await ctx.app.inject({ method: "GET", url: `${url}/${created.id}`, headers })).json().draftVersion; const invalid = structuredClone(draft.definition);
+    const final = invalid.steps[2]; final.pattern = "anchored_card"; final.target = { primarySelector: "#done", fallbackSelectors: [], reliability: "reliable" }; const finalDoc = onsiteDocumentFromBuilder(final.builder)!; final.content = applyOnsiteDocument(final.builder, finalDoc, "anchored_card").content; final.presentation = { missingTarget: { action: "skip", timeoutMs: 500 } };
+    expect((await ctx.app.inject({ method: "PATCH", url: endpoint, headers: editorHeaders, payload: { definition: invalid, revision: draft.revision } })).statusCode).toBe(200);
+    const rejected = await publishReviewed(ctx.app, { method: "POST", url: `${url}/${created.id}/publish`, headers });
+    expect(rejected.statusCode).toBe(400); expect(rejected.json().error).toBe("invalid_guide_step_configuration"); expect(rejected.json().details.issues).toContainEqual(expect.objectContaining({ message: expect.stringContaining("Step 3") }));
   });
 
   it("persists nested Guide layouts, images and independent actions through editor save, settings and publish", async () => {
