@@ -1,0 +1,244 @@
+{
+  "questions": [
+    {
+      "id": "q_single",
+      "type": "single_choice",
+      "label": "Choose <one>",
+      "required": true,
+      "options": [
+        {
+          "id": "option_a",
+          "label": "A"
+        },
+        {
+          "id": "option_b",
+          "label": "B"
+        }
+      ]
+    },
+    {
+      "id": "q_multiple",
+      "type": "multiple_choice",
+      "label": "Choose several",
+      "options": [
+        {
+          "id": "option_c",
+          "label": "C"
+        },
+        {
+          "id": "option_d",
+          "label": "D"
+        }
+      ]
+    },
+    {
+      "id": "q_short",
+      "type": "short_text",
+      "label": "Short reply",
+      "maxLength": 80
+    },
+    {
+      "id": "q_long",
+      "type": "long_text",
+      "label": "More details",
+      "placeholder": "Optional",
+      "maxLength": 400
+    },
+    {
+      "id": "q_rating",
+      "type": "rating",
+      "label": "Rate it",
+      "min": 1,
+      "max": 5
+    },
+    {
+      "id": "q_nps",
+      "type": "nps",
+      "label": "Recommend?"
+    }
+  ],
+  "document": {
+    "schemaVersion": 3,
+    "id": "document_survey",
+    "root": {
+      "type": "cell",
+      "id": "cell_root",
+      "direction": "column",
+      "sizing": {
+        "mode": "hug"
+      },
+      "align": "stretch",
+      "justify": "start",
+      "gap": 12,
+      "padding": {
+        "top": 0,
+        "right": 0,
+        "bottom": 0,
+        "left": 0
+      },
+      "children": [
+        {
+          "type": "cell",
+          "id": "cell_0",
+          "direction": "column",
+          "sizing": {
+            "mode": "hug"
+          },
+          "align": "stretch",
+          "justify": "start",
+          "gap": 12,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "block": {
+            "type": "question",
+            "id": "block_0",
+            "questionId": "q_single",
+            "fontSize": 14
+          }
+        },
+        {
+          "type": "cell",
+          "id": "cell_1",
+          "direction": "column",
+          "sizing": {
+            "mode": "hug"
+          },
+          "align": "stretch",
+          "justify": "start",
+          "gap": 12,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "block": {
+            "type": "question",
+            "id": "block_1",
+            "questionId": "q_multiple",
+            "fontSize": 14
+          }
+        },
+        {
+          "type": "cell",
+          "id": "cell_2",
+          "direction": "column",
+          "sizing": {
+            "mode": "hug"
+          },
+          "align": "stretch",
+          "justify": "start",
+          "gap": 12,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "block": {
+            "type": "question",
+            "id": "block_2",
+            "questionId": "q_short",
+            "fontSize": 14
+          }
+        },
+        {
+          "type": "cell",
+          "id": "cell_3",
+          "direction": "column",
+          "sizing": {
+            "mode": "hug"
+          },
+          "align": "stretch",
+          "justify": "start",
+          "gap": 12,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "block": {
+            "type": "question",
+            "id": "block_3",
+            "questionId": "q_long",
+            "fontSize": 14
+          }
+        },
+        {
+          "type": "cell",
+          "id": "cell_4",
+          "direction": "column",
+          "sizing": {
+            "mode": "hug"
+          },
+          "align": "stretch",
+          "justify": "start",
+          "gap": 12,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "block": {
+            "type": "question",
+            "id": "block_4",
+            "questionId": "q_rating",
+            "fontSize": 14
+          }
+        },
+        {
+          "type": "cell",
+          "id": "cell_5",
+          "direction": "column",
+          "sizing": {
+            "mode": "hug"
+          },
+          "align": "stretch",
+          "justify": "start",
+          "gap": 12,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "block": {
+            "type": "question",
+            "id": "block_5",
+            "questionId": "q_nps",
+            "fontSize": 14
+          }
+        },
+        {
+          "type": "cell",
+          "id": "cell_controls",
+          "direction": "column",
+          "sizing": {
+            "mode": "hug"
+          },
+          "align": "stretch",
+          "justify": "start",
+          "gap": 12,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "block": {
+            "type": "survey_controls",
+            "id": "block_controls"
+          }
+        }
+      ]
+    }
+  },
+  "submitLabel": "Send feedback",
+  "expectedHash": "e8cbacff4c07ec5326f74b81aff5c011e22805f11f42884731b3d00d780d3117"
+}

@@ -20,7 +20,7 @@ import { sendEntitlementError } from "../lib/entitlements/http.js";
 import { requiredExperienceFeatures } from "../lib/entitlements/experienceFeatures.js";
 import type { SiteThemeTokens } from "../lib/themes/types.js";
 import { siteThemeCss } from "../lib/themes/css.js";
-import { applyOnsiteDocument, createOnsiteDocument, listBlocks } from "../lib/experiences/onsiteDocument.js";
+import { applyOnsiteDocument, createOnsiteDocument, createOnsiteSurveyDocument, listBlocks } from "../lib/experiences/onsiteDocument.js";
 
 const SUPPORTED_WIDGET_TYPES: WidgetType[] = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
 
@@ -150,6 +150,14 @@ function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, 
         },
       ],
     };
+    if (builderMode === "onsite") {
+      delete definition.builder;
+      for (const step of definition.survey.steps) {
+        step.builder = { version: 1, projectData: {}, html: "", css: "" };
+        step.content = applyOnsiteDocument(step.builder, createOnsiteSurveyDocument(step.questions, step.content), "survey", { questions: step.questions, submitLabel: definition.survey.submitLabel }).content;
+      }
+      definition.content = { ...definition.survey.steps[0].content };
+    }
   }
   return definition;
 }

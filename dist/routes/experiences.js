@@ -14,7 +14,7 @@ import { runEntitlementTransaction } from "../db/transaction.js";
 import { assertSubscriptionActive, createEntitlementService } from "../lib/entitlements/service.js";
 import { sendEntitlementError } from "../lib/entitlements/http.js";
 import { siteThemeCss } from "../lib/themes/css.js";
-import { applyOnsiteDocument, createOnsiteDocument, listBlocks } from "../lib/experiences/onsiteDocument.js";
+import { applyOnsiteDocument, createOnsiteDocument, createOnsiteSurveyDocument, listBlocks } from "../lib/experiences/onsiteDocument.js";
 const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
@@ -148,6 +148,14 @@ function initialDefinition(kind, widgetType, pageRules, siteTheme, builderMode =
                 },
             ],
         };
+        if (builderMode === "onsite") {
+            delete definition.builder;
+            for (const step of definition.survey.steps) {
+                step.builder = { version: 1, projectData: {}, html: "", css: "" };
+                step.content = applyOnsiteDocument(step.builder, createOnsiteSurveyDocument(step.questions, step.content), "survey", { questions: step.questions, submitLabel: definition.survey.submitLabel }).content;
+            }
+            definition.content = { ...definition.survey.steps[0].content };
+        }
     }
     return definition;
 }

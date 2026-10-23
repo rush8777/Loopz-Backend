@@ -1,8 +1,10 @@
+import { surveyPath } from "../lib/experiences/surveyLogic.js";
 import { DraftWriteError, saveExperienceDraft } from "../lib/experiences/draftWrites.js";
 import { sendEntitlementError } from "../lib/entitlements/http.js";
 import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
+import { runInTransaction } from "../db/transaction.js";
 import { experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, surveyResponses, trackedUsers } from "../db/schema.js";
 import { env } from "../config.js";
 import { signEditorAccessToken, verifyEditorAccessToken } from "../lib/auth.js";
@@ -78,7 +80,11 @@ function withoutPrivateTargeting(definition) {
     return presentation;
 }
 function surveyAnswerError(survey, answers, requireRequired) {
+    const path = surveyPath(survey, answers);
     const questions = survey.steps.flatMap(step => step.questions);
+    const permitted = new Set(path.flatMap(index => survey.steps[index].questions.map(question => question.id)));
+    if (requireRequired && Object.keys(answers).some(id => !permitted.has(id)))
+        return "answer_on_skipped_step";
     const byId = new Map(questions.map(question => [question.id, question]));
     for (const id of Object.keys(answers))
         if (!byId.has(id))
@@ -87,7 +93,7 @@ function surveyAnswerError(survey, answers, requireRequired) {
         const answer = answers[question.id];
         const missing = answer === undefined || answer === "" || (Array.isArray(answer) && answer.length === 0);
         if (missing) {
-            if (requireRequired && question.required)
+            if (requireRequired && permitted.has(question.id) && question.required)
                 return `required:${question.id}`;
             continue;
         }
@@ -111,6 +117,12 @@ function surveyAnswerError(survey, answers, requireRequired) {
             return `invalid_nps:${question.id}`;
     }
     return null;
+}
+/** Called inside a database write transaction; legacy SDK event posts share this dedupe. */
+async function recordSurveyEvent(db, identity, eventType, stepId, stepIndex) {
+    const [existing] = await db.select({ id: experienceEvents.id }).from(experienceEvents).where(and(eq(experienceEvents.impressionId, identity.impressionId), eq(experienceEvents.eventType, eventType), stepId ? eq(experienceEvents.stepId, stepId) : isNull(experienceEvents.stepId))).limit(1);
+    if (!existing)
+        await db.insert(experienceEvents).values({ ...identity, eventType, stepId: stepId ?? null, stepIndex: stepIndex ?? null, timestamp: new Date() });
 }
 async function validateEditorAccess(request, db) {
     const header = request.headers.authorization;
@@ -188,25 +200,27 @@ export function registerPublicExperienceRoutes(app, db) {
                 continue;
             if (!resumingGuide && target.pageRules.length > 0 && !matchesRules(pagePath, target.pageRules))
                 continue;
-            if (!resumingGuide && target.trigger.type === "custom_event" && query.data.trigger !== target.trigger.eventName)
+            const impressions = await db.select().from(experienceImpressions).where(and(eq(experienceImpressions.siteId, site.id), eq(experienceImpressions.experienceId, experience.id)));
+            const personImpressions = impressions.filter((item) => item.anonymousId === query.data.anonymousId || (trackedUserId && item.trackedUserId === trackedUserId));
+            const surveyImpression = experience.widgetType === "survey" ? personImpressions.find(item => item.versionId === version.id && item.sessionId === query.data.sessionId && item.anonymousId === query.data.anonymousId && !item.completedAt && !item.dismissedAt) : undefined;
+            const resuming = resumingGuide || Boolean(surveyImpression);
+            if (!resuming && target.trigger.type === "custom_event" && query.data.trigger !== target.trigger.eventName)
                 continue;
-            if (!resumingGuide && target.trigger.type === "page_load" && query.data.trigger)
+            if (!resuming && target.trigger.type === "page_load" && query.data.trigger)
                 continue;
-            if (!resumingGuide && target.trigger.type === "manual")
+            if (!resuming && target.trigger.type === "manual")
                 continue;
             if (!resumingGuide && !await matchesAudience(db, site.id, identityKey, target.audience))
                 continue;
-            const impressions = await db.select().from(experienceImpressions).where(and(eq(experienceImpressions.siteId, site.id), eq(experienceImpressions.experienceId, experience.id)));
-            const personImpressions = impressions.filter((item) => item.anonymousId === query.data.anonymousId || (trackedUserId && item.trackedUserId === trackedUserId));
-            if (!resumingGuide && target.frequency.mode === "once" && personImpressions.length > 0)
+            if (!resuming && target.frequency.mode === "once" && personImpressions.length > 0)
                 continue;
-            if (!resumingGuide && target.frequency.mode === "once_per_session" && personImpressions.some((item) => item.sessionId === query.data.sessionId))
+            if (!resuming && target.frequency.mode === "once_per_session" && personImpressions.some((item) => item.sessionId === query.data.sessionId))
                 continue;
-            if (!resumingGuide && target.frequency.maxImpressions && personImpressions.length >= target.frequency.maxImpressions)
+            if (!resuming && target.frequency.maxImpressions && personImpressions.length >= target.frequency.maxImpressions)
                 continue;
-            if (!resumingGuide && target.frequency.cooldownHours && personImpressions.some((item) => item.shownAt.getTime() > Date.now() - target.frequency.cooldownHours * 3600000))
+            if (!resuming && target.frequency.cooldownHours && personImpressions.some((item) => item.shownAt.getTime() > Date.now() - target.frequency.cooldownHours * 3600000))
                 continue;
-            const activeImpression = resumingGuide ? personImpressions.find(item => item.versionId === version.id && item.sessionId === query.data.sessionId && !item.dismissedAt && !item.completedAt) : undefined;
+            const activeImpression = surveyImpression ?? (resumingGuide ? personImpressions.find(item => item.versionId === version.id && item.sessionId === query.data.sessionId && !item.dismissedAt && !item.completedAt) : undefined);
             eligible.push({ id: experience.id, versionId: version.id, kind: experience.kind, widgetType: experience.widgetType, priority: target.priority, interruptPolicy: target.interruptPolicy ?? "queue", ...(activeImpression ? { impressionId: activeImpression.id } : {}), definition: withoutPrivateTargeting(definition) });
         }
         eligible.sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
@@ -227,7 +241,17 @@ export function registerPublicExperienceRoutes(app, db) {
         if (!experience || experience.siteId !== site.id || !version || version.experienceId !== experience.id || experience.publishedVersionId !== version.id) {
             return reply.code(404).send({ error: "experience_not_found" });
         }
-        const eventType = parsed.data.eventType ?? (parsed.data.event === "shown" ? "experience_shown" : parsed.data.event === "dismissed" ? (experience.kind === "guide" ? "guide_dismissed" : experience.widgetType === "survey" ? "survey_abandoned" : "widget_dismissed") : parsed.data.event === "completed" ? (experience.kind === "guide" ? "guide_completed" : experience.widgetType === "survey" ? "survey_submitted" : "widget_interacted") : "widget_interacted");
+        const eventType = experience.widgetType === "survey" && parsed.data.event === "completed" ? "survey_submitted" : experience.widgetType === "survey" && parsed.data.event === "dismissed" ? "survey_abandoned" : parsed.data.eventType ?? (parsed.data.event === "shown" ? "experience_shown" : parsed.data.event === "dismissed" ? (experience.kind === "guide" ? "guide_dismissed" : experience.widgetType === "survey" ? "survey_abandoned" : "widget_dismissed") : parsed.data.event === "completed" ? (experience.kind === "guide" ? "guide_completed" : experience.widgetType === "survey" ? "survey_submitted" : "widget_interacted") : "widget_interacted");
+        if (parsed.data.event === "shown" && experience.widgetType === "survey" && parsed.data.anonymousId && parsed.data.sessionId) {
+            const trackedUserId = await resolveTrackedUserId(db, site.id, parsed.data.trackedUserId);
+            const result = await runInTransaction(db, async (tx) => {
+                const [existing] = await tx.select().from(experienceImpressions).where(and(eq(experienceImpressions.siteId, site.id), eq(experienceImpressions.experienceId, experience.id), eq(experienceImpressions.versionId, version.id), eq(experienceImpressions.anonymousId, parsed.data.anonymousId), eq(experienceImpressions.sessionId, parsed.data.sessionId), isNull(experienceImpressions.completedAt), isNull(experienceImpressions.dismissedAt))).limit(1);
+                const impression = existing ?? (await tx.insert(experienceImpressions).values({ siteId: site.id, experienceId: experience.id, versionId: version.id, anonymousId: parsed.data.anonymousId, trackedUserId, sessionId: parsed.data.sessionId, pageViewId: parsed.data.pageViewId ?? null, shownAt: new Date() }).returning())[0];
+                await recordSurveyEvent(tx, { siteId: site.id, experienceId: experience.id, versionId: version.id, impressionId: impression.id, anonymousId: impression.anonymousId, trackedUserId: impression.trackedUserId, sessionId: impression.sessionId }, "experience_shown");
+                return { impressionId: impression.id, created: !existing };
+            });
+            return reply.code(result.created ? 201 : 200).send({ impressionId: result.impressionId });
+        }
         if (parsed.data.event === "shown") {
             const trackedUserId = await resolveTrackedUserId(db, site.id, parsed.data.trackedUserId);
             const [impression] = await db.insert(experienceImpressions).values({
@@ -248,6 +272,15 @@ export function registerPublicExperienceRoutes(app, db) {
         const [impression] = await db.select().from(experienceImpressions).where(eq(experienceImpressions.id, parsed.data.impressionId)).limit(1);
         if (!impression || impression.siteId !== site.id || impression.experienceId !== experience.id)
             return reply.code(404).send({ error: "impression_not_found" });
+        if (experience.widgetType === "survey" && eventType.startsWith("survey_")) {
+            if (impression.versionId !== version.id || impression.anonymousId !== parsed.data.anonymousId || impression.sessionId !== parsed.data.sessionId)
+                return reply.code(404).send({ error: "impression_not_found" });
+            const [response] = await db.select().from(surveyResponses).where(eq(surveyResponses.impressionId, impression.id)).limit(1);
+            if (!response || (eventType === "survey_submitted" && !response.submittedAt) || (eventType === "survey_abandoned" && !response.abandonedAt))
+                return reply.code(409).send({ error: "survey_state_not_saved" });
+            await runInTransaction(db, tx => recordSurveyEvent(tx, { siteId: site.id, experienceId: experience.id, versionId: version.id, impressionId: impression.id, anonymousId: impression.anonymousId, trackedUserId: impression.trackedUserId, sessionId: impression.sessionId }, eventType, parsed.data.stepId, parsed.data.stepIndex));
+            return reply.code(204).send();
+        }
         const now = new Date();
         const impressionUpdate = {
             ...(parsed.data.event === "dismissed" ? { dismissedAt: now } : {}),
@@ -288,13 +321,15 @@ export function registerPublicExperienceRoutes(app, db) {
         const checked = definitionSchemaFor("widget", "survey").safeParse(version.definition);
         if (!checked.success || !("content" in checked.data) || !checked.data.survey)
             return reply.code(404).send({ error: "survey_not_found" });
-        const [existing] = await db.select().from(surveyResponses).where(eq(surveyResponses.impressionId, impression.id)).limit(1);
-        if (existing)
-            return reply.send({ responseId: existing.id, currentStepId: existing.currentStepId, answers: existing.answers, submittedAt: existing.submittedAt?.toISOString() ?? null, abandonedAt: existing.abandonedAt?.toISOString() ?? null });
-        const now = new Date();
-        const firstStepId = checked.data.survey.steps[0].id;
-        const [created] = await db.insert(surveyResponses).values({ siteId: site.id, experienceId: experience.id, versionId: version.id, impressionId: impression.id, anonymousId: parsed.data.anonymousId, trackedUserId, sessionId: parsed.data.sessionId, currentStepId: firstStepId, answers: {}, startedAt: now, updatedAt: now }).returning();
-        return reply.code(201).send({ responseId: created.id, currentStepId: created.currentStepId, answers: created.answers, submittedAt: null, abandonedAt: null });
+        const survey = checked.data.survey;
+        const result = await runInTransaction(db, async (tx) => {
+            const [created] = await tx.insert(surveyResponses).values({ siteId: site.id, experienceId: experience.id, versionId: version.id, impressionId: impression.id, anonymousId: parsed.data.anonymousId, trackedUserId, sessionId: parsed.data.sessionId, currentStepId: survey.steps[0].id, answers: {}, startedAt: new Date(), updatedAt: new Date() }).onConflictDoNothing({ target: surveyResponses.impressionId }).returning();
+            const response = created ?? (await tx.select().from(surveyResponses).where(eq(surveyResponses.impressionId, impression.id)).limit(1))[0];
+            await recordSurveyEvent(tx, { siteId: site.id, experienceId: experience.id, versionId: version.id, impressionId: impression.id, anonymousId: impression.anonymousId, trackedUserId: impression.trackedUserId, sessionId: impression.sessionId }, "survey_started");
+            return { response, created: Boolean(created) };
+        });
+        const response = result.response;
+        return reply.code(result.created ? 201 : 200).send({ responseId: response.id, currentStepId: response.currentStepId, answers: response.answers, submittedAt: response.submittedAt?.toISOString() ?? null, abandonedAt: response.abandonedAt?.toISOString() ?? null });
     });
     app.patch("/public/sites/:siteId/survey-responses/:responseId", async (request, reply) => {
         const { siteId, responseId } = request.params;
@@ -318,11 +353,38 @@ export function registerPublicExperienceRoutes(app, db) {
             return reply.code(409).send({ error: "invalid_survey_definition" });
         if (parsed.data.currentStepId && !survey.steps.some(step => step.id === parsed.data.currentStepId))
             return reply.code(400).send({ error: "invalid_step_id" });
+        const path = surveyPath(survey, parsed.data.answers);
+        const current = parsed.data.currentStepId ?? response.currentStepId;
+        if (!path.some(index => survey.steps[index].id === current) || (parsed.data.submitted && survey.steps[path.at(-1)].id !== current))
+            return reply.code(400).send({ error: "invalid_response_path" });
+        const currentIndex = survey.steps.findIndex(step => step.id === current);
+        const priorRequiredMissing = path.filter(index => index < currentIndex).some(index => survey.steps[index].questions.some(question => question.required && (parsed.data.answers[question.id] === undefined || parsed.data.answers[question.id] === "" || (Array.isArray(parsed.data.answers[question.id]) && !parsed.data.answers[question.id].length))));
+        if (!parsed.data.abandoned && priorRequiredMissing)
+            return reply.code(400).send({ error: "required_prior_question" });
         const answerError = surveyAnswerError(survey, parsed.data.answers, parsed.data.submitted === true);
         if (answerError)
             return reply.code(400).send({ error: "invalid_answers", detail: answerError });
-        const now = new Date();
-        await db.update(surveyResponses).set({ answers: parsed.data.answers, currentStepId: parsed.data.currentStepId ?? response.currentStepId, updatedAt: now, ...(parsed.data.submitted ? { submittedAt: response.submittedAt ?? now, abandonedAt: null } : {}), ...(parsed.data.abandoned && !response.submittedAt ? { abandonedAt: response.abandonedAt ?? now } : {}) }).where(eq(surveyResponses.id, response.id));
+        const status = await runInTransaction(db, async (tx) => {
+            const [fresh] = await tx.select().from(surveyResponses).where(eq(surveyResponses.id, response.id)).limit(1);
+            if (fresh.submittedAt)
+                return parsed.data.submitted && sameJson(fresh.answers, parsed.data.answers) ? 204 : 409;
+            const now = new Date();
+            await tx.update(surveyResponses).set({ answers: parsed.data.answers, currentStepId: parsed.data.currentStepId ?? fresh.currentStepId, updatedAt: now, ...(parsed.data.submitted ? { submittedAt: now, abandonedAt: null } : {}), ...(parsed.data.abandoned ? { abandonedAt: fresh.abandonedAt ?? now } : { abandonedAt: null }) }).where(eq(surveyResponses.id, fresh.id));
+            const identity = { siteId: fresh.siteId, experienceId: fresh.experienceId, versionId: fresh.versionId, impressionId: fresh.impressionId, anonymousId: fresh.anonymousId, trackedUserId: fresh.trackedUserId, sessionId: fresh.sessionId };
+            const from = survey.steps.findIndex(step => step.id === fresh.currentStepId);
+            const to = survey.steps.findIndex(step => step.id === parsed.data.currentStepId);
+            if (to > from && from >= 0)
+                await recordSurveyEvent(tx, identity, "survey_step_completed", survey.steps[from].id, from);
+            if (parsed.data.submitted || parsed.data.abandoned) {
+                if (parsed.data.submitted && to >= 0)
+                    await recordSurveyEvent(tx, identity, "survey_step_completed", survey.steps[to].id, to);
+                await recordSurveyEvent(tx, identity, parsed.data.submitted ? "survey_submitted" : "survey_abandoned");
+                await tx.update(experienceImpressions).set(parsed.data.submitted ? { completedAt: now } : { dismissedAt: fresh.abandonedAt ?? now }).where(eq(experienceImpressions.id, fresh.impressionId));
+            }
+            return 204;
+        });
+        if (status === 409)
+            return reply.code(409).send({ error: "survey_already_submitted" });
         return reply.code(204).send();
     });
     app.post("/public/experience-editor/exchange", async (request, reply) => {

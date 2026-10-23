@@ -198,9 +198,9 @@ describe("visual experiences", () => {
       headers: authorization,
       payload: {
         kind: "widget",
-        widgetType: "survey",
+        widgetType: "hotspot",
         builderMode: "onsite",
-        name: "Unsupported survey",
+        name: "Unsupported hotspot",
         buildUrl: "https://onsite-mode.example.com/home",
         template: "blank",
         useBuildPageAsTarget: false,

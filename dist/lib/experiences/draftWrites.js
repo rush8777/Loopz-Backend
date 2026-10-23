@@ -15,7 +15,7 @@ function siteOrigin(domain) { try {
 catch {
     return null;
 } }
-export const ONSITE_WIDGET_TYPES = new Set(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "banner"]);
+export const ONSITE_WIDGET_TYPES = new Set(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "banner", "survey"]);
 export function onsiteCompatible(kind, widgetType) { return kind === "guide" || (kind === "widget" && !!widgetType && ONSITE_WIDGET_TYPES.has(widgetType)); }
 export class DraftWriteError extends Error {
     status;
@@ -80,9 +80,10 @@ export async function saveExperienceDraft(db, site, experience, draft, candidate
         throw new DraftWriteError(400, "invalid_definition");
     const definition = result.data;
     if (experience.builderMode === "onsite" && !isChecklistDefinition(definition)) {
-        const parts = "steps" in definition ? definition.steps : [definition];
+        const survey = "survey" in definition ? definition.survey : undefined;
+        const parts = "steps" in definition ? definition.steps : survey?.steps ?? [definition];
         if (parts.some(part => !part.builder || (rawOnsiteDocument(part.builder) !== undefined
-            ? validateCompiledOnsiteBuilder(part.builder, part.content, "pattern" in part ? part.pattern ?? "anchored_card" : experience.widgetType, "pattern" in part).length > 0
+            ? validateCompiledOnsiteBuilder(part.builder, part.content, "pattern" in part ? part.pattern ?? "anchored_card" : experience.widgetType, "pattern" in part, survey && "questions" in part ? { questions: part.questions, submitLabel: survey.submitLabel } : undefined).length > 0
             : !onsiteProjectionIsConsistent(part.builder.html, part.content))))
             throw new DraftWriteError(400, "inconsistent_onsite_content");
     }

@@ -162,7 +162,9 @@ export type SurveyQuestion =
   | { id: string; type: "long_text"; label: string; required?: boolean; placeholder?: string; maxLength?: number }
   | { id: string; type: "rating"; label: string; required?: boolean; min: number; max: number }
   | { id: string; type: "nps"; label: string; required?: boolean };
-export interface SurveyStep { id: string; content: { heading: string; body: string }; questions: SurveyQuestion[]; builder?: WidgetBuilderState; size?: ExperienceSize; behavior?: { layer?: ExperienceLayer } }
+export interface SurveyBranchRule { questionId: string; operator: "equals" | "not_equals" | "includes" | "gte" | "lte" | "answered"; value?: string | number; nextStepId: string }
+export interface SurveyBranching { rules: SurveyBranchRule[]; defaultNextStepId?: string }
+export interface SurveyStep { branching?: SurveyBranching; id: string; content: { heading: string; body: string }; questions: SurveyQuestion[]; builder?: WidgetBuilderState; size?: ExperienceSize; behavior?: { layer?: ExperienceLayer } }
 export interface SurveyConfig { steps: SurveyStep[]; showProgress: boolean; allowBack: boolean; submitLabel: string }
 export type SurveyAnswers = Record<string, string | string[] | number>;
 

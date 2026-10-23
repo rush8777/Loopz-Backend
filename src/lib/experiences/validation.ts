@@ -1,3 +1,4 @@
+import { surveyBranchErrors } from "./surveyLogic.js";
 import { z } from "zod";
 import { builderCssIsSafe, builderHtmlIsSafe } from "./builderContentContract.js";
 import { pageRuleSchema } from "../pages/validation.js";
@@ -143,6 +144,7 @@ export const surveyQuestionSchema = z.discriminatedUnion("type", [
   z.object({ ...surveyQuestionBase, type: z.literal("nps") }).strict(),
 ]);
 const surveyStepSchema = z.object({
+  branching: z.object({ rules: z.array(z.object({ questionId: surveyIdSchema, operator: z.enum(["equals", "not_equals", "includes", "gte", "lte", "answered"]), value: z.union([z.string().max(10000), z.number().int()]).optional(), nextStepId: surveyIdSchema }).strict()).max(10), defaultNextStepId: surveyIdSchema.optional() }).strict().optional(),
   id: surveyIdSchema,
   content: z.object({ heading: z.string().trim().max(500), body: z.string().trim().max(2000) }).strict(),
   questions: z.array(surveyQuestionSchema).max(20),
@@ -177,10 +179,12 @@ export const surveyConfigSchema = z.object({
   allowBack: z.boolean(),
   submitLabel: z.string().trim().min(1).max(80),
 }).strict().superRefine((survey, ctx) => {
+  surveyBranchErrors(survey).forEach(message => ctx.addIssue({ code: "custom", path: ["steps"], message }));
   const stepIds = new Set<string>(); const questionIds = new Set<string>();
   survey.steps.forEach((step, stepIndex) => {
     if (stepIds.has(step.id)) ctx.addIssue({ code: "custom", path: ["steps", stepIndex, "id"], message: "step IDs must be unique" }); stepIds.add(step.id);
     step.questions.forEach((question, questionIndex) => { if (questionIds.has(question.id)) ctx.addIssue({ code: "custom", path: ["steps", stepIndex, "questions", questionIndex, "id"], message: "question IDs must be unique across the survey" }); questionIds.add(question.id); });
+    if (step.builder && rawOnsiteDocument(step.builder) !== undefined) validateCompiledOnsiteBuilder(step.builder, step.content, "survey", false, { questions: step.questions, submitLabel: survey.submitLabel }).forEach(message => ctx.addIssue({ code: "custom", path: ["steps", stepIndex, "builder"], message }));
   });
 });
 

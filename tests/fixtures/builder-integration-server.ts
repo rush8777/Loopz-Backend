@@ -7,7 +7,7 @@ import { env } from '../../src/config.js';
 import { buildApp } from '../../src/app.js';
 import { createDb, closeDb } from '../../src/db/client.js';
 import { runMigrations } from '../../src/db/migrate.js';
-import { experienceEvents, experienceImpressions, experienceEditorSessions } from '../../src/db/schema.js';
+import { surveyResponses, experienceEvents, experienceImpressions, experienceEditorSessions } from '../../src/db/schema.js';
 if (env.NODE_ENV !== 'test') throw new Error('The isolated builder fixture requires NODE_ENV=test');
 const directory = mkdtempSync(join(tmpdir(), 'movcues-builder-integration-'));
 const db = createDb(`file:${join(directory, 'test.db')}`);
@@ -16,7 +16,7 @@ const app = await buildApp(db);
 app.get('/__test__/ready', async () => ({ isolated: true }));
 app.get('/__test__/analytics/:experienceId', async request => {
   const { experienceId } = request.params as { experienceId: string };
-  return { events: await db.select().from(experienceEvents).where(eq(experienceEvents.experienceId, experienceId)), impressions: await db.select().from(experienceImpressions).where(eq(experienceImpressions.experienceId, experienceId)) };
+  return { responses: await db.select().from(surveyResponses).where(eq(surveyResponses.experienceId, experienceId)), events: await db.select().from(experienceEvents).where(eq(experienceEvents.experienceId, experienceId)), impressions: await db.select().from(experienceImpressions).where(eq(experienceImpressions.experienceId, experienceId)) };
 });
 app.post('/__test__/expire/:experienceId', async request => {
   const { experienceId } = request.params as { experienceId: string };

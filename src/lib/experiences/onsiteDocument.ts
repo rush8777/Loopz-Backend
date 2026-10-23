@@ -1,8 +1,10 @@
-import type { ExperienceAction, ExperienceContent, WidgetBuilderState, WidgetType } from "./types.js";
+import { surveyQuestionMarkup, surveyControlsMarkup, surveyQuestionErrors, SURVEY_CELL_CSS, type OnsiteSurveyContext } from "./surveyMarkup.js";
+import type { ExperienceAction, ExperienceContent, SurveyQuestion, WidgetBuilderState, WidgetType } from "./types.js";
 import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
 import { builderImageUrlIsSafe, builderLinkUrlIsSafe } from "./builderContentContract.js";
 
 export const ONSITE_SCHEMA_VERSION = 2 as const;
+export const ONSITE_SURVEY_SCHEMA_VERSION = 3 as const;
 export const ONSITE_LIMITS = {
   maxDepth: 8,
   maxNodes: 120,
@@ -42,6 +44,8 @@ export type OnsiteButtonAction =
   | { id: string; type: "open_url"; url: string }
   | { id: string; type: "track_event"; eventName: string };
 export type OnsiteBlock =
+  | (BlockBase & { type: "question"; questionId: string; fontSize: number; color?: string })
+  | (BlockBase & { type: "survey_controls" })
   | (BlockBase & { type: "heading"; html: string; level: 1 | 2 | 3 | 4; fontSize: number; weight: 400 | 500 | 600 | 700; color?: string; lineHeight?: number })
   | (BlockBase & { type: "text"; html: string; fontSize: number; weight: 400 | 500 | 600 | 700; color?: string; lineHeight?: number })
   | (BlockBase & { type: "button"; label: string; action: OnsiteButtonAction; variant: "primary" | "secondary" | "outline"; background?: string; color?: string; radius: number; paddingX: number; paddingY: number; width: "hug" | "full" })
@@ -50,7 +54,7 @@ export type OnsiteBlock =
   | (BlockBase & { type: "spacer"; size: number })
   | (BlockBase & { type: "icon"; icon: OnsiteIcon; size: number; color?: string });
 export type OnsiteIcon = "check" | "star" | "info" | "warning" | "sparkles" | "arrow" | "heart" | "rocket";
-export interface OnsiteDocument { schemaVersion: 2; id: string; root: OnsiteCell }
+export interface OnsiteDocument { schemaVersion: 2 | 3; id: string; root: OnsiteCell }
 export interface CompiledOnsiteDocument { html: string; css: string; content: ExperienceContent; actionBindings: Record<string, OnsiteButtonAction> }
 export interface OnsiteValidationResult { valid: boolean; errors: string[] }
 
@@ -60,7 +64,7 @@ const SAFE_INLINE_TAGS = new Set(["BR", "STRONG", "EM", "U", "A", "UL", "OL", "L
 const ICONS: Record<OnsiteIcon, string> = { check: "✓", star: "★", info: "ℹ", warning: "⚠", sparkles: "✦", arrow: "→", heart: "♥", rocket: "🚀" };
 
 let idSequence = 0;
-export function onsiteId(prefix: "document" | "cell" | "block" | "action" = "cell"): string {
+export function onsiteId(prefix: "document" | "cell" | "block" | "action" | "question" | "option" | "step" = "cell"): string {
   idSequence = (idSequence + 1) % 0xffff;
   const random = typeof crypto !== "undefined" && "getRandomValues" in crypto
     ? Array.from(crypto.getRandomValues(new Uint32Array(2))).map(value => value.toString(36)).join("")
@@ -74,6 +78,8 @@ export function emptyCell(block?: OnsiteBlock): OnsiteCell {
 
 export function createBlock(type: OnsiteBlock["type"], guide = false): OnsiteBlock {
   const id = onsiteId("block");
+  if (type === "question") throw new Error("Insert a canonical Survey question first.");
+  if (type === "survey_controls") return { id, type };
   if (type === "heading") return { id, type, html: "A clear heading", level: 2, fontSize: 24, weight: 600, lineHeight: 1.25 };
   if (type === "text") return { id, type, html: "Add supporting text for your visitors.", fontSize: 15, weight: 400, lineHeight: 1.5 };
   if (type === "button") return { id, type, label: guide ? "Next" : "Got it", action: { id: onsiteId("action"), type: guide ? "next_step" : "dismiss" }, variant: "primary", radius: 8, paddingX: 16, paddingY: 9, width: "hug", align: "right" };
@@ -90,6 +96,40 @@ export function createOnsiteDocument(guide = false): OnsiteDocument {
   return { schemaVersion: 2, id: onsiteId("document"), root: { ...emptyCell(), direction: "column", gap: 12, padding: { top: 20, right: 20, bottom: 20, left: 20 }, children: [heading, text, button] } };
 }
 
+export function createOnsiteSurveyDocument(questions: SurveyQuestion[], content?: ExperienceContent): OnsiteDocument {
+  const document = createOnsiteDocument(); document.schemaVersion = 3;
+  const heading = document.root.children![0].block!; if (heading.type === "heading" && content) heading.html = escapeText(content.heading);
+  const body = document.root.children![1].block!; if (body.type === "text" && content) body.html = escapeText(content.body);
+  document.root.children = [...document.root.children!.slice(0, 2), ...questions.map(question => emptyCell({ id: onsiteId("block"), type: "question", questionId: question.id, fontSize: 14 })), emptyCell(createBlock("survey_controls"))];
+  document.root.children.forEach(cell => { cell.sizing = { mode: "hug" }; });
+  return document;
+}
+
+export function validateOnsiteSurveyDocument(document: OnsiteDocument, context: OnsiteSurveyContext): string[] {
+  const errors = surveyQuestionErrors(context.questions), counts = new Map<string, number>();
+  const known = new Set(context.questions.map(question => question.id)); const blocks = listBlocks(document.root);
+  for (const block of blocks) if (block.type === "question") {
+    counts.set(block.questionId, (counts.get(block.questionId) ?? 0) + 1);
+    if (!known.has(block.questionId)) errors.push(`Orphaned question reference: ${block.questionId}.`);
+  }
+  for (const question of context.questions) if (counts.get(question.id) !== 1) errors.push(`Question ${question.id} must be referenced exactly once.`);
+  if (blocks.filter(block => block.type === "survey_controls").length !== 1) errors.push("Survey cells need exactly one navigation/progress block.");
+  return errors;
+}
+
+export function duplicateSurveyCell(document: OnsiteDocument, questions: SurveyQuestion[], id: string): { document: OnsiteDocument; questions: SurveyQuestion[]; cellId: string } | null {
+  const candidate = cloneOnsite(document), nextQuestions = cloneOnsite(questions);
+  const cellId = duplicateCell(candidate, id); if (!cellId) return null;
+  for (const block of listBlocks(findCell(candidate, cellId)!)) if (block.type === "question") {
+    const source = questions.find(question => question.id === block.questionId); if (!source) return null;
+    const copy = cloneOnsite(source); copy.id = onsiteId("question");
+    if (copy.type === "single_choice" || copy.type === "multiple_choice") copy.options.forEach(option => { option.id = onsiteId("option"); });
+    block.questionId = copy.id; nextQuestions.push(copy);
+  }
+  if (!validateOnsiteDocument(candidate).valid || validateOnsiteSurveyDocument(candidate, { questions: nextQuestions }).length) return null;
+  return { document: candidate, questions: nextQuestions, cellId };
+}
+
 export function onsiteDocumentFromBuilder(builder?: WidgetBuilderState): OnsiteDocument | null {
   const movcues = builder?.projectData?.movcues;
   if (!movcues || typeof movcues !== "object") return null;
@@ -97,10 +137,10 @@ export function onsiteDocumentFromBuilder(builder?: WidgetBuilderState): OnsiteD
   return isOnsiteDocument(document) ? document : null;
 }
 
-export function applyOnsiteDocument(builder: WidgetBuilderState, document: OnsiteDocument, widgetType: WidgetType | "anchored_card" | "modal"): CompiledOnsiteDocument {
-  const compiled = compileOnsiteDocument(document, widgetType);
+export function applyOnsiteDocument(builder: WidgetBuilderState, document: OnsiteDocument, widgetType: WidgetType | "anchored_card" | "modal", survey?: OnsiteSurveyContext): CompiledOnsiteDocument {
+  const compiled = compileOnsiteDocument(document, widgetType, survey);
   builder.version = 1;
-  builder.projectData = { ...builder.projectData, movcues: { ...asRecord(builder.projectData.movcues), authoringSurface: "onsite", schemaVersion: 2, onsiteDocument: document, actionBindings: compiled.actionBindings } };
+  builder.projectData = { ...builder.projectData, movcues: { ...asRecord(builder.projectData.movcues), authoringSurface: "onsite", schemaVersion: document.schemaVersion, onsiteDocument: document, actionBindings: compiled.actionBindings } };
   builder.html = compiled.html;
   builder.css = compiled.css;
   return compiled;
@@ -111,10 +151,12 @@ export function rawOnsiteDocument(builder?: WidgetBuilderState): unknown {
   return movcues && typeof movcues === "object" ? (movcues as Record<string, unknown>).onsiteDocument : undefined;
 }
 
-export function validateCompiledOnsiteBuilder(builder: WidgetBuilderState, content: ExperienceContent, widgetType: WidgetType | "anchored_card" | "modal", guide: boolean): string[] {
+export function validateCompiledOnsiteBuilder(builder: WidgetBuilderState, content: ExperienceContent, widgetType: WidgetType | "anchored_card" | "modal", guide: boolean, survey?: OnsiteSurveyContext): string[] {
   const raw = rawOnsiteDocument(builder); if (raw === undefined) return [];
   const result = validateOnsiteDocument(raw); if (!result.valid) return result.errors;
-  const document = raw as OnsiteDocument; const compiled = compileOnsiteDocument(document, widgetType); const errors: string[] = [];
+  const document = raw as OnsiteDocument; let compiled: CompiledOnsiteDocument;
+  try { compiled = compileOnsiteDocument(document, widgetType, survey); } catch (error) { return [error instanceof Error ? error.message : "Invalid Survey document."]; }
+  const errors: string[] = [];
   if (builder.html !== compiled.html) errors.push("Compiled on-site HTML does not match the structured document.");
   if (builder.css !== compiled.css) errors.push("Compiled on-site CSS does not match the structured document.");
   const movcues = builder.projectData.movcues as Record<string, unknown>;
@@ -124,9 +166,13 @@ export function validateCompiledOnsiteBuilder(builder: WidgetBuilderState, conte
   return errors;
 }
 
-export function compileOnsiteDocument(document: OnsiteDocument, widgetType: string): CompiledOnsiteDocument {
+export function compileOnsiteDocument(document: OnsiteDocument, widgetType: string, survey?: OnsiteSurveyContext): CompiledOnsiteDocument {
   const validation = validateOnsiteDocument(document);
   if (!validation.valid) throw new Error(validation.errors.join(" "));
+  if (document.schemaVersion === 3) {
+    if (widgetType !== "survey" || !survey) throw new Error("Version 3 requires a Survey question context.");
+    const errors = validateOnsiteSurveyDocument(document, survey); if (errors.length) throw new Error(errors.join(" "));
+  } else if (survey) throw new Error("Survey cells require document version 3.");
   const css: string[] = [
     ".movcues-widget{box-sizing:border-box;width:100%;max-width:100%;min-width:0;overflow-wrap:anywhere;background:var(--movcues-bg);color:var(--movcues-fg)}",
     ".movcues-widget *{box-sizing:border-box}",
@@ -139,7 +185,8 @@ export function compileOnsiteDocument(document: OnsiteDocument, widgetType: stri
     ".movcues-widget .movcues-button--outline{background:transparent;color:inherit;border:1px solid currentColor}",
     ".movcues-widget .movcues-block--full{width:100%}",
   ];
-  const html = renderCell(document.root, css, 0);
+  if (document.schemaVersion === 3) css.push(SURVEY_CELL_CSS);
+  const html = renderCell(document.root, css, 0, survey);
   css.push("@media(max-width:480px){.movcues-widget [data-movcues-responsive-stack=\"true\"]{flex-direction:column!important}.movcues-widget [data-movcues-sizing=\"fixed\"]{max-width:100%!important}.movcues-widget .movcues-button{min-height:40px}.movcues-widget img{height:auto!important}}");
   const blocks = listBlocks(document.root);
   const firstHeading = blocks.find(block => block.type === "heading") as Extract<OnsiteBlock, { type: "heading" }> | undefined;
@@ -153,21 +200,23 @@ export function compileOnsiteDocument(document: OnsiteDocument, widgetType: stri
     ...(legacy[0] ? { primaryAction: legacy[0] as ExperienceAction } : {}),
     ...(legacy[1]?.type === "dismiss" ? { secondaryAction: { label: legacy[1].label, type: "dismiss" as const } } : {}),
   };
-  return { html: `<section class="movcues-widget movcues-widget--${escapeAttribute(widgetType)}" data-movcues-widget-type="${escapeAttribute(widgetType)}" data-movcues-document-version="2">${html}</section>`, css: css.join(""), content, actionBindings };
+  return { html: `<section class="movcues-widget movcues-widget--${escapeAttribute(widgetType)}" data-movcues-widget-type="${escapeAttribute(widgetType)}" data-movcues-document-version="${document.schemaVersion}">${html}</section>`, css: css.join(""), content, actionBindings };
 }
 
-function renderCell(cell: OnsiteCell, css: string[], depth: number): string {
+function renderCell(cell: OnsiteCell, css: string[], depth: number, survey?: OnsiteSurveyContext): string {
   const selector = `.movcues-widget [data-movcues-node-id="${cell.id}"]`;
   const sizing = cell.sizing.mode === "flexible" ? `flex:${round(cell.sizing.weight)} 1 0` : cell.sizing.mode === "hug" ? "flex:0 0 auto" : `flex:0 1 ${cell.sizing.value}px`;
   const style = cell.style ?? {};
   css.push(`${selector}{${sizing};flex-direction:${cell.direction};align-items:${cell.align};justify-content:${cell.justify};gap:${cell.gap}px;padding:${cell.padding.top}px ${cell.padding.right}px ${cell.padding.bottom}px ${cell.padding.left}px;${style.background ? `background:${style.background};` : ""}${style.borderWidth ? `border:${style.borderWidth}px solid ${style.borderColor ?? "#dbe2ea"};` : ""}${style.borderRadius ? `border-radius:${style.borderRadius}px;` : ""}}`);
-  const children = cell.children?.map(child => renderCell(child, css, depth + 1)).join("") ?? (cell.block ? renderBlock(cell.block, css) : "");
+  const children = cell.children?.map(child => renderCell(child, css, depth + 1, survey)).join("") ?? (cell.block ? renderBlock(cell.block, css, survey) : "");
   return `<div class="movcues-cell" data-movcues-node-id="${cell.id}" data-movcues-sizing="${cell.sizing.mode}"${cell.responsiveStack ? ' data-movcues-responsive-stack="true"' : ""}>${children}</div>`;
 }
 
-function renderBlock(block: OnsiteBlock, css: string[]): string {
+function renderBlock(block: OnsiteBlock, css: string[], survey?: OnsiteSurveyContext): string {
   const selector = `.movcues-widget [data-movcues-block-id="${block.id}"]`;
   const align = block.align ?? "left";
+  if (block.type === "question") { css.push(`${selector}{font:${block.fontSize}px/1.5 ui-sans-serif,system-ui,sans-serif;text-align:${align};${block.color ? `color:${block.color};` : ""}}`); return surveyQuestionMarkup(survey!.questions.find(question => question.id === block.questionId)!, block.id); }
+  if (block.type === "survey_controls") return surveyControlsMarkup(block.id, survey?.submitLabel ?? "Submit");
   if (block.type === "heading") { css.push(`${selector}{font:${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.25} ui-sans-serif,system-ui,sans-serif;text-align:${align};${block.color ? `color:${block.color};` : ""}}`); return `<h${block.level} class="movcues-block movcues-heading" data-movcues-block-id="${block.id}" data-movcues-content="heading">${sanitizeRichText(block.html)}</h${block.level}>`; }
   if (block.type === "text") { css.push(`${selector}{font:${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.5} ui-sans-serif,system-ui,sans-serif;text-align:${align};white-space:pre-wrap;${block.color ? `color:${block.color};` : ""}}`); return `<div class="movcues-block movcues-text" data-movcues-block-id="${block.id}" data-movcues-content="body">${sanitizeRichText(block.html)}</div>`; }
   if (block.type === "button") { css.push(`${selector}{align-self:${align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center"};padding:${block.paddingY}px ${block.paddingX}px;border-radius:${block.radius}px;${block.width === "full" ? "width:100%;" : ""}${block.background ? `background:${block.background};` : ""}${block.color ? `color:${block.color};` : ""}}`); return `<button type="button" class="movcues-block movcues-button movcues-button--${block.variant}${block.width === "full" ? " movcues-block--full" : ""}" data-movcues-block-id="${block.id}" data-movcues-action-id="${block.action.id}">${escapeText(block.label)}</button>`; }
@@ -179,7 +228,7 @@ function renderBlock(block: OnsiteBlock, css: string[]): string {
 
 export function validateOnsiteDocument(value: unknown): OnsiteValidationResult {
   const errors: string[] = [];
-  if (!isOnsiteDocumentShape(value)) return { valid: false, errors: ["On-site document must use schemaVersion 2 and contain one root cell."] };
+  if (!isOnsiteDocumentShape(value)) return { valid: false, errors: ["On-site document must use schemaVersion 2 or 3 and contain one root cell."] };
   unexpectedKeys(value as unknown as Record<string, unknown>, ["schemaVersion", "id", "root"], "Document", errors);
   const ids = new Set<string>(); const seen = new Set<object>(); let count = 0;
   const addId = (id: unknown, path: string) => { if (typeof id !== "string" || !ID_PATTERN.test(id)) errors.push(`${path} has an invalid ID.`); else if (ids.has(id)) errors.push(`${path} reuses ID ${id}.`); else ids.add(id); };
@@ -203,6 +252,7 @@ export function validateOnsiteDocument(value: unknown): OnsiteValidationResult {
     if (cell.style) { unexpectedKeys(cell.style as unknown as Record<string, unknown>, ["background", "borderColor", "borderWidth", "borderRadius"], `${path} style`, errors); if (cell.style.background && !COLOR_PATTERN.test(cell.style.background)) errors.push(`${path} background is not supported.`); if (cell.style.borderColor && !COLOR_PATTERN.test(cell.style.borderColor)) errors.push(`${path} border color is not supported.`); if (cell.style.borderWidth !== undefined) number(cell.style.borderWidth, 0, 16, `${path} border width`); if (cell.style.borderRadius !== undefined) number(cell.style.borderRadius, 0, 100, `${path} border radius`); }
     if (cell.children && cell.block) errors.push(`${path} cannot contain both children and a block.`);
     if (cell.children) { if (!cell.children.length) errors.push(`${path} cannot contain an empty children list.`); cell.children.forEach((child, index) => visit(child, depth + 1, `${path} > cell ${index + 1}`)); }
+    if (cell.block && value.schemaVersion === 2 && ["question", "survey_controls"].includes(cell.block.type)) errors.push("Survey blocks require schemaVersion 3.");
     if (cell.block) validateBlock(cell.block, `${path} block`, addId, number, errors);
   };
   try { visit(value.root, 1, "Root cell"); } catch { errors.push("Document contains malformed cell or block values."); }
@@ -213,11 +263,12 @@ export function validateOnsiteDocument(value: unknown): OnsiteValidationResult {
 
 function validateBlock(block: OnsiteBlock, path: string, addId: (id: unknown, path: string) => void, number: (value: unknown, min: number, max: number, path: string) => void, errors: string[]): void {
   addId(block.id, path);
-  const base = ["id", "type", "align"]; const keys: Record<OnsiteBlock["type"], string[]> = { heading: [...base, "html", "level", "fontSize", "weight", "color", "lineHeight"], text: [...base, "html", "fontSize", "weight", "color", "lineHeight"], button: [...base, "label", "action", "variant", "background", "color", "radius", "paddingX", "paddingY", "width"], image: [...base, "src", "alt", "fit", "width", "height", "radius"], divider: [...base, "orientation", "thickness", "color"], spacer: [...base, "size"], icon: [...base, "icon", "size", "color"] };
+  const base = ["id", "type", "align"]; const keys: Record<OnsiteBlock["type"], string[]> = { question: [...base, "questionId", "fontSize", "color"], survey_controls: base, heading: [...base, "html", "level", "fontSize", "weight", "color", "lineHeight"], text: [...base, "html", "fontSize", "weight", "color", "lineHeight"], button: [...base, "label", "action", "variant", "background", "color", "radius", "paddingX", "paddingY", "width"], image: [...base, "src", "alt", "fit", "width", "height", "radius"], divider: [...base, "orientation", "thickness", "color"], spacer: [...base, "size"], icon: [...base, "icon", "size", "color"] };
   if (!Object.prototype.hasOwnProperty.call(keys, block.type)) { errors.push(`${path} has an unsupported block type.`); return; }
   unexpectedKeys(block as unknown as Record<string, unknown>, keys[block.type], path, errors);
   if (block.align !== undefined && !["left", "center", "right"].includes(block.align)) errors.push(`${path} has an invalid alignment.`);
-  if (block.type === "heading" || block.type === "text") {
+  if (block.type === "question") { if (typeof block.questionId !== "string" || !block.questionId.trim() || block.questionId.length > 64) errors.push(`${path} must reference a stable question ID.`); number(block.fontSize, 10, 36, `${path} font size`); }
+  else if (block.type === "heading" || block.type === "text") {
     if (typeof block.html !== "string" || block.html.length > ONSITE_LIMITS.maxRichText || sanitizeRichText(block.html) !== block.html) errors.push(`${path} contains unsupported or unsafe rich text.`);
     number(block.fontSize, 10, 72, `${path} font size`); number(block.lineHeight ?? 1.4, 0.9, 3, `${path} line height`);
     if (![400, 500, 600, 700].includes(block.weight)) errors.push(`${path} has an invalid font weight.`); if (block.type === "heading" && ![1, 2, 3, 4].includes(block.level)) errors.push(`${path} has an invalid heading level.`);
@@ -323,7 +374,7 @@ function richTextToPlain(input: string): string {
   return read(fragment).trim();
 }
 function isOnsiteDocument(value: unknown): value is OnsiteDocument { return isOnsiteDocumentShape(value) && validateOnsiteDocument(value).valid; }
-function isOnsiteDocumentShape(value: unknown): value is OnsiteDocument { return !!value && typeof value === "object" && (value as OnsiteDocument).schemaVersion === 2 && !!(value as OnsiteDocument).root && (value as OnsiteDocument).root.type === "cell"; }
+function isOnsiteDocumentShape(value: unknown): value is OnsiteDocument { return !!value && typeof value === "object" && [2, 3].includes((value as OnsiteDocument).schemaVersion) && !!(value as OnsiteDocument).root && (value as OnsiteDocument).root.type === "cell"; }
 function asRecord(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function escapeText(value: string): string { return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 function escapeAttribute(value: string): string { return escapeText(value).replace(/"/g, "&quot;"); }
