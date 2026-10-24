@@ -348,7 +348,11 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
     const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, session.experienceId));
     const draft = versions.find((item) => item.state === "draft");
     if (!experience || !draft) return reply.code(404).send({ error: "draft_not_found" });
-    return reply.send({ experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType, builderMode: experience.builderMode }, version: { id: draft.id, versionNumber: draft.versionNumber, revision: draft.revision, definition: draft.definition } });
+    const references = experience.kind === "checklist" ? {
+      guides: await db.select({id:experiences.id,name:experiences.name,status:experiences.status}).from(experiences).where(and(eq(experiences.siteId,session.siteId),eq(experiences.kind,"guide"))).limit(200),
+      segments: await db.select({id:segments.id,name:segments.name}).from(segments).where(eq(segments.siteId,session.siteId)).limit(200),
+    } : undefined;
+    return reply.send({ ...(references ? { references } : {}), experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType, builderMode: experience.builderMode }, version: { id: draft.id, versionNumber: draft.versionNumber, revision: draft.revision, definition: draft.definition } });
   });
 
   app.patch("/public/experience-editor/:sessionId/draft", async (request, reply) => {

@@ -16,7 +16,7 @@ catch {
     return null;
 } }
 export const ONSITE_WIDGET_TYPES = new Set(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "banner", "survey"]);
-export function onsiteCompatible(kind, widgetType) { return kind === "guide" || (kind === "widget" && !!widgetType && ONSITE_WIDGET_TYPES.has(widgetType)); }
+export function onsiteCompatible(kind, widgetType) { return kind === "checklist" || kind === "guide" || (kind === "widget" && !!widgetType && ONSITE_WIDGET_TYPES.has(widgetType)); }
 export class DraftWriteError extends Error {
     status;
     constructor(status, message) {
@@ -79,6 +79,10 @@ export async function saveExperienceDraft(db, site, experience, draft, candidate
     if (!result.success)
         throw new DraftWriteError(400, "invalid_definition");
     const definition = result.data;
+    if (experience.builderMode === "onsite" && isChecklistDefinition(definition)) {
+        if (rawOnsiteDocument(definition.builder) === undefined || validateCompiledOnsiteBuilder(definition.builder, { heading: definition.title, body: definition.description ?? "" }, "checklist", false, undefined, definition).length)
+            throw new DraftWriteError(400, "inconsistent_onsite_content");
+    }
     if (experience.builderMode === "onsite" && !isChecklistDefinition(definition)) {
         const survey = "survey" in definition ? definition.survey : undefined;
         const parts = "steps" in definition ? definition.steps : survey?.steps ?? [definition];

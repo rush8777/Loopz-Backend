@@ -1,0 +1,538 @@
+{
+  "definition": {
+    "title": "Getting started",
+    "description": "Your next steps",
+    "items": [
+      {
+        "id": "item_one",
+        "title": "Task one",
+        "description": "Details one",
+        "action": {
+          "type": "none"
+        },
+        "completion": {
+          "type": "item_clicked"
+        }
+      },
+      {
+        "id": "item_two",
+        "title": "Task two",
+        "description": "Details two",
+        "action": {
+          "type": "none"
+        },
+        "completion": {
+          "type": "item_clicked"
+        }
+      },
+      {
+        "id": "item_three",
+        "title": "Task three",
+        "description": "Details three",
+        "action": {
+          "type": "none"
+        },
+        "completion": {
+          "type": "item_clicked"
+        }
+      }
+    ],
+    "behavior": {
+      "position": "bottom-right",
+      "order": "sequential",
+      "dismissible": true,
+      "initialState": "expanded",
+      "showRemainingCount": true
+    },
+    "completionMessage": {
+      "title": "All done",
+      "description": "Thank you",
+      "acknowledgeLabel": "Done"
+    }
+  },
+  "document": {
+    "schemaVersion": 4,
+    "id": "document_checklist",
+    "root": {
+      "type": "cell",
+      "id": "cell_001",
+      "direction": "column",
+      "sizing": {
+        "mode": "hug"
+      },
+      "align": "stretch",
+      "justify": "start",
+      "gap": 0,
+      "padding": {
+        "top": 0,
+        "right": 0,
+        "bottom": 0,
+        "left": 0
+      },
+      "children": [
+        {
+          "type": "cell",
+          "id": "cell_002",
+          "direction": "column",
+          "sizing": {
+            "mode": "hug"
+          },
+          "align": "stretch",
+          "justify": "start",
+          "gap": 12,
+          "padding": {
+            "top": 16,
+            "right": 16,
+            "bottom": 16,
+            "left": 16
+          },
+          "checklistRole": "expanded",
+          "children": [
+            {
+              "type": "cell",
+              "id": "cell_003",
+              "direction": "column",
+              "sizing": {
+                "mode": "flexible",
+                "weight": 1
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "block": {
+                "id": "block_003",
+                "type": "checklist_text",
+                "role": "title",
+                "fontSize": 20
+              }
+            },
+            {
+              "type": "cell",
+              "id": "cell_004",
+              "direction": "column",
+              "sizing": {
+                "mode": "flexible",
+                "weight": 1
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "block": {
+                "id": "block_004",
+                "type": "checklist_text",
+                "role": "description",
+                "fontSize": 14
+              }
+            },
+            {
+              "type": "cell",
+              "id": "cell_005",
+              "direction": "column",
+              "sizing": {
+                "mode": "flexible",
+                "weight": 1
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "block": {
+                "id": "block_005",
+                "type": "checklist_progress",
+                "fontSize": 12
+              }
+            },
+            {
+              "type": "cell",
+              "id": "cell_006",
+              "direction": "column",
+              "sizing": {
+                "mode": "hug"
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "checklistRole": "items",
+              "children": [
+                {
+                  "type": "cell",
+                  "id": "cell_007",
+                  "direction": "column",
+                  "sizing": {
+                    "mode": "flexible",
+                    "weight": 1
+                  },
+                  "align": "stretch",
+                  "justify": "start",
+                  "gap": 12,
+                  "padding": {
+                    "top": 0,
+                    "right": 0,
+                    "bottom": 0,
+                    "left": 0
+                  },
+                  "block": {
+                    "id": "block_007",
+                    "type": "checklist_task",
+                    "itemId": "item_one",
+                    "fontSize": 14,
+                    "indicator": "check"
+                  }
+                },
+                {
+                  "type": "cell",
+                  "id": "cell_008",
+                  "direction": "column",
+                  "sizing": {
+                    "mode": "flexible",
+                    "weight": 1
+                  },
+                  "align": "stretch",
+                  "justify": "start",
+                  "gap": 12,
+                  "padding": {
+                    "top": 0,
+                    "right": 0,
+                    "bottom": 0,
+                    "left": 0
+                  },
+                  "block": {
+                    "id": "block_008",
+                    "type": "checklist_task",
+                    "itemId": "item_two",
+                    "fontSize": 14,
+                    "indicator": "check"
+                  }
+                },
+                {
+                  "type": "cell",
+                  "id": "cell_009",
+                  "direction": "column",
+                  "sizing": {
+                    "mode": "flexible",
+                    "weight": 1
+                  },
+                  "align": "stretch",
+                  "justify": "start",
+                  "gap": 12,
+                  "padding": {
+                    "top": 0,
+                    "right": 0,
+                    "bottom": 0,
+                    "left": 0
+                  },
+                  "block": {
+                    "id": "block_009",
+                    "type": "checklist_task",
+                    "itemId": "item_three",
+                    "fontSize": 14,
+                    "indicator": "check"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "cell",
+              "id": "cell_010",
+              "direction": "row",
+              "sizing": {
+                "mode": "hug"
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "children": [
+                {
+                  "type": "cell",
+                  "id": "cell_011",
+                  "direction": "column",
+                  "sizing": {
+                    "mode": "flexible",
+                    "weight": 1
+                  },
+                  "align": "stretch",
+                  "justify": "start",
+                  "gap": 12,
+                  "padding": {
+                    "top": 0,
+                    "right": 0,
+                    "bottom": 0,
+                    "left": 0
+                  },
+                  "block": {
+                    "id": "block_011",
+                    "type": "checklist_control",
+                    "role": "collapse",
+                    "fontSize": 14
+                  }
+                },
+                {
+                  "type": "cell",
+                  "id": "cell_012",
+                  "direction": "column",
+                  "sizing": {
+                    "mode": "flexible",
+                    "weight": 1
+                  },
+                  "align": "stretch",
+                  "justify": "start",
+                  "gap": 12,
+                  "padding": {
+                    "top": 0,
+                    "right": 0,
+                    "bottom": 0,
+                    "left": 0
+                  },
+                  "block": {
+                    "id": "block_012",
+                    "type": "checklist_control",
+                    "role": "dismiss",
+                    "fontSize": 14
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "cell",
+          "id": "cell_013",
+          "direction": "column",
+          "sizing": {
+            "mode": "hug"
+          },
+          "align": "stretch",
+          "justify": "start",
+          "gap": 12,
+          "padding": {
+            "top": 16,
+            "right": 16,
+            "bottom": 16,
+            "left": 16
+          },
+          "checklistRole": "launcher",
+          "children": [
+            {
+              "type": "cell",
+              "id": "cell_014",
+              "direction": "column",
+              "sizing": {
+                "mode": "flexible",
+                "weight": 1
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "block": {
+                "id": "block_014",
+                "type": "icon",
+                "icon": "check",
+                "size": 20
+              }
+            },
+            {
+              "type": "cell",
+              "id": "cell_015",
+              "direction": "column",
+              "sizing": {
+                "mode": "flexible",
+                "weight": 1
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "block": {
+                "id": "block_015",
+                "type": "checklist_text",
+                "role": "launcher-label",
+                "fontSize": 14
+              }
+            },
+            {
+              "type": "cell",
+              "id": "cell_016",
+              "direction": "column",
+              "sizing": {
+                "mode": "flexible",
+                "weight": 1
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "block": {
+                "id": "block_016",
+                "type": "checklist_text",
+                "role": "remaining-count",
+                "fontSize": 14
+              }
+            }
+          ]
+        },
+        {
+          "type": "cell",
+          "id": "cell_017",
+          "direction": "column",
+          "sizing": {
+            "mode": "hug"
+          },
+          "align": "stretch",
+          "justify": "start",
+          "gap": 12,
+          "padding": {
+            "top": 16,
+            "right": 16,
+            "bottom": 16,
+            "left": 16
+          },
+          "checklistRole": "completion",
+          "children": [
+            {
+              "type": "cell",
+              "id": "cell_018",
+              "direction": "column",
+              "sizing": {
+                "mode": "flexible",
+                "weight": 1
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "block": {
+                "id": "block_018",
+                "type": "icon",
+                "icon": "check",
+                "size": 28
+              }
+            },
+            {
+              "type": "cell",
+              "id": "cell_019",
+              "direction": "column",
+              "sizing": {
+                "mode": "flexible",
+                "weight": 1
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "block": {
+                "id": "block_019",
+                "type": "checklist_text",
+                "role": "completion-title",
+                "fontSize": 20
+              }
+            },
+            {
+              "type": "cell",
+              "id": "cell_020",
+              "direction": "column",
+              "sizing": {
+                "mode": "flexible",
+                "weight": 1
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "block": {
+                "id": "block_020",
+                "type": "checklist_text",
+                "role": "completion-description",
+                "fontSize": 14
+              }
+            },
+            {
+              "type": "cell",
+              "id": "cell_021",
+              "direction": "column",
+              "sizing": {
+                "mode": "flexible",
+                "weight": 1
+              },
+              "align": "stretch",
+              "justify": "start",
+              "gap": 12,
+              "padding": {
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0
+              },
+              "block": {
+                "id": "block_021",
+                "type": "checklist_control",
+                "role": "completion-acknowledge",
+                "fontSize": 14
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expectedHash": "423b20b9b4a76073f2a4058915d9001bd03df9b6751e3c89efa7596e7f9cee45"
+}

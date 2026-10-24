@@ -1,3 +1,4 @@
+import { checklistCopy, escapeChecklist, CHECKLIST_CELL_CSS, type OnsiteChecklistContext, type ChecklistView, type ChecklistTextRole, type ChecklistControlRole } from "./checklistMarkup.js";
 import { surveyQuestionMarkup, surveyControlsMarkup, surveyQuestionErrors, SURVEY_CELL_CSS, type OnsiteSurveyContext } from "./surveyMarkup.js";
 import type { ExperienceAction, ExperienceContent, SurveyQuestion, WidgetBuilderState, WidgetType } from "./types.js";
 import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
@@ -5,6 +6,7 @@ import { builderImageUrlIsSafe, builderLinkUrlIsSafe } from "./builderContentCon
 
 export const ONSITE_SCHEMA_VERSION = 2 as const;
 export const ONSITE_SURVEY_SCHEMA_VERSION = 3 as const;
+export const ONSITE_CHECKLIST_SCHEMA_VERSION = 4 as const;
 export const ONSITE_LIMITS = {
   maxDepth: 8,
   maxNodes: 120,
@@ -25,6 +27,8 @@ export interface OnsiteSpacing { top: number; right: number; bottom: number; lef
 export interface OnsiteCellStyle { background?: string; borderColor?: string; borderWidth?: number; borderRadius?: number }
 export interface OnsiteCell {
   type: "cell";
+  checklistRole?: ChecklistView | "items";
+  checklistWidth?: number;
   id: string;
   direction: OnsiteDirection;
   sizing: OnsiteSizing;
@@ -44,6 +48,10 @@ export type OnsiteButtonAction =
   | { id: string; type: "open_url"; url: string }
   | { id: string; type: "track_event"; eventName: string };
 export type OnsiteBlock =
+  | (BlockBase & { type: "checklist_task"; itemId: string; fontSize: number; color?: string; indicator: OnsiteIcon })
+  | (BlockBase & { type: "checklist_text"; role: ChecklistTextRole; fontSize: number; color?: string; text?: string })
+  | (BlockBase & { type: "checklist_control"; role: ChecklistControlRole; fontSize: number; color?: string })
+  | (BlockBase & { type: "checklist_progress"; fontSize: number; color?: string })
   | (BlockBase & { type: "question"; questionId: string; fontSize: number; color?: string })
   | (BlockBase & { type: "survey_controls" })
   | (BlockBase & { type: "heading"; html: string; level: 1 | 2 | 3 | 4; fontSize: number; weight: 400 | 500 | 600 | 700; color?: string; lineHeight?: number })
@@ -54,7 +62,7 @@ export type OnsiteBlock =
   | (BlockBase & { type: "spacer"; size: number })
   | (BlockBase & { type: "icon"; icon: OnsiteIcon; size: number; color?: string });
 export type OnsiteIcon = "check" | "star" | "info" | "warning" | "sparkles" | "arrow" | "heart" | "rocket";
-export interface OnsiteDocument { schemaVersion: 2 | 3; id: string; root: OnsiteCell }
+export interface OnsiteDocument { schemaVersion: 2 | 3 | 4; id: string; root: OnsiteCell }
 export interface CompiledOnsiteDocument { html: string; css: string; content: ExperienceContent; actionBindings: Record<string, OnsiteButtonAction> }
 export interface OnsiteValidationResult { valid: boolean; errors: string[] }
 
@@ -64,7 +72,7 @@ const SAFE_INLINE_TAGS = new Set(["BR", "STRONG", "EM", "U", "A", "UL", "OL", "L
 const ICONS: Record<OnsiteIcon, string> = { check: "✓", star: "★", info: "ℹ", warning: "⚠", sparkles: "✦", arrow: "→", heart: "♥", rocket: "🚀" };
 
 let idSequence = 0;
-export function onsiteId(prefix: "document" | "cell" | "block" | "action" | "question" | "option" | "step" = "cell"): string {
+export function onsiteId(prefix: "document" | "cell" | "block" | "action" | "question" | "option" | "step" | "item" = "cell"): string {
   idSequence = (idSequence + 1) % 0xffff;
   const random = typeof crypto !== "undefined" && "getRandomValues" in crypto
     ? Array.from(crypto.getRandomValues(new Uint32Array(2))).map(value => value.toString(36)).join("")
@@ -78,6 +86,7 @@ export function emptyCell(block?: OnsiteBlock): OnsiteCell {
 
 export function createBlock(type: OnsiteBlock["type"], guide = false): OnsiteBlock {
   const id = onsiteId("block");
+  if (type.startsWith("checklist_")) throw new Error("Insert a structured Checklist component.");
   if (type === "question") throw new Error("Insert a canonical Survey question first.");
   if (type === "survey_controls") return { id, type };
   if (type === "heading") return { id, type, html: "A clear heading", level: 2, fontSize: 24, weight: 600, lineHeight: 1.25 };
@@ -130,6 +139,56 @@ export function duplicateSurveyCell(document: OnsiteDocument, questions: SurveyQ
   return { document: candidate, questions: nextQuestions, cellId };
 }
 
+
+export function createOnsiteChecklistDocument(context: OnsiteChecklistContext): OnsiteDocument {
+  const text = (role: ChecklistTextRole, size = 14): OnsiteCell => emptyCell({ id: onsiteId('block'), type: 'checklist_text', role, fontSize: size });
+  const control = (role: ChecklistControlRole): OnsiteCell => emptyCell({ id: onsiteId('block'), type: 'checklist_control', role, fontSize: 14 });
+  const group = (role: ChecklistView | 'items', children: OnsiteCell[]): OnsiteCell => ({...emptyCell(), checklistRole:role, sizing:{mode:'hug'}, padding:role === 'items'?{top:0,right:0,bottom:0,left:0}:{top:16,right:16,bottom:16,left:16}, children});
+  const items=group('items',context.items.map(item=>emptyCell({id:onsiteId('block'),type:'checklist_task',itemId:item.id,fontSize:14,indicator:'check'})));
+  return {schemaVersion:4,id:onsiteId('document'),root:{...emptyCell(),sizing:{mode:'hug'},gap:0,children:[
+    group('expanded',[text('title',20),text('description'),emptyCell({id:onsiteId('block'),type:'checklist_progress',fontSize:12}),items,{...emptyCell(),direction:'row',sizing:{mode:'hug'},children:[control('collapse'),control('dismiss')]}]),
+    group('launcher',[emptyCell({id:onsiteId('block'),type:'icon',icon:'check',size:20}),text('launcher-label'),text('remaining-count')]),
+    group('completion',[emptyCell({id:onsiteId('block'),type:'icon',icon:'check',size:28}),text('completion-title',20),text('completion-description'),control('completion-acknowledge')])
+  ]}};
+}
+
+export function validateOnsiteChecklistDocument(document: OnsiteDocument, context: OnsiteChecklistContext): string[] {
+  const errors:string[]=[]; const views=document.root.children??[];
+  if (document.schemaVersion!==4 || document.root.checklistRole || document.root.block || views.length!==3 || !['expanded','launcher','completion'].every(role=>views.filter(cell=>cell.checklistRole===role).length===1)) errors.push('Checklist document needs exactly one Expanded, Collapsed and Completed view.');
+  const expected:Record<string,string>={title:'expanded',description:'expanded',progress:'expanded',collapse:'expanded',dismiss:'expanded','launcher-label':'launcher','remaining-count':'launcher','completion-title':'completion','completion-description':'completion','completion-acknowledge':'completion'};
+  const counts=new Map<string,number>(), itemCounts=new Map<string,number>(), ids=new Set<string>();let containers=0;
+  if (!context.items.length || context.items.length>20) errors.push('A Checklist needs 1–20 tasks.');
+  for (const item of context.items) { if(ids.has(item.id))errors.push('Checklist item IDs must be unique.');ids.add(item.id); if(!item.title.trim())errors.push('Task title cannot be empty.'); }
+  const visit=(cell:OnsiteCell,view:string,inItems=false):void=>{
+    if(cell.checklistRole==='items'){containers++;if(view!=='expanded'||inItems)errors.push('Task container belongs in the Expanded view.');inItems=true;}
+    if(cell.checklistRole && cell.checklistRole!=='items' && cell!==views.find(value=>value.id===cell.id))errors.push('Checklist views cannot be nested.');
+    const block=cell.block;
+    if(block?.type==='checklist_task'){itemCounts.set(block.itemId,(itemCounts.get(block.itemId)??0)+1);if(!ids.has(block.itemId)||!inItems||view!=='expanded')errors.push('Orphaned task reference or task outside the Expanded task container.');}
+    else if(block?.type==='checklist_text'||block?.type==='checklist_control'||block?.type==='checklist_progress'){
+      const role=block.type==='checklist_progress'?'progress':block.role;counts.set(role,(counts.get(role)??0)+1);if(expected[role]!==view||inItems)errors.push('Checklist structural component is in the wrong view.');
+    } else if(block && ['question','survey_controls','button'].includes(block.type))errors.push('Use Checklist controls and tasks in a Checklist document.');
+    cell.children?.forEach(child=>visit(child,view,inItems));
+  };
+  views.forEach(view=>visit(view,view.checklistRole??''));
+  if(containers!==1)errors.push('Checklist needs exactly one task container.');
+  for(const role of Object.keys(expected))if(counts.get(role)!==1)errors.push(`Checklist role ${role} must appear exactly once.`);
+  for(const item of context.items)if(itemCounts.get(item.id)!==1)errors.push(`Task ${item.id} must be referenced exactly once.`);
+  const order=listBlocks(document.root).filter((block):block is Extract<OnsiteBlock,{type:"checklist_task"}>=>block.type==="checklist_task").map(block=>block.itemId);
+  if(JSON.stringify(order)!==JSON.stringify(context.items.map(item=>item.id)))errors.push("Task layout order must match the canonical item order.");
+  return errors;
+}
+
+export function duplicateChecklistCell(document: OnsiteDocument, context: OnsiteChecklistContext, cellId: string): {document:OnsiteDocument;items:OnsiteChecklistContext['items'];cellId:string}|null {
+  const candidate=cloneOnsite(document),items=cloneOnsite(context.items),id=duplicateCell(candidate,cellId);if(!id)return null;
+  for(const block of listBlocks(findCell(candidate,id)!))if(block.type==='checklist_task'){
+    const source=items.find(item=>item.id===block.itemId);if(!source)return null;
+    const copy={...cloneOnsite(source),id:onsiteId('item')};block.itemId=copy.id;items.push(copy);
+  }
+  const ordered=listBlocks(candidate.root).filter((block):block is Extract<OnsiteBlock,{type:'checklist_task'}>=>block.type==='checklist_task').map(block=>items.find(item=>item.id===block.itemId)!);
+  if(validateOnsiteChecklistDocument(candidate,{...context,items:ordered}).length||!validateOnsiteDocument(candidate).valid)return null;
+  return{document:candidate,items:ordered,cellId:id};
+}
+
 export function onsiteDocumentFromBuilder(builder?: WidgetBuilderState): OnsiteDocument | null {
   const movcues = builder?.projectData?.movcues;
   if (!movcues || typeof movcues !== "object") return null;
@@ -137,8 +196,8 @@ export function onsiteDocumentFromBuilder(builder?: WidgetBuilderState): OnsiteD
   return isOnsiteDocument(document) ? document : null;
 }
 
-export function applyOnsiteDocument(builder: WidgetBuilderState, document: OnsiteDocument, widgetType: WidgetType | "anchored_card" | "modal", survey?: OnsiteSurveyContext): CompiledOnsiteDocument {
-  const compiled = compileOnsiteDocument(document, widgetType, survey);
+export function applyOnsiteDocument(builder: WidgetBuilderState, document: OnsiteDocument, widgetType: WidgetType | "anchored_card" | "modal" | "checklist", survey?: OnsiteSurveyContext, checklist?: OnsiteChecklistContext): CompiledOnsiteDocument {
+  const compiled = compileOnsiteDocument(document, widgetType, survey, checklist);
   builder.version = 1;
   builder.projectData = { ...builder.projectData, movcues: { ...asRecord(builder.projectData.movcues), authoringSurface: "onsite", schemaVersion: document.schemaVersion, onsiteDocument: document, actionBindings: compiled.actionBindings } };
   builder.html = compiled.html;
@@ -151,11 +210,11 @@ export function rawOnsiteDocument(builder?: WidgetBuilderState): unknown {
   return movcues && typeof movcues === "object" ? (movcues as Record<string, unknown>).onsiteDocument : undefined;
 }
 
-export function validateCompiledOnsiteBuilder(builder: WidgetBuilderState, content: ExperienceContent, widgetType: WidgetType | "anchored_card" | "modal", guide: boolean, survey?: OnsiteSurveyContext): string[] {
+export function validateCompiledOnsiteBuilder(builder: WidgetBuilderState, content: ExperienceContent, widgetType: WidgetType | "anchored_card" | "modal" | "checklist", guide: boolean, survey?: OnsiteSurveyContext, checklist?: OnsiteChecklistContext): string[] {
   const raw = rawOnsiteDocument(builder); if (raw === undefined) return [];
   const result = validateOnsiteDocument(raw); if (!result.valid) return result.errors;
   const document = raw as OnsiteDocument; let compiled: CompiledOnsiteDocument;
-  try { compiled = compileOnsiteDocument(document, widgetType, survey); } catch (error) { return [error instanceof Error ? error.message : "Invalid Survey document."]; }
+  try { compiled = compileOnsiteDocument(document, widgetType, survey, checklist); } catch (error) { return [error instanceof Error ? error.message : "Invalid Survey document."]; }
   const errors: string[] = [];
   if (builder.html !== compiled.html) errors.push("Compiled on-site HTML does not match the structured document.");
   if (builder.css !== compiled.css) errors.push("Compiled on-site CSS does not match the structured document.");
@@ -166,9 +225,13 @@ export function validateCompiledOnsiteBuilder(builder: WidgetBuilderState, conte
   return errors;
 }
 
-export function compileOnsiteDocument(document: OnsiteDocument, widgetType: string, survey?: OnsiteSurveyContext): CompiledOnsiteDocument {
+export function compileOnsiteDocument(document: OnsiteDocument, widgetType: string, survey?: OnsiteSurveyContext, checklist?: OnsiteChecklistContext): CompiledOnsiteDocument {
   const validation = validateOnsiteDocument(document);
   if (!validation.valid) throw new Error(validation.errors.join(" "));
+  if (document.schemaVersion === 4) {
+    if (widgetType !== "checklist" || !checklist || survey) throw new Error("Version 4 requires a Checklist context.");
+    const errors = validateOnsiteChecklistDocument(document, checklist); if (errors.length) throw new Error(errors.join(" "));
+  } else if (checklist) throw new Error("Checklist cells require document version 4.");
   if (document.schemaVersion === 3) {
     if (widgetType !== "survey" || !survey) throw new Error("Version 3 requires a Survey question context.");
     const errors = validateOnsiteSurveyDocument(document, survey); if (errors.length) throw new Error(errors.join(" "));
@@ -186,7 +249,8 @@ export function compileOnsiteDocument(document: OnsiteDocument, widgetType: stri
     ".movcues-widget .movcues-block--full{width:100%}",
   ];
   if (document.schemaVersion === 3) css.push(SURVEY_CELL_CSS);
-  const html = renderCell(document.root, css, 0, survey);
+  if (document.schemaVersion === 4) css.push(CHECKLIST_CELL_CSS);
+  const html = renderCell(document.root, css, 0, survey, checklist);
   css.push("@media(max-width:480px){.movcues-widget [data-movcues-responsive-stack=\"true\"]{flex-direction:column!important}.movcues-widget [data-movcues-sizing=\"fixed\"]{max-width:100%!important}.movcues-widget .movcues-button{min-height:40px}.movcues-widget img{height:auto!important}}");
   const blocks = listBlocks(document.root);
   const firstHeading = blocks.find(block => block.type === "heading") as Extract<OnsiteBlock, { type: "heading" }> | undefined;
@@ -195,26 +259,40 @@ export function compileOnsiteDocument(document: OnsiteDocument, widgetType: stri
   const actionBindings = Object.fromEntries(actions.map(block => [block.action.id, block.action]));
   const legacy = actions.slice(0, 2).map(block => ({ label: block.label, type: block.action.type === "previous_step" ? "dismiss" as const : block.action.type, ...("url" in block.action ? { url: block.action.url } : {}), ...("eventName" in block.action ? { eventName: block.action.eventName } : {}) }));
   const content: ExperienceContent = {
-    heading: firstHeading ? richTextToPlain(firstHeading.html).slice(0, 160) : "",
-    body: text,
+    heading: checklist ? checklist.title : firstHeading ? richTextToPlain(firstHeading.html).slice(0, 160) : "",
+    body: checklist ? checklist.description ?? "" : text,
     ...(legacy[0] ? { primaryAction: legacy[0] as ExperienceAction } : {}),
     ...(legacy[1]?.type === "dismiss" ? { secondaryAction: { label: legacy[1].label, type: "dismiss" as const } } : {}),
   };
-  return { html: `<section class="movcues-widget movcues-widget--${escapeAttribute(widgetType)}" data-movcues-widget-type="${escapeAttribute(widgetType)}" data-movcues-document-version="${document.schemaVersion}">${html}</section>`, css: css.join(""), content, actionBindings };
+  return { html: `<section class="movcues-widget movcues-widget--${escapeAttribute(widgetType)}" data-movcues-widget-type="${escapeAttribute(widgetType)}" data-movcues-document-version="${document.schemaVersion}"${checklist ? ' data-movcues-checklist-role="root"' : ""}>${html}</section>`, css: css.join(""), content, actionBindings };
 }
 
-function renderCell(cell: OnsiteCell, css: string[], depth: number, survey?: OnsiteSurveyContext): string {
+function renderCell(cell: OnsiteCell, css: string[], depth: number, survey?: OnsiteSurveyContext, checklist?: OnsiteChecklistContext): string {
   const selector = `.movcues-widget [data-movcues-node-id="${cell.id}"]`;
   const sizing = cell.sizing.mode === "flexible" ? `flex:${round(cell.sizing.weight)} 1 0` : cell.sizing.mode === "hug" ? "flex:0 0 auto" : `flex:0 1 ${cell.sizing.value}px`;
   const style = cell.style ?? {};
   css.push(`${selector}{${sizing};flex-direction:${cell.direction};align-items:${cell.align};justify-content:${cell.justify};gap:${cell.gap}px;padding:${cell.padding.top}px ${cell.padding.right}px ${cell.padding.bottom}px ${cell.padding.left}px;${style.background ? `background:${style.background};` : ""}${style.borderWidth ? `border:${style.borderWidth}px solid ${style.borderColor ?? "#dbe2ea"};` : ""}${style.borderRadius ? `border-radius:${style.borderRadius}px;` : ""}}`);
-  const children = cell.children?.map(child => renderCell(child, css, depth + 1, survey)).join("") ?? (cell.block ? renderBlock(cell.block, css, survey) : "");
-  return `<div class="movcues-cell" data-movcues-node-id="${cell.id}" data-movcues-sizing="${cell.sizing.mode}"${cell.responsiveStack ? ' data-movcues-responsive-stack="true"' : ""}>${children}</div>`;
+  if (cell.checklistWidth !== undefined) css.push(`.movcues-widget--checklist:has([data-movcues-node-id="${cell.id}"].is-active){width:${cell.checklistWidth}px}`);
+  const children = cell.children?.map(child => renderCell(child, css, depth + 1, survey, checklist)).join("") ?? (cell.block ? renderBlock(cell.block, css, survey, checklist) : "");
+  return `<div class="movcues-cell" data-movcues-node-id="${cell.id}"${cell.checklistRole ? cell.checklistRole === "items" ? ' data-movcues-checklist-role="items"' : ` data-movcues-checklist-view="${cell.checklistRole}"` : ""} data-movcues-sizing="${cell.sizing.mode}"${cell.responsiveStack ? ' data-movcues-responsive-stack="true"' : ""}>${children}</div>`;
 }
 
-function renderBlock(block: OnsiteBlock, css: string[], survey?: OnsiteSurveyContext): string {
+function renderBlock(block: OnsiteBlock, css: string[], survey?: OnsiteSurveyContext, checklist?: OnsiteChecklistContext): string {
   const selector = `.movcues-widget [data-movcues-block-id="${block.id}"]`;
   const align = block.align ?? "left";
+  if ((block.type === "checklist_task" || block.type === "checklist_text" || block.type === "checklist_control" || block.type === "checklist_progress")) {
+    if (!checklist) throw new Error("Checklist component needs canonical context.");
+    const item = block as Extract<OnsiteBlock, { type: "checklist_task" | "checklist_text" | "checklist_control" | "checklist_progress" }>;
+    css.push(`${selector}{font-size:${item.fontSize}px;text-align:${align};${item.color ? `color:${item.color};` : ""}}`);
+    const attrs = `class="movcues-block" data-movcues-block-id="${block.id}"`;
+    if (item.type === "checklist_task") {
+      const task = checklist.items.find(value => value.id === item.itemId)!;
+      return `<button type="button" class="movcues-block movcues-checklist__item" data-movcues-block-id="${item.id}" data-movcues-checklist-role="item" data-movcues-checklist-item-id="${escapeChecklist(task.id)}"><span data-movcues-checklist-item-role="state">${ICONS[item.indicator]}</span><span class="movcues-checklist__copy"><span data-movcues-checklist-item-role="title">${escapeChecklist(task.title)}</span><span data-movcues-checklist-item-role="description">${escapeChecklist(task.description ?? "")}</span></span></button>`;
+    }
+    if (item.type === "checklist_text") return `<div ${attrs} data-movcues-checklist-role="${item.role}">${escapeChecklist(item.role === "launcher-label" && item.text !== undefined ? item.text : checklistCopy(checklist)[item.role])}</div>`;
+    if (item.type === "checklist_control") return `<button type="button" class="movcues-block movcues-checklist-control" data-movcues-block-id="${item.id}" data-movcues-checklist-role="${item.role}" aria-label="${item.role === "collapse" ? "Collapse checklist" : item.role === "dismiss" ? "Dismiss checklist" : "Acknowledge completion"}">${escapeChecklist(item.role === "collapse" ? "−" : item.role === "dismiss" ? "×" : checklist.completionMessage.acknowledgeLabel)}</button>`;
+    return `<div ${attrs}><div data-movcues-checklist-role="progress"></div><div class="movcues-checklist-progress-track"><span class="movcues-checklist-progress-fill"></span></div></div>`;
+  }
   if (block.type === "question") { css.push(`${selector}{font:${block.fontSize}px/1.5 ui-sans-serif,system-ui,sans-serif;text-align:${align};${block.color ? `color:${block.color};` : ""}}`); return surveyQuestionMarkup(survey!.questions.find(question => question.id === block.questionId)!, block.id); }
   if (block.type === "survey_controls") return surveyControlsMarkup(block.id, survey?.submitLabel ?? "Submit");
   if (block.type === "heading") { css.push(`${selector}{font:${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.25} ui-sans-serif,system-ui,sans-serif;text-align:${align};${block.color ? `color:${block.color};` : ""}}`); return `<h${block.level} class="movcues-block movcues-heading" data-movcues-block-id="${block.id}" data-movcues-content="heading">${sanitizeRichText(block.html)}</h${block.level}>`; }
@@ -228,7 +306,7 @@ function renderBlock(block: OnsiteBlock, css: string[], survey?: OnsiteSurveyCon
 
 export function validateOnsiteDocument(value: unknown): OnsiteValidationResult {
   const errors: string[] = [];
-  if (!isOnsiteDocumentShape(value)) return { valid: false, errors: ["On-site document must use schemaVersion 2 or 3 and contain one root cell."] };
+  if (!isOnsiteDocumentShape(value)) return { valid: false, errors: ["On-site document must use schemaVersion 2, 3 or 4 and contain one root cell."] };
   unexpectedKeys(value as unknown as Record<string, unknown>, ["schemaVersion", "id", "root"], "Document", errors);
   const ids = new Set<string>(); const seen = new Set<object>(); let count = 0;
   const addId = (id: unknown, path: string) => { if (typeof id !== "string" || !ID_PATTERN.test(id)) errors.push(`${path} has an invalid ID.`); else if (ids.has(id)) errors.push(`${path} reuses ID ${id}.`); else ids.add(id); };
@@ -237,7 +315,7 @@ export function validateOnsiteDocument(value: unknown): OnsiteValidationResult {
   const visit = (cell: OnsiteCell, depth: number, path: string): void => {
     if (!cell || typeof cell !== "object") { errors.push(`${path} must be a cell object.`); return; } if (seen.has(cell)) { errors.push(`${path} creates a cycle or duplicate reference.`); return; } seen.add(cell);
     count++; addId(cell.id, path);
-    unexpectedKeys(cell as unknown as Record<string, unknown>, ["type", "id", "direction", "sizing", "align", "justify", "gap", "padding", "responsiveStack", "style", "children", "block"], path, errors);
+    unexpectedKeys(cell as unknown as Record<string, unknown>, ["type", "id", "checklistRole", "checklistWidth", "direction", "sizing", "align", "justify", "gap", "padding", "responsiveStack", "style", "children", "block"], path, errors);
     if (depth > ONSITE_LIMITS.maxDepth) errors.push(`${path} exceeds maximum nesting depth ${ONSITE_LIMITS.maxDepth}.`);
     if (!(["row", "column"] as unknown[]).includes(cell.direction)) errors.push(`${path} has an invalid direction.`);
     if (!["start", "center", "end", "stretch"].includes(cell.align)) errors.push(`${path} has an invalid alignment.`);
@@ -252,6 +330,9 @@ export function validateOnsiteDocument(value: unknown): OnsiteValidationResult {
     if (cell.style) { unexpectedKeys(cell.style as unknown as Record<string, unknown>, ["background", "borderColor", "borderWidth", "borderRadius"], `${path} style`, errors); if (cell.style.background && !COLOR_PATTERN.test(cell.style.background)) errors.push(`${path} background is not supported.`); if (cell.style.borderColor && !COLOR_PATTERN.test(cell.style.borderColor)) errors.push(`${path} border color is not supported.`); if (cell.style.borderWidth !== undefined) number(cell.style.borderWidth, 0, 16, `${path} border width`); if (cell.style.borderRadius !== undefined) number(cell.style.borderRadius, 0, 100, `${path} border radius`); }
     if (cell.children && cell.block) errors.push(`${path} cannot contain both children and a block.`);
     if (cell.children) { if (!cell.children.length) errors.push(`${path} cannot contain an empty children list.`); cell.children.forEach((child, index) => visit(child, depth + 1, `${path} > cell ${index + 1}`)); }
+    if (cell.checklistWidth !== undefined && (value.schemaVersion !== 4 || !["expanded","launcher","completion"].includes(cell.checklistRole??"") || !Number.isInteger(cell.checklistWidth) || cell.checklistWidth < 120 || cell.checklistWidth > 720)) errors.push(`${path} view width must be 120–720 pixels.`);
+    if (cell.checklistRole !== undefined && (value.schemaVersion !== 4 || !["expanded", "launcher", "completion", "items"].includes(cell.checklistRole))) errors.push(`${path} has an invalid Checklist container.`);
+    if (cell.block?.type.startsWith("checklist_") && value.schemaVersion !== 4) errors.push("Checklist blocks require schemaVersion 4.");
     if (cell.block && value.schemaVersion === 2 && ["question", "survey_controls"].includes(cell.block.type)) errors.push("Survey blocks require schemaVersion 3.");
     if (cell.block) validateBlock(cell.block, `${path} block`, addId, number, errors);
   };
@@ -263,11 +344,18 @@ export function validateOnsiteDocument(value: unknown): OnsiteValidationResult {
 
 function validateBlock(block: OnsiteBlock, path: string, addId: (id: unknown, path: string) => void, number: (value: unknown, min: number, max: number, path: string) => void, errors: string[]): void {
   addId(block.id, path);
-  const base = ["id", "type", "align"]; const keys: Record<OnsiteBlock["type"], string[]> = { question: [...base, "questionId", "fontSize", "color"], survey_controls: base, heading: [...base, "html", "level", "fontSize", "weight", "color", "lineHeight"], text: [...base, "html", "fontSize", "weight", "color", "lineHeight"], button: [...base, "label", "action", "variant", "background", "color", "radius", "paddingX", "paddingY", "width"], image: [...base, "src", "alt", "fit", "width", "height", "radius"], divider: [...base, "orientation", "thickness", "color"], spacer: [...base, "size"], icon: [...base, "icon", "size", "color"] };
+  const base = ["id", "type", "align"]; const keys: Record<OnsiteBlock["type"], string[]> = { checklist_task: [...base,"itemId","fontSize","color","indicator"], checklist_text: [...base,"role","fontSize","color","text"], checklist_control: [...base,"role","fontSize","color"], checklist_progress: [...base,"fontSize","color"], question: [...base, "questionId", "fontSize", "color"], survey_controls: base, heading: [...base, "html", "level", "fontSize", "weight", "color", "lineHeight"], text: [...base, "html", "fontSize", "weight", "color", "lineHeight"], button: [...base, "label", "action", "variant", "background", "color", "radius", "paddingX", "paddingY", "width"], image: [...base, "src", "alt", "fit", "width", "height", "radius"], divider: [...base, "orientation", "thickness", "color"], spacer: [...base, "size"], icon: [...base, "icon", "size", "color"] };
   if (!Object.prototype.hasOwnProperty.call(keys, block.type)) { errors.push(`${path} has an unsupported block type.`); return; }
   unexpectedKeys(block as unknown as Record<string, unknown>, keys[block.type], path, errors);
   if (block.align !== undefined && !["left", "center", "right"].includes(block.align)) errors.push(`${path} has an invalid alignment.`);
-  if (block.type === "question") { if (typeof block.questionId !== "string" || !block.questionId.trim() || block.questionId.length > 64) errors.push(`${path} must reference a stable question ID.`); number(block.fontSize, 10, 36, `${path} font size`); }
+  if ((block.type === "checklist_task" || block.type === "checklist_text" || block.type === "checklist_control" || block.type === "checklist_progress")) {
+    const item = block as Extract<OnsiteBlock, { type: "checklist_task" | "checklist_text" | "checklist_control" | "checklist_progress" }>;
+    number(item.fontSize, 10, 48, `${path} font size`);
+    if (item.type === "checklist_task" && (typeof item.itemId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(item.itemId) || !(item.indicator in ICONS))) errors.push(`${path} has an invalid task reference or indicator.`);
+    if (item.type === "checklist_text" && (!["title","description","launcher-label","remaining-count","completion-title","completion-description"].includes(item.role) || (item.text !== undefined && (item.role !== "launcher-label" || typeof item.text !== "string" || !item.text.trim() || item.text.length > 200)))) errors.push(`${path} has an invalid Checklist text role.`);
+    if (item.type === "checklist_control" && !["collapse","dismiss","completion-acknowledge"].includes(item.role)) errors.push(`${path} has an invalid Checklist control.`);
+  }
+  else if (block.type === "question") { if (typeof block.questionId !== "string" || !block.questionId.trim() || block.questionId.length > 64) errors.push(`${path} must reference a stable question ID.`); number(block.fontSize, 10, 36, `${path} font size`); }
   else if (block.type === "heading" || block.type === "text") {
     if (typeof block.html !== "string" || block.html.length > ONSITE_LIMITS.maxRichText || sanitizeRichText(block.html) !== block.html) errors.push(`${path} contains unsupported or unsafe rich text.`);
     number(block.fontSize, 10, 72, `${path} font size`); number(block.lineHeight ?? 1.4, 0.9, 3, `${path} line height`);
@@ -336,7 +424,7 @@ export function moveCell(document: OnsiteDocument, id: string, delta: -1 | 1): b
 export function resizeSiblings(document: OnsiteDocument, firstId: string, secondId: string, firstWeight: number): boolean { const parent = parentCell(document, firstId); if (!parent?.children || parent !== parentCell(document, secondId)) return false; const a = parent.children.find(child => child.id === firstId); const b = parent.children.find(child => child.id === secondId); if (!a || !b) return false; const bounded = Math.max(0.1, Math.min(1.9, Math.round(firstWeight * 20) / 20)); a.sizing = { mode: "flexible", weight: bounded }; b.sizing = { mode: "flexible", weight: 2 - bounded }; return true; }
 export function duplicateCell(document: OnsiteDocument, id: string): string | null { const source = findCell(document, id); const parent = parentCell(document, id); if (!source || !parent?.children) return null; const copy = structuredCloneSafe(source); regenerateIds(copy); const index = parent.children.findIndex(child => child.id === id); parent.children.splice(index + 1, 0, copy); return copy.id; }
 function regenerateIds(cell: OnsiteCell): void { cell.id = onsiteId("cell"); if (cell.block) { cell.block.id = onsiteId("block"); if (cell.block.type === "button") cell.block.action.id = onsiteId("action"); } cell.children?.forEach(regenerateIds); }
-function collapseSingleChild(cell: OnsiteCell): void { const child = cell.children?.[0]; if (!child) return; const id = cell.id; Object.assign(cell, child, { id }); }
+function collapseSingleChild(cell: OnsiteCell): void { if (cell.checklistRole) return; const child = cell.children?.[0]; if (!child) return; const id = cell.id; Object.assign(cell, child, { id }); }
 
 export function duplicateDocument(document: OnsiteDocument): OnsiteDocument { const copy = structuredCloneSafe(document); copy.id = onsiteId("document"); regenerateIds(copy.root); return copy; }
 export function cloneOnsite<T>(value: T): T { return structuredCloneSafe(value); }
@@ -374,7 +462,7 @@ function richTextToPlain(input: string): string {
   return read(fragment).trim();
 }
 function isOnsiteDocument(value: unknown): value is OnsiteDocument { return isOnsiteDocumentShape(value) && validateOnsiteDocument(value).valid; }
-function isOnsiteDocumentShape(value: unknown): value is OnsiteDocument { return !!value && typeof value === "object" && [2, 3].includes((value as OnsiteDocument).schemaVersion) && !!(value as OnsiteDocument).root && (value as OnsiteDocument).root.type === "cell"; }
+function isOnsiteDocumentShape(value: unknown): value is OnsiteDocument { return !!value && typeof value === "object" && [2, 3, 4].includes((value as OnsiteDocument).schemaVersion) && !!(value as OnsiteDocument).root && (value as OnsiteDocument).root.type === "cell"; }
 function asRecord(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function escapeText(value: string): string { return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 function escapeAttribute(value: string): string { return escapeText(value).replace(/"/g, "&quot;"); }

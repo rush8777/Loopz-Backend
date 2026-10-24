@@ -14,7 +14,7 @@ import { runEntitlementTransaction } from "../../db/transaction.js";
 
 function siteOrigin(domain: string | null): string | null { try { return domain ? new URL(/^https?:\/\//i.test(domain) ? domain : `https://${domain}`).origin : null; } catch { return null; } }
 export const ONSITE_WIDGET_TYPES = new Set<WidgetType>(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "banner", "survey"]);
-export function onsiteCompatible(kind: ExperienceKind, widgetType: WidgetType | null): boolean { return kind === "guide" || (kind === "widget" && !!widgetType && ONSITE_WIDGET_TYPES.has(widgetType)); }
+export function onsiteCompatible(kind: ExperienceKind, widgetType: WidgetType | null): boolean { return kind === "checklist" || kind === "guide" || (kind === "widget" && !!widgetType && ONSITE_WIDGET_TYPES.has(widgetType)); }
 export class DraftWriteError extends Error { constructor(readonly status: number, message: string) { super(message); } }
 export async function validateReferences(db: Db, siteId: string, definition: ExperienceDefinition, publishing = false): Promise<string | null> {
   for (const rule of definition.targeting.pageRules) {
@@ -54,6 +54,9 @@ export async function saveExperienceDraft(db: Db, site: typeof sites.$inferSelec
   const result = definitionSchemaFor(experience.kind as ExperienceKind, experience.widgetType).safeParse(candidate);
   if (!result.success) throw new DraftWriteError(400, "invalid_definition");
   const definition = result.data;
+  if (experience.builderMode === "onsite" && isChecklistDefinition(definition)) {
+    if (rawOnsiteDocument(definition.builder) === undefined || validateCompiledOnsiteBuilder(definition.builder,{heading:definition.title,body:definition.description??""},"checklist",false,undefined,definition).length) throw new DraftWriteError(400,"inconsistent_onsite_content");
+  }
   if (experience.builderMode === "onsite" && !isChecklistDefinition(definition)) {
     const survey = "survey" in definition ? definition.survey : undefined;
     const parts = "steps" in definition ? definition.steps : survey?.steps ?? [definition];

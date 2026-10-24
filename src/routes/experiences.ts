@@ -20,7 +20,7 @@ import { sendEntitlementError } from "../lib/entitlements/http.js";
 import { requiredExperienceFeatures } from "../lib/entitlements/experienceFeatures.js";
 import type { SiteThemeTokens } from "../lib/themes/types.js";
 import { siteThemeCss } from "../lib/themes/css.js";
-import { applyOnsiteDocument, createOnsiteDocument, createOnsiteSurveyDocument, listBlocks } from "../lib/experiences/onsiteDocument.js";
+import { applyOnsiteDocument, createOnsiteChecklistDocument, createOnsiteDocument, createOnsiteSurveyDocument, listBlocks } from "../lib/experiences/onsiteDocument.js";
 
 const SUPPORTED_WIDGET_TYPES: WidgetType[] = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
 
@@ -253,8 +253,8 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
       [page] = await db.select().from(pageDefinitions).where(eq(pageDefinitions.id, parsed.data.buildPageId)).limit(1);
       if (!page || page.siteId !== site.id) return reply.code(400).send({ error: "invalid_build_page" });
     }
-    const buildUrl = parsed.data.kind === "checklist" ? null : parsed.data.buildUrl ?? (page ? deriveBuildUrl(site.domain, page.rules as PageRule[]) : null);
-    if (parsed.data.kind !== "checklist" && (!buildUrl || !urlBelongsToSite(buildUrl, site.domain))) return reply.code(400).send({ error: "build_url_outside_site_domain" });
+    const buildUrl = parsed.data.kind === "checklist" && parsed.data.builderMode !== "onsite" ? null : parsed.data.buildUrl ?? (page ? deriveBuildUrl(site.domain, page.rules as PageRule[]) : null);
+    if ((parsed.data.kind !== "checklist" || parsed.data.builderMode === "onsite") && (!buildUrl || !urlBelongsToSite(buildUrl, site.domain))) return reply.code(400).send({ error: "build_url_outside_site_domain" });
     const initialPageRules = parsed.data.useBuildPageAsTarget
       ? page
         ? (page.rules as PageRule[])
@@ -264,6 +264,8 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const activeTheme = (storedTheme?.activeTokens ?? undefined) as SiteThemeTokens | undefined;
     if (parsed.data.builderMode === "onsite" && !onsiteCompatible(parsed.data.kind, parsed.data.widgetType ?? null)) return reply.code(400).send({ error: "onsite_builder_unsupported" });
     const definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(parsed.data.template as ChecklistPreset, activeTheme) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules, activeTheme, parsed.data.builderMode, parsed.data.guidePattern);
+
+    if (parsed.data.kind === "checklist" && parsed.data.builderMode === "onsite" && isChecklistDefinition(definition)) applyOnsiteDocument(definition.builder,createOnsiteChecklistDocument(definition),"checklist",undefined,definition);
 
     let experience: typeof experiences.$inferSelect;
     try {
@@ -397,7 +399,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!site) return reply.code(404).send({ error: "site_not_found" });
     const row = await loadExperience(db, site.id, experienceId);
     if (!row) return reply.code(404).send({ error: "experience_not_found" });
-    if (row.kind === "checklist") return reply.code(400).send({ error: "checklist_live_editor_unsupported" });
+    if (row.kind === "checklist" && row.builderMode !== "onsite") return reply.code(400).send({ error: "checklist_live_editor_unsupported" });
     if (!row.buildUrl || !urlBelongsToSite(row.buildUrl, site.domain)) return reply.code(400).send({ error: "invalid_build_url" });
     const rawToken = crypto.randomBytes(32).toString("base64url");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");

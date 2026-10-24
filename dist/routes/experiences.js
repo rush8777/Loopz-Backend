@@ -7,6 +7,7 @@ import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, guidePublishIssues, updateDraftSchema } from "../lib/experiences/validation.js";
 import { guideStepRequiresTarget } from "../lib/experiences/types.js";
+import { isChecklistDefinition } from "../lib/experiences/types.js";
 import { initialChecklistDefinition } from "../lib/experiences/checklistPresets.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import { getExperienceAnalytics, listExperienceAnalytics, listSurveyResponses } from "../lib/experiences/analytics.js";
@@ -14,7 +15,7 @@ import { runEntitlementTransaction } from "../db/transaction.js";
 import { assertSubscriptionActive, createEntitlementService } from "../lib/entitlements/service.js";
 import { sendEntitlementError } from "../lib/entitlements/http.js";
 import { siteThemeCss } from "../lib/themes/css.js";
-import { applyOnsiteDocument, createOnsiteDocument, createOnsiteSurveyDocument, listBlocks } from "../lib/experiences/onsiteDocument.js";
+import { applyOnsiteDocument, createOnsiteChecklistDocument, createOnsiteDocument, createOnsiteSurveyDocument, listBlocks } from "../lib/experiences/onsiteDocument.js";
 const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
 async function loadSiteInOrg(db, siteId, orgId) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
@@ -269,8 +270,8 @@ export function registerExperienceRoutes(app, db) {
             if (!page || page.siteId !== site.id)
                 return reply.code(400).send({ error: "invalid_build_page" });
         }
-        const buildUrl = parsed.data.kind === "checklist" ? null : parsed.data.buildUrl ?? (page ? deriveBuildUrl(site.domain, page.rules) : null);
-        if (parsed.data.kind !== "checklist" && (!buildUrl || !urlBelongsToSite(buildUrl, site.domain)))
+        const buildUrl = parsed.data.kind === "checklist" && parsed.data.builderMode !== "onsite" ? null : parsed.data.buildUrl ?? (page ? deriveBuildUrl(site.domain, page.rules) : null);
+        if ((parsed.data.kind !== "checklist" || parsed.data.builderMode === "onsite") && (!buildUrl || !urlBelongsToSite(buildUrl, site.domain)))
             return reply.code(400).send({ error: "build_url_outside_site_domain" });
         const initialPageRules = parsed.data.useBuildPageAsTarget
             ? page
@@ -282,6 +283,8 @@ export function registerExperienceRoutes(app, db) {
         if (parsed.data.builderMode === "onsite" && !onsiteCompatible(parsed.data.kind, parsed.data.widgetType ?? null))
             return reply.code(400).send({ error: "onsite_builder_unsupported" });
         const definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(parsed.data.template, activeTheme) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules, activeTheme, parsed.data.builderMode, parsed.data.guidePattern);
+        if (parsed.data.kind === "checklist" && parsed.data.builderMode === "onsite" && isChecklistDefinition(definition))
+            applyOnsiteDocument(definition.builder, createOnsiteChecklistDocument(definition), "checklist", undefined, definition);
         let experience;
         try {
             experience = await runEntitlementTransaction(db, async (tx) => {
@@ -453,7 +456,7 @@ export function registerExperienceRoutes(app, db) {
         const row = await loadExperience(db, site.id, experienceId);
         if (!row)
             return reply.code(404).send({ error: "experience_not_found" });
-        if (row.kind === "checklist")
+        if (row.kind === "checklist" && row.builderMode !== "onsite")
             return reply.code(400).send({ error: "checklist_live_editor_unsupported" });
         if (!row.buildUrl || !urlBelongsToSite(row.buildUrl, site.domain))
             return reply.code(400).send({ error: "invalid_build_url" });

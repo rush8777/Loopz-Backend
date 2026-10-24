@@ -252,6 +252,7 @@ export const checklistDefinitionSchema = z.object({
   targeting: checklistTargetingSchema,
   builder: builderSchema,
 }).strict().superRefine((definition, ctx) => {
+  if (rawOnsiteDocument(definition.builder) !== undefined) validateCompiledOnsiteBuilder(definition.builder, {heading:definition.title,body:definition.description??""}, "checklist", false, undefined, definition).forEach(message=>ctx.addIssue({code:"custom",path:["builder"],message}));
   const ids = new Set<string>();
   definition.items.forEach((item, index) => { if (ids.has(item.id)) ctx.addIssue({ code: "custom", path: ["items", index, "id"], message: "Checklist item IDs must be unique" }); ids.add(item.id); if (item.action.type === "none" && item.completion.type !== "item_clicked") ctx.addIssue({ code: "custom", path: ["items", index, "action"], message: "Items without an action must complete when clicked" }); });
   const rootCount = Array.from(definition.builder.html.matchAll(/data-movcues-checklist-role\s*=\s*["']root["']/gi)).length;
@@ -278,7 +279,7 @@ export const createExperienceSchema = z.object({
   if (value.kind === "widget" && !value.widgetType) ctx.addIssue({ code: "custom", path: ["widgetType"], message: "widgetType is required" });
   if (value.kind !== "widget" && value.widgetType) ctx.addIssue({ code: "custom", path: ["widgetType"], message: `${value.kind}s do not have a widgetType` });
   if (value.kind !== "guide" && value.guidePattern) ctx.addIssue({ code: "custom", path: ["guidePattern"], message: "guidePattern is only valid for guides" });
-  if (value.kind !== "checklist" && !value.buildPageId && !value.buildUrl) ctx.addIssue({ code: "custom", path: ["buildUrl"], message: "a build page or URL is required" });
+  if ((value.kind !== "checklist" || value.builderMode === "onsite") && !value.buildPageId && !value.buildUrl) ctx.addIssue({ code: "custom", path: ["buildUrl"], message: "a build page or URL is required" });
   if (value.kind === "checklist" && value.template === "blank") ctx.addIssue({ code: "custom", path: ["template"], message: "choose a Checklist preset" });
   if (value.kind !== "checklist" && value.template !== "blank") ctx.addIssue({ code: "custom", path: ["template"], message: "presets are only supported for Checklists" });
 });
@@ -286,7 +287,7 @@ export const createExperienceSchema = z.object({
 export const updateDraftSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   definition: z.unknown().optional(),
-  settings: z.object({ targeting: targetingSchema }).strict().optional(),
+  settings: z.object({ targeting: z.union([targetingSchema, checklistTargetingSchema]) }).strict().optional(),
   revision: z.number().int().positive().optional(),
 }).strict().superRefine((value, ctx) => {
   if (value.name === undefined && value.definition === undefined && value.settings === undefined) ctx.addIssue({ code: "custom", message: "at least one field is required" });
