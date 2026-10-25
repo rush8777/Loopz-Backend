@@ -1198,6 +1198,93 @@ export const surveyResponses = sqliteTable(
   (table) => [uniqueIndex("survey_responses_impression_uidx").on(table.impressionId), index("survey_responses_experience_idx").on(table.siteId, table.experienceId, table.startedAt)]
 );
 
+/** Persistent, tenant-scoped history for the backend-only AI assistant. Raw
+ * analytics datasets are intentionally not stored here; messages keep only
+ * the user request, assistant answer, compact evidence, and validated
+ * resource proposals. */
+export const aiConversations = sqliteTable(
+  "ai_conversations",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("aic")),
+    orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
+  },
+  (table) => [index("ai_conversations_scope_updated_idx").on(table.orgId, table.siteId, table.userId, table.updatedAt)],
+);
+
+export const aiMessages = sqliteTable(
+  "ai_messages",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("aim")),
+    conversationId: text("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+    content: text("content").notNull(),
+    evidence: text("evidence", { mode: "json" }),
+    proposal: text("proposal", { mode: "json" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
+  },
+  (table) => [index("ai_messages_conversation_created_idx").on(table.conversationId, table.createdAt)],
+);
+
+export const aiToolExecutions = sqliteTable(
+  "ai_tool_executions",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("ait")),
+    conversationId: text("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+    messageId: text("message_id").references(() => aiMessages.id, { onDelete: "set null" }),
+    toolName: text("tool_name").notNull(),
+    status: text("status").notNull(),
+    inputSummary: text("input_summary", { mode: "json" }),
+    outputSummary: text("output_summary", { mode: "json" }),
+    errorCode: text("error_code"),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+  },
+  (table) => [index("ai_tool_executions_conversation_idx").on(table.conversationId, table.startedAt)],
+);
+
+export const aiPendingApprovals = sqliteTable(
+  "ai_pending_approvals",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("aia")),
+    conversationId: text("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+    messageId: text("message_id").notNull().references(() => aiMessages.id, { onDelete: "cascade" }),
+    orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    requestedBy: text("requested_by").notNull().references(() => users.id, { onDelete: "cascade" }),
+    resourceType: text("resource_type").notNull(),
+    proposal: text("proposal", { mode: "json" }).notNull(),
+    status: text("status").notNull().default("pending"),
+    idempotencyKey: text("idempotency_key").notNull().unique(),
+    resourceId: text("resource_id"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
+    decidedAt: integer("decided_at", { mode: "timestamp_ms" }),
+  },
+  (table) => [index("ai_pending_approvals_scope_status_idx").on(table.orgId, table.siteId, table.status)],
+);
+
+export const aiProviderUsage = sqliteTable(
+  "ai_provider_usage",
+  {
+    id: text("id").primaryKey().$defaultFn(() => cuid("aiu")),
+    orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    conversationId: text("conversation_id").references(() => aiConversations.id, { onDelete: "set null" }),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    promptTokens: integer("prompt_tokens").notNull().default(0),
+    completionTokens: integer("completion_tokens").notNull().default(0),
+    totalTokens: integer("total_tokens").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
+  },
+  (table) => [index("ai_provider_usage_org_created_idx").on(table.orgId, table.createdAt)],
+);
+
 export const experienceEditorSessions = sqliteTable(
   "experience_editor_sessions",
   {

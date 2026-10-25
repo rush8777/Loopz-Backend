@@ -34,8 +34,10 @@ import { registerBillingRoutes } from "./routes/billing.js";
 import { registerPublicSdkVerificationRoutes, registerSdkVerificationRoutes } from "./routes/sdk-verifications.js";
 import { registerPublicThemeRoutes, registerThemeRoutes } from "./routes/themes.js";
 import type { VerifyGoogleCredential } from "./lib/google-auth.js";
+import { registerAiRoutes } from "./routes/ai.js";
+import type { AiProvider } from "./lib/ai/providers/types.js";
 
-export async function buildApp(db: Db, options: { verifyGoogleCredential?: VerifyGoogleCredential } = {}) {
+export async function buildApp(db: Db, options: { verifyGoogleCredential?: VerifyGoogleCredential; aiProvider?: AiProvider } = {}) {
   const app = Fastify({ logger: false });
   const dashboardOrigin = new URL(env.DASHBOARD_URL).origin;
   const dashboardOrigins = new Set([dashboardOrigin]);
@@ -93,6 +95,7 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
   registerAnalyticsRoutes(app, db);
   registerSdkVerificationRoutes(app, db);
   registerThemeRoutes(app, db);
+  registerAiRoutes(app, db, options.aiProvider);
 
   await app.register(async (publicScope) => {
     await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
