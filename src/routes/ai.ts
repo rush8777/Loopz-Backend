@@ -1,10 +1,10 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, asc, desc, eq, gte } from "drizzle-orm";
 import { z } from "zod";
 import { env } from "../config.js";
 import type { Db } from "../db/client.js";
 import { runEntitlementTransaction } from "../db/transaction.js";
-import { aiConversations, aiMessages, aiPendingApprovals, aiProviderUsage, aiToolExecutions } from "../db/schema.js";
+import { aiConversations, aiMessages, aiPendingApprovals, aiProviderUsage, aiToolExecutions, sites } from "../db/schema.js";
 import { buildAiContext } from "../lib/ai/context.js";
 import { runAiTurn } from "../lib/ai/orchestrator.js";
 import { createConfiguredAiProvider, type AiProvider } from "../lib/ai/providers/index.js";
@@ -32,8 +32,13 @@ async function loadConversation(db: Db, input: { id: string; orgId: string; site
 
 export function registerAiRoutes(app: FastifyInstance, db: Db, providerOverride?: AiProvider) {
   const provider = providerOverride ?? createConfiguredAiProvider();
-  const viewer = [authenticate, requireOrgRole(db, "VIEWER")];
-  const admin = [authenticate, requireOrgRole(db, "ADMIN")];
+  const requireScopedSite = async (request: FastifyRequest, reply: FastifyReply) => {
+    const { orgId, siteId } = request.params as { orgId: string; siteId: string };
+    const [site] = await db.select({ id: sites.id }).from(sites).where(and(eq(sites.id, siteId), eq(sites.orgId, orgId))).limit(1);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+  };
+  const viewer = [authenticate, requireOrgRole(db, "VIEWER"), requireScopedSite];
+  const admin = [authenticate, requireOrgRole(db, "ADMIN"), requireScopedSite];
 
   app.get("/orgs/:orgId/sites/:siteId/ai/status", { preHandler: viewer }, async () => ({
     enabled: Boolean(provider), provider: provider?.name ?? null, model: provider?.model ?? null,

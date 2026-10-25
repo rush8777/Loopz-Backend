@@ -64,4 +64,12 @@ describe("Movcues AI", () => {
     const cross = await ctx.app.inject({ method: "GET", url: second.base + "/conversations/" + conversation.id, headers: second.auth });
     expect(cross.statusCode).toBe(404);
   });
+  it("rejects a site that does not belong to the requested organization", async () => {
+    const first = await setup();
+    const second = await setup();
+    const crossSiteBase = "/orgs/" + first.owner.org.id + "/sites/" + second.site.id + "/ai";
+    const response = await ctx.app.inject({ method: "GET", url: crossSiteBase + "/status", headers: first.auth });
+    expect(response.statusCode).toBe(404);
+  });
+
 });
