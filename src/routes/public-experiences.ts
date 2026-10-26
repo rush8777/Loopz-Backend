@@ -20,7 +20,7 @@ import type { SegmentDefinition } from "../lib/segments/types.js";
 import { deliveredChecklist } from "./public-checklists.js";
 import { getOrganizationSubscription, subscriptionIsActive } from "../lib/entitlements/subscription.js";
 import { siteThemeTokensSchema } from "../lib/themes/validation.js";
-import { editorAiRequestSchema, runEditorAiTurn } from "../lib/ai/editor.js";
+import { editorAiRequestSchema, runEditorAiTurn, validateEditorProposalAgainstDraft } from "../lib/ai/editor.js";
 import { createConfiguredAiProvider, type AiProvider } from "../lib/ai/providers/index.js";
 
 function rawTokenHash(token: string): string {
@@ -398,8 +398,9 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
     const [experience] = await db.select().from(experiences).where(and(eq(experiences.id, session.experienceId), eq(experiences.siteId, session.siteId))).limit(1);
     const [site] = await db.select().from(sites).where(eq(sites.id, session.siteId)).limit(1);
     if (!experience || !site) return reply.code(404).send({ error: "experience_not_found" });
-    if (experience.builderMode !== "onsite" || experience.kind !== "widget" || experience.widgetType === "survey") return reply.code(409).send({ error: "ai_editor_unsupported" });
-    if (parsed.data.context.experience.id !== experience.id || parsed.data.context.experience.widgetType !== experience.widgetType) return reply.code(409).send({ error: "stale_editor_context" });
+    if (experience.builderMode !== "onsite" || !["widget", "guide"].includes(experience.kind) || experience.widgetType === "survey") return reply.code(409).send({ error: "ai_editor_unsupported" });
+    const guideContext = "guide" in parsed.data.context;
+    if (parsed.data.context.experience.id !== experience.id || parsed.data.context.experience.widgetType !== experience.widgetType || guideContext !== (experience.kind === "guide")) return reply.code(409).send({ error: "stale_editor_context" });
     const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, experience.id));
     const draft = versions.find(item => item.state === "draft");
     if (!draft || draft.revision !== parsed.data.revision) return reply.code(409).send({ error: "draft_conflict", currentRevision: draft?.revision });
@@ -414,6 +415,7 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
     try {
       const history = await db.select({ role: aiMessages.role, content: aiMessages.content }).from(aiMessages).where(eq(aiMessages.conversationId, conversation.id)).orderBy(desc(aiMessages.createdAt)).limit(10);
       const result = await runEditorAiTurn(aiProvider, parsed.data, history.reverse());
+      if (result.proposal) validateEditorProposalAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, result.proposal);
       await Promise.all([
         db.insert(aiMessages).values({ conversationId: conversation.id, role: "assistant", content: result.markdown, proposal: result.proposal, createdAt: new Date() }),
         db.insert(aiProviderUsage).values({ orgId: site.orgId, siteId: site.id, userId: session.dashboardUserId, conversationId: conversation.id, provider: result.generation.provider, model: result.generation.model, promptTokens: result.generation.usage.promptTokens, completionTokens: result.generation.usage.completionTokens, totalTokens: result.generation.usage.totalTokens }),
