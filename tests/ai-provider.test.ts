@@ -42,6 +42,19 @@ describe("AI providers and response validation", () => {
     expect(JSON.stringify(result)).not.toContain("gemini-secret-key");
   });
 
+  it("retries transient Gemini availability failures", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 503 } }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: '{"markdown":"ok","proposal":null}' }] } }],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 4, totalTokenCount: 9 },
+      }), { status: 200 }));
+    const provider = new GeminiApiProvider("gemini-test", "gemini-secret-key", fetcher as typeof fetch);
+
+    await expect(provider.generate({ system: "system", prompt: "prompt" })).resolves.toMatchObject({ provider: "gemini", usage: { totalTokens: 9 } });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects malformed model envelopes before persistence", async () => {
     const provider: AiProvider = { name: "mock", model: "bad", async generate() { return { text: '{"markdown":""}', provider: "mock", model: "bad", usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }; } };
     await expect(runAiTurn({ provider, prompt: "test", history: [], contextJson: "{}" })).rejects.toThrow();

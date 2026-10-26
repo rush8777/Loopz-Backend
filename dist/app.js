@@ -32,6 +32,7 @@ import { registerInvitationRoutes } from "./routes/invitations.js";
 import { registerBillingRoutes } from "./routes/billing.js";
 import { registerPublicSdkVerificationRoutes, registerSdkVerificationRoutes } from "./routes/sdk-verifications.js";
 import { registerPublicThemeRoutes, registerThemeRoutes } from "./routes/themes.js";
+import { registerAiRoutes } from "./routes/ai.js";
 export async function buildApp(db, options = {}) {
     const app = Fastify({ logger: false });
     const dashboardOrigin = new URL(env.DASHBOARD_URL).origin;
@@ -85,6 +86,7 @@ export async function buildApp(db, options = {}) {
     registerAnalyticsRoutes(app, db);
     registerSdkVerificationRoutes(app, db);
     registerThemeRoutes(app, db);
+    registerAiRoutes(app, db, options.aiProvider);
     await app.register(async (publicScope) => {
         await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
         registerPublicConfigRoutes(publicScope, db);

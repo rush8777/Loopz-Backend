@@ -12,7 +12,7 @@ export class GeminiApiProvider implements AiProvider {
 
   async generate(input: AiGenerateInput): Promise<AiGenerateResult> {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`;
-    const response = await this.fetcher(endpoint, {
+    const request: RequestInit = {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -28,8 +28,18 @@ export class GeminiApiProvider implements AiProvider {
         },
       }),
       signal: input.signal,
-    });
-    if (!response.ok) throw new Error(`gemini_http_${response.status}`);
+    };
+
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      response = await this.fetcher(endpoint, request);
+      if (response.ok) break;
+      if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 2) {
+        throw new Error(`gemini_http_${response.status}`);
+      }
+      await wait(400 * 2 ** attempt, input.signal);
+    }
+    if (!response?.ok) throw new Error(`gemini_http_${response?.status ?? "unknown"}`);
 
     const body = await response.json() as {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
@@ -49,4 +59,14 @@ export class GeminiApiProvider implements AiProvider {
       },
     };
   }
+}
+
+function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, milliseconds);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+    }, { once: true });
+  });
 }
