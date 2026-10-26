@@ -4,11 +4,11 @@ import { sendEntitlementError } from "../lib/entitlements/http.js";
 import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { runInTransaction } from "../db/transaction.js";
 import type { Db, DbExecutor } from "../db/client.js";
-import { experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, siteStylePresets, siteThemes, surveyResponses, trackedUsers } from "../db/schema.js";
+import { aiConversations, aiMessages, aiProviderUsage, experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, siteStylePresets, siteThemes, surveyResponses, trackedUsers } from "../db/schema.js";
 import { env } from "../config.js";
 import { signEditorAccessToken, verifyEditorAccessToken } from "../lib/auth.js";
 import { createSurveyResponseSchema, definitionSchemaFor, impressionSchema, manifestQuerySchema, updateDraftSchema, updateSurveyResponseSchema } from "../lib/experiences/validation.js";
@@ -20,6 +20,8 @@ import type { SegmentDefinition } from "../lib/segments/types.js";
 import { deliveredChecklist } from "./public-checklists.js";
 import { getOrganizationSubscription, subscriptionIsActive } from "../lib/entitlements/subscription.js";
 import { siteThemeTokensSchema } from "../lib/themes/validation.js";
+import { editorAiRequestSchema, runEditorAiTurn } from "../lib/ai/editor.js";
+import { createConfiguredAiProvider, type AiProvider } from "../lib/ai/providers/index.js";
 
 function rawTokenHash(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -131,7 +133,8 @@ async function validateEditorAccess(request: FastifyRequest, db: Db) {
   }
 }
 
-export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
+export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, providerOverride?: AiProvider | null) {
+  const aiProvider = providerOverride === undefined ? createConfiguredAiProvider() : providerOverride;
   app.get("/public/sites/:siteId/experiences", async (request, reply) => {
     const { siteId } = request.params as { siteId: string };
     const query = manifestQuerySchema.safeParse(request.query);
@@ -383,6 +386,44 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db) {
       const saved = await saveExperienceDraft(db, site, experience, draft, definition.data, parsed.data.revision);
       return reply.send({ version: { id: saved.id, versionNumber: saved.versionNumber, revision: saved.revision, definition: saved.definition } });
     } catch (error) { if (error instanceof DraftWriteError) return reply.code(error.status).send({ error: error.message }); return sendEntitlementError(reply, error); }
+  });
+
+  app.post("/public/experience-editor/:sessionId/ai/chat", { config: { rateLimit: { max: 12, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const session = await validateEditorAccess(request, db);
+    const { sessionId } = request.params as { sessionId: string };
+    if (!session || session.id !== sessionId) return reply.code(401).send({ error: "invalid_editor_access" });
+    if (!aiProvider) return reply.code(503).send({ error: "ai_disabled", message: "Movcues AI is not configured on the backend." });
+    const parsed = editorAiRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+    const [experience] = await db.select().from(experiences).where(and(eq(experiences.id, session.experienceId), eq(experiences.siteId, session.siteId))).limit(1);
+    const [site] = await db.select().from(sites).where(eq(sites.id, session.siteId)).limit(1);
+    if (!experience || !site) return reply.code(404).send({ error: "experience_not_found" });
+    if (experience.builderMode !== "onsite" || experience.kind !== "widget" || experience.widgetType === "survey") return reply.code(409).send({ error: "ai_editor_unsupported" });
+    if (parsed.data.context.experience.id !== experience.id || parsed.data.context.experience.widgetType !== experience.widgetType) return reply.code(409).send({ error: "stale_editor_context" });
+    const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, experience.id));
+    const draft = versions.find(item => item.state === "draft");
+    if (!draft || draft.revision !== parsed.data.revision) return reply.code(409).send({ error: "draft_conflict", currentRevision: draft?.revision });
+    const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+    const usage = await db.select({ totalTokens: aiProviderUsage.totalTokens }).from(aiProviderUsage).where(and(eq(aiProviderUsage.orgId, site.orgId), gte(aiProviderUsage.createdAt, dayStart)));
+    if (usage.reduce((total, row) => total + row.totalTokens, 0) >= env.AI_DAILY_TOKEN_LIMIT) return reply.code(429).send({ error: "ai_daily_limit", message: "This workspace reached its daily AI usage limit." });
+    let conversation = parsed.data.conversationId ? (await db.select().from(aiConversations).where(and(eq(aiConversations.id, parsed.data.conversationId), eq(aiConversations.siteId, site.id), eq(aiConversations.userId, session.dashboardUserId))).limit(1))[0] : undefined;
+    if (parsed.data.conversationId && !conversation) return reply.code(404).send({ error: "conversation_not_found" });
+    if (!conversation) [conversation] = await db.insert(aiConversations).values({ orgId: site.orgId, siteId: site.id, userId: session.dashboardUserId, title: `Builder: ${experience.name}`.slice(0, 120) }).returning();
+    const now = new Date();
+    await db.insert(aiMessages).values({ conversationId: conversation.id, role: "user", content: parsed.data.prompt, createdAt: now });
+    try {
+      const history = await db.select({ role: aiMessages.role, content: aiMessages.content }).from(aiMessages).where(eq(aiMessages.conversationId, conversation.id)).orderBy(desc(aiMessages.createdAt)).limit(10);
+      const result = await runEditorAiTurn(aiProvider, parsed.data, history.reverse());
+      await Promise.all([
+        db.insert(aiMessages).values({ conversationId: conversation.id, role: "assistant", content: result.markdown, proposal: result.proposal, createdAt: new Date() }),
+        db.insert(aiProviderUsage).values({ orgId: site.orgId, siteId: site.id, userId: session.dashboardUserId, conversationId: conversation.id, provider: result.generation.provider, model: result.generation.model, promptTokens: result.generation.usage.promptTokens, completionTokens: result.generation.usage.completionTokens, totalTokens: result.generation.usage.totalTokens }),
+        db.update(aiConversations).set({ updatedAt: new Date() }).where(eq(aiConversations.id, conversation.id)),
+      ]);
+      return { conversationId: conversation.id, revision: draft.revision, markdown: result.markdown, proposal: result.proposal };
+    } catch (error) {
+      request.log.error({ err: error, sessionId }, "Editor AI turn failed");
+      return reply.code(502).send({ error: "ai_generation_failed", conversationId: conversation.id, message: "Movcues AI could not complete this request. Your message was preserved; please retry." });
+    }
   });
 
   app.post("/public/experience-editor/:sessionId/style-presets", async (request, reply) => {

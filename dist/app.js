@@ -33,8 +33,10 @@ import { registerBillingRoutes } from "./routes/billing.js";
 import { registerPublicSdkVerificationRoutes, registerSdkVerificationRoutes } from "./routes/sdk-verifications.js";
 import { registerPublicThemeRoutes, registerThemeRoutes } from "./routes/themes.js";
 import { registerAiRoutes } from "./routes/ai.js";
+import { createConfiguredAiProvider } from "./lib/ai/providers/index.js";
 export async function buildApp(db, options = {}) {
     const app = Fastify({ logger: false });
+    const aiProvider = options.aiProvider ?? createConfiguredAiProvider();
     const dashboardOrigin = new URL(env.DASHBOARD_URL).origin;
     const dashboardOrigins = new Set([dashboardOrigin]);
     // Vite serves the dashboard over HTTP locally by default. Keep the
@@ -86,7 +88,7 @@ export async function buildApp(db, options = {}) {
     registerAnalyticsRoutes(app, db);
     registerSdkVerificationRoutes(app, db);
     registerThemeRoutes(app, db);
-    registerAiRoutes(app, db, options.aiProvider);
+    registerAiRoutes(app, db, aiProvider);
     await app.register(async (publicScope) => {
         await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
         registerPublicConfigRoutes(publicScope, db);
@@ -117,7 +119,7 @@ export async function buildApp(db, options = {}) {
     });
     await app.register(async (publicExperienceScope) => {
         await publicExperienceScope.register(rateLimit, { global: true, max: 180, timeWindow: "1 minute" });
-        registerPublicExperienceRoutes(publicExperienceScope, db);
+        registerPublicExperienceRoutes(publicExperienceScope, db, aiProvider);
         registerPublicChecklistRoutes(publicExperienceScope, db);
     });
     app.get("/health", async (_request, reply) => {

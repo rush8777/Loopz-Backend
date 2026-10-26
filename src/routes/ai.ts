@@ -30,8 +30,8 @@ async function loadConversation(db: Db, input: { id: string; orgId: string; site
   return row ?? null;
 }
 
-export function registerAiRoutes(app: FastifyInstance, db: Db, providerOverride?: AiProvider) {
-  const provider = providerOverride ?? createConfiguredAiProvider();
+export function registerAiRoutes(app: FastifyInstance, db: Db, providerOverride?: AiProvider | null) {
+  const provider = providerOverride === undefined ? createConfiguredAiProvider() : providerOverride;
   const requireScopedSite = async (request: FastifyRequest, reply: FastifyReply) => {
     const { orgId, siteId } = request.params as { orgId: string; siteId: string };
     const [site] = await db.select({ id: sites.id }).from(sites).where(and(eq(sites.id, siteId), eq(sites.orgId, orgId))).limit(1);

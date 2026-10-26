@@ -26,7 +26,7 @@ async function loadConversation(db, input) {
     return row ?? null;
 }
 export function registerAiRoutes(app, db, providerOverride) {
-    const provider = providerOverride ?? createConfiguredAiProvider();
+    const provider = providerOverride === undefined ? createConfiguredAiProvider() : providerOverride;
     const requireScopedSite = async (request, reply) => {
         const { orgId, siteId } = request.params;
         const [site] = await db.select({ id: sites.id }).from(sites).where(and(eq(sites.id, siteId), eq(sites.orgId, orgId))).limit(1);

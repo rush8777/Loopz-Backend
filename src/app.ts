@@ -36,9 +36,11 @@ import { registerPublicThemeRoutes, registerThemeRoutes } from "./routes/themes.
 import type { VerifyGoogleCredential } from "./lib/google-auth.js";
 import { registerAiRoutes } from "./routes/ai.js";
 import type { AiProvider } from "./lib/ai/providers/types.js";
+import { createConfiguredAiProvider } from "./lib/ai/providers/index.js";
 
 export async function buildApp(db: Db, options: { verifyGoogleCredential?: VerifyGoogleCredential; aiProvider?: AiProvider } = {}) {
   const app = Fastify({ logger: false });
+  const aiProvider = options.aiProvider ?? createConfiguredAiProvider();
   const dashboardOrigin = new URL(env.DASHBOARD_URL).origin;
   const dashboardOrigins = new Set([dashboardOrigin]);
 
@@ -95,7 +97,7 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
   registerAnalyticsRoutes(app, db);
   registerSdkVerificationRoutes(app, db);
   registerThemeRoutes(app, db);
-  registerAiRoutes(app, db, options.aiProvider);
+  registerAiRoutes(app, db, aiProvider);
 
   await app.register(async (publicScope) => {
     await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
@@ -131,7 +133,7 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
 
   await app.register(async (publicExperienceScope) => {
     await publicExperienceScope.register(rateLimit, { global: true, max: 180, timeWindow: "1 minute" });
-    registerPublicExperienceRoutes(publicExperienceScope, db);
+    registerPublicExperienceRoutes(publicExperienceScope, db, aiProvider);
     registerPublicChecklistRoutes(publicExperienceScope, db);
   });
 
