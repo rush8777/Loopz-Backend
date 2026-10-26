@@ -266,13 +266,14 @@ export function compileOnsiteDocument(document, widgetType, survey, checklist) {
     else if (survey)
         throw new Error("Survey cells require document version 3.");
     const css = [
-        ".movcues-widget{box-sizing:border-box;width:100%;max-width:100%;min-width:0;overflow-wrap:anywhere;background:var(--movcues-bg);color:var(--movcues-fg)}",
+        ".movcues-widget{box-sizing:border-box;width:100%;max-width:100%;min-width:0;overflow-wrap:anywhere;padding:var(--movcues-theme-spacing,0);background:var(--movcues-bg);color:var(--movcues-fg);border-color:var(--movcues-border,transparent);border-radius:var(--movcues-theme-radius,inherit);font-family:var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);font-size:var(--movcues-font-body-size,15px);box-shadow:var(--movcues-theme-shadow,none)}",
         ".movcues-widget *{box-sizing:border-box}",
         ".movcues-widget .movcues-cell{display:flex;min-width:0;max-width:100%}",
         ".movcues-widget .movcues-block{min-width:0;max-width:100%;margin:0}",
         ".movcues-widget .movcues-block img{display:block;max-width:100%}",
-        ".movcues-widget .movcues-button{border:0;font:600 14px/1.2 ui-sans-serif,system-ui,sans-serif;cursor:pointer}",
-        ".movcues-widget .movcues-button--primary{background:var(--movcues-primary);color:#fff}",
+        ".movcues-widget .movcues-heading{font-family:var(--movcues-font-heading,var(--movcues-font-body));font-size:var(--movcues-font-heading-size,inherit)}",
+        ".movcues-widget .movcues-button{min-height:40px;border:0;border-radius:var(--movcues-button-radius,8px);font:600 14px/1.2 var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);cursor:pointer}",
+        ".movcues-widget .movcues-button--primary{background:var(--movcues-primary);color:var(--movcues-primary-fg,#fff)}",
         ".movcues-widget .movcues-button--secondary{background:transparent;color:inherit}",
         ".movcues-widget .movcues-button--outline{background:transparent;color:inherit;border:1px solid currentColor}",
         ".movcues-widget .movcues-block--full{width:100%}",
@@ -327,17 +328,17 @@ function renderBlock(block, css, survey, checklist) {
         return `<div ${attrs}><div data-movcues-checklist-role="progress"></div><div class="movcues-checklist-progress-track"><span class="movcues-checklist-progress-fill"></span></div></div>`;
     }
     if (block.type === "question") {
-        css.push(`${selector}{font:${block.fontSize}px/1.5 ui-sans-serif,system-ui,sans-serif;text-align:${align};${block.color ? `color:${block.color};` : ""}}`);
+        css.push(`${selector}{font:${block.fontSize}px/1.5 var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);text-align:${align};${block.color ? `color:${block.color};` : ""}}`);
         return surveyQuestionMarkup(survey.questions.find(question => question.id === block.questionId), block.id);
     }
     if (block.type === "survey_controls")
         return surveyControlsMarkup(block.id, survey?.submitLabel ?? "Submit");
     if (block.type === "heading") {
-        css.push(`${selector}{font:${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.25} ui-sans-serif,system-ui,sans-serif;text-align:${align};${block.color ? `color:${block.color};` : ""}}`);
+        css.push(`${selector}{font:${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.25} var(--movcues-font-heading,ui-sans-serif,system-ui,sans-serif);text-align:${align};${block.color ? `color:${block.color};` : ""}}`);
         return `<h${block.level} class="movcues-block movcues-heading" data-movcues-block-id="${block.id}" data-movcues-content="heading">${sanitizeRichText(block.html)}</h${block.level}>`;
     }
     if (block.type === "text") {
-        css.push(`${selector}{font:${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.5} ui-sans-serif,system-ui,sans-serif;text-align:${align};white-space:pre-wrap;${block.color ? `color:${block.color};` : ""}}`);
+        css.push(`${selector}{font:${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.5} var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);text-align:${align};white-space:pre-wrap;${block.color ? `color:${block.color};` : ""}}`);
         return `<div class="movcues-block movcues-text" data-movcues-block-id="${block.id}" data-movcues-content="body">${sanitizeRichText(block.html)}</div>`;
     }
     if (block.type === "button") {

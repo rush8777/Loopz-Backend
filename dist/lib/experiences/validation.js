@@ -4,6 +4,7 @@ import { builderCssIsSafe, builderHtmlIsSafe } from "./builderContentContract.js
 import { pageRuleSchema } from "../pages/validation.js";
 import { siteThemeTokensSchema } from "../themes/validation.js";
 import { rawOnsiteDocument, validateCompiledOnsiteBuilder } from "./onsiteDocument.js";
+import { resolveTemplate } from "./templateRegistry.js";
 const selectorSchema = z.string().trim().min(1).max(1000);
 const safeColorSchema = z.string().trim().min(1).max(40).regex(/^(#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([0-9.,%\s-]+\)|[a-z]{1,20})$/i, "unsupported color value");
 const actionSchema = z.object({
@@ -46,9 +47,27 @@ const designSchema = z.object({
         foreground: safeColorSchema,
         primary: safeColorSchema,
         borderRadius: z.enum(["sm", "md", "lg"]),
+        spacing: z.number().min(0).max(64).optional(),
         siteTheme: siteThemeTokensSchema.optional(),
     }),
 });
+const templateIdentitySchema = z.object({ id: z.string().trim().min(1).max(100).regex(/^[a-z0-9-]+$/), version: z.literal(1) }).strict();
+const visualThemeSchema = z.object({
+    source: z.enum(["template", "site", "preset"]),
+    preset: z.enum(["minimal", "modern", "soft", "dark"]).optional(),
+    templateId: z.string().trim().min(1).max(100).regex(/^[a-z0-9-]+$/).optional(),
+    templateTokens: siteThemeTokensSchema,
+    baseTokens: siteThemeTokensSchema,
+    overrides: z.object({
+        primary: safeColorSchema.optional(), secondary: safeColorSchema.optional(), background: safeColorSchema.optional(), text: safeColorSchema.optional(),
+        bodyFontFamily: z.string().trim().min(1).max(200).refine(value => !/[{};@]|url\s*\(/i.test(value), "unsafe font family").optional(),
+        headingFontFamily: z.string().trim().min(1).max(200).refine(value => !/[{};@]|url\s*\(/i.test(value), "unsafe font family").optional(),
+        bodyFontSize: z.number().min(8).max(72).optional(), headingFontSize: z.number().min(10).max(160).optional(),
+        buttonRadius: z.number().min(0).max(100).optional(), radius: z.number().min(0).max(100).optional(),
+        shadow: z.object({ x: z.number().min(-100).max(100), y: z.number().min(-100).max(100), blur: z.number().min(0).max(200), spread: z.number().min(-100).max(100), color: safeColorSchema }).strict().optional(),
+        spacing: z.number().min(0).max(64).optional(),
+    }).strict(),
+}).strict();
 function builderProjectValueIsSafe(value) {
     if (typeof value === "string")
         return !/<\s*script\b|\son[a-z]+\s*=|javascript\s*:/i.test(value);
@@ -123,6 +142,8 @@ export const widgetDefinitionSchema = z.object({
     target: targetSchema.optional(),
     targeting: targetingSchema,
     survey: z.lazy(() => surveyConfigSchema).optional(),
+    visualTheme: visualThemeSchema.optional(),
+    template: templateIdentitySchema.optional(),
 }).strict().superRefine((definition, ctx) => {
     if (definition.content.primaryAction?.type === "next_step" || definition.content.primaryAction?.type === "previous_step")
         ctx.addIssue({ code: "custom", path: ["content", "primaryAction", "type"], message: "step navigation is only supported by guides" });
@@ -228,6 +249,8 @@ export const guideDefinitionSchema = z.object({
     design: designSchema,
     behavior: z.object({ layer: layerSchema.optional() }).strict().optional(),
     targeting: targetingSchema,
+    visualTheme: visualThemeSchema.optional(),
+    template: templateIdentitySchema.optional(),
 }).strict().superRefine((guide, ctx) => { const ids = new Set(); guide.steps.forEach((step, index) => { if (ids.has(step.id))
     ctx.addIssue({ code: "custom", path: ["steps", index, "id"], message: "Guide step IDs must be unique" }); ids.add(step.id); }); });
 export function guidePublishIssues(guide) {
@@ -264,6 +287,9 @@ export const checklistDefinitionSchema = z.object({
     completionMessage: z.object({ title: z.string().trim().min(1).max(160), description: z.string().trim().max(2000).optional(), acknowledgeLabel: z.string().trim().min(1).max(80) }).strict(),
     targeting: checklistTargetingSchema,
     builder: builderSchema,
+    design: designSchema.optional(),
+    visualTheme: visualThemeSchema.optional(),
+    template: templateIdentitySchema.optional(),
 }).strict().superRefine((definition, ctx) => {
     if (rawOnsiteDocument(definition.builder) !== undefined)
         validateCompiledOnsiteBuilder(definition.builder, { heading: definition.title, body: definition.description ?? "" }, "checklist", false, undefined, definition).forEach(message => ctx.addIssue({ code: "custom", path: ["builder"], message }));
@@ -292,7 +318,8 @@ export const createExperienceSchema = z.object({
     name: z.string().trim().min(1).max(200),
     buildPageId: z.string().min(1).max(64).nullable().optional(),
     buildUrl: z.url().max(2000).nullable().optional(),
-    template: z.enum(["blank", "default", "minimal", "soft", "compact"]).default("blank"),
+    template: z.string().trim().min(1).max(100).regex(/^[a-z0-9-]+$/).default("blank"),
+    theme: z.object({ source: z.enum(["template", "site", "preset"]), preset: z.enum(["minimal", "modern", "soft", "dark"]).optional() }).strict().optional(),
     useBuildPageAsTarget: z.boolean().default(false),
 }).strict().superRefine((value, ctx) => {
     if (value.kind === "widget" && !value.widgetType)
@@ -303,10 +330,13 @@ export const createExperienceSchema = z.object({
         ctx.addIssue({ code: "custom", path: ["guidePattern"], message: "guidePattern is only valid for guides" });
     if ((value.kind !== "checklist" || value.builderMode === "onsite") && !value.buildPageId && !value.buildUrl)
         ctx.addIssue({ code: "custom", path: ["buildUrl"], message: "a build page or URL is required" });
-    if (value.kind === "checklist" && value.template === "blank")
-        ctx.addIssue({ code: "custom", path: ["template"], message: "choose a Checklist preset" });
-    if (value.kind !== "checklist" && value.template !== "blank")
-        ctx.addIssue({ code: "custom", path: ["template"], message: "presets are only supported for Checklists" });
+    const legacyChecklistPreset = value.kind === "checklist" && ["default", "minimal", "soft", "compact"].includes(value.template);
+    if (value.template !== "blank" && !legacyChecklistPreset && !resolveTemplate(value.template, value.kind, value.widgetType))
+        ctx.addIssue({ code: "custom", path: ["template"], message: "template is not available for this experience type" });
+    if (value.builderMode === "grapesjs" && value.template !== "blank" && !legacyChecklistPreset)
+        ctx.addIssue({ code: "custom", path: ["template"], message: "bundled visual templates require the on-site builder" });
+    if (value.theme?.source === "preset" && !value.theme.preset)
+        ctx.addIssue({ code: "custom", path: ["theme", "preset"], message: "preset is required" });
 });
 export const updateDraftSchema = z.object({
     name: z.string().trim().min(1).max(200).optional(),

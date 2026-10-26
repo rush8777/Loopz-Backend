@@ -1,5 +1,5 @@
 import type { PageRule } from "../pages/types.js";
-import type { SiteThemeTokens } from "../themes/types.js";
+import type { SiteThemeTokens, VisualThemeState } from "../themes/types.js";
 
 export type ExperienceKind = "guide" | "widget" | "checklist";
 export type WidgetType = "anchored_card" | "toast" | "cursor_follow" | "modal" | "slideout" | "hotspot" | "banner" | "survey";
@@ -46,6 +46,7 @@ export interface ExperienceDesign {
     foreground: string;
     primary: string;
     borderRadius: "sm" | "md" | "lg";
+    spacing?: number;
     siteTheme?: SiteThemeTokens;
   };
 }
@@ -135,6 +136,9 @@ export interface ChecklistExperienceDefinition {
   completionMessage: { title: string; description?: string; acknowledgeLabel: string };
   targeting: ChecklistTargeting;
   builder: WidgetBuilderState;
+  design?: ExperienceDesign;
+  visualTheme?: VisualThemeState;
+  template?: { id: string; version: 1 };
 }
 
 export interface GuideStep {
@@ -176,6 +180,8 @@ export interface WidgetExperienceDefinition {
   target?: ExperienceTarget;
   targeting: ExperienceTargeting;
   survey?: SurveyConfig;
+  visualTheme?: VisualThemeState;
+  template?: { id: string; version: 1 };
 }
 
 export interface GuideExperienceDefinition {
@@ -183,6 +189,8 @@ export interface GuideExperienceDefinition {
   design: ExperienceDesign;
   behavior?: { layer?: ExperienceLayer };
   targeting: ExperienceTargeting;
+  visualTheme?: VisualThemeState;
+  template?: { id: string; version: 1 };
 }
 
 export type ExperienceDefinition = WidgetExperienceDefinition | GuideExperienceDefinition | ChecklistExperienceDefinition;

@@ -53,7 +53,7 @@ export async function saveExperienceDraft(db: Db, site: typeof sites.$inferSelec
   if (experience.builderMode === "onsite" && !onsiteCompatible(experience.kind as ExperienceKind, experience.widgetType as WidgetType | null)) throw new DraftWriteError(400, "onsite_builder_unsupported");
   const result = definitionSchemaFor(experience.kind as ExperienceKind, experience.widgetType).safeParse(candidate);
   if (!result.success) throw new DraftWriteError(400, "invalid_definition");
-  const definition = result.data;
+  const definition = result.data as ExperienceDefinition;
   if (experience.builderMode === "onsite" && isChecklistDefinition(definition)) {
     if (rawOnsiteDocument(definition.builder) === undefined || validateCompiledOnsiteBuilder(definition.builder,{heading:definition.title,body:definition.description??""},"checklist",false,undefined,definition).length) throw new DraftWriteError(400,"inconsistent_onsite_content");
   }

@@ -8,7 +8,7 @@ import { experienceEditorSessions, experiences, experienceVersions, pageDefiniti
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, guidePublishIssues, updateDraftSchema } from "../lib/experiences/validation.js";
-import { guideStepRequiresTarget, type BuilderMode, type ExperienceContent, type ExperienceDefinition, type ExperienceKind, type ExperienceTargeting, type GuideStepPattern, type WidgetBuilderState, type WidgetType } from "../lib/experiences/types.js";
+import { guideStepRequiresTarget, type BuilderMode, type ChecklistExperienceDefinition, type ExperienceContent, type ExperienceDefinition, type ExperienceDesign, type ExperienceKind, type ExperienceTargeting, type GuideStep, type GuideStepPattern, type SurveyQuestion, type WidgetBuilderState, type WidgetType } from "../lib/experiences/types.js";
 import { isChecklistDefinition } from "../lib/experiences/types.js";
 import { initialChecklistDefinition, type ChecklistPreset } from "../lib/experiences/checklistPresets.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
@@ -21,6 +21,10 @@ import { requiredExperienceFeatures } from "../lib/entitlements/experienceFeatur
 import type { SiteThemeTokens } from "../lib/themes/types.js";
 import { siteThemeCss } from "../lib/themes/css.js";
 import { applyOnsiteDocument, createOnsiteChecklistDocument, createOnsiteDocument, createOnsiteSurveyDocument, listBlocks } from "../lib/experiences/onsiteDocument.js";
+import { onsiteId } from "../lib/experiences/onsiteDocument.js";
+import { resolveTemplate, templatesFor, type VisualPresetId } from "../lib/experiences/templateRegistry.js";
+import { presetTokens } from "../lib/themes/presets.js";
+import type { VisualThemeState } from "../lib/themes/types.js";
 
 const SUPPORTED_WIDGET_TYPES: WidgetType[] = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
 
@@ -104,7 +108,7 @@ function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, 
     const behavior = guidePattern === "modal"
       ? { dismissible: true }
       : { placement: "auto" as const, alignment: "center" as const, offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true };
-    return { steps: [{ id: "step_1", pattern: guidePattern, content, ...(builderMode === "onsite" ? { builder: onsiteBuilder(content, guidePattern) } : {}), behavior }], design: themedDesign(siteTheme), behavior: { layer: { mode: "auto" } }, targeting: targeting(pageRules) };
+    return { steps: [{ id: onsiteId("step"), pattern: guidePattern, content, ...(builderMode === "onsite" ? { builder: onsiteBuilder(content, guidePattern) } : {}), behavior }], design: themedDesign(siteTheme), behavior: { layer: { mode: "auto" } }, targeting: targeting(pageRules) };
   }
   const definition: ExperienceDefinition = {
     content,
@@ -176,6 +180,119 @@ function themedDesign(theme?: SiteThemeTokens) {
   return { width: "md" as const, theme: { background: theme.colors.background, foreground: theme.colors.text, primary: theme.colors.primary, borderRadius: (theme.radii.md <= 6 ? "sm" : theme.radii.md >= 18 ? "lg" : "md") as "sm" | "md" | "lg", siteTheme: theme } };
 }
 
+function templateTokens(template: ReturnType<typeof resolveTemplate>): SiteThemeTokens {
+  const tokens = presetTokens(template?.preset ?? "modern");
+  if (template) { tokens.colors.primary = template.accent; tokens.colors.surface = template.surface; }
+  return tokens;
+}
+
+function visualTheme(template: ReturnType<typeof resolveTemplate>, requested: { source: "template" | "site" | "preset"; preset?: VisualPresetId } | undefined, captured?: SiteThemeTokens): { state: VisualThemeState; tokens: SiteThemeTokens } {
+  const defaults = templateTokens(template);
+  const source = requested?.source ?? (captured ? "site" : "template");
+  const base = source === "site" && captured ? structuredClone(captured) : source === "preset" ? presetTokens(requested?.preset ?? "modern") : structuredClone(defaults);
+  return { tokens: base, state: { source, ...(source === "preset" ? { preset: requested?.preset ?? "modern" } : {}), ...(template ? { templateId: template.id } : {}), templateTokens: defaults, baseTokens: structuredClone(base), overrides: {} } };
+}
+
+function applyDesign(definition: ExperienceDefinition, design: ExperienceDesign, state: VisualThemeState, templateId?: string): void {
+  if ("items" in definition) definition.design = design; else definition.design = design;
+  definition.visualTheme = state;
+  if (templateId) definition.template = { id: templateId, version: 1 };
+}
+
+function widgetTemplateCopy(id: string): { heading: string; body: string; action: string } {
+  const copy: Record<string, { heading: string; body: string; action: string }> = {
+    "widget-welcome-modal": { heading: "Welcome — let's get you set up", body: "Discover the essentials and reach your first win in just a few minutes.", action: "Show me around" },
+    "widget-feature-announcement": { heading: "A faster way to finish your work", body: "Meet the redesigned workflow that keeps your team focused and moving.", action: "Explore the update" },
+    "widget-upgrade-slideout": { heading: "Unlock more for your team", body: "Upgrade to collaborate without limits and access advanced insights.", action: "View plans" },
+    "widget-feature-tooltip": { heading: "New: saved views", body: "Save this filtered view and return to it whenever you need it.", action: "Got it" },
+    "widget-notification-toast": { heading: "Changes saved", body: "Your latest updates are ready for the team.", action: "Dismiss" },
+  };
+  return copy[id] ?? { heading: "A helpful message", body: "Add a concise message for your visitors.", action: "Got it" };
+}
+
+function guideTemplateSteps(id: string): Array<{ pattern: GuideStepPattern; heading: string; body: string }> {
+  if (id === "guide-feature-discovery") return [
+    { pattern: "modal", heading: "Discover a smarter workflow", body: "We'll show you one useful feature and where it fits in your day." },
+    { pattern: "anchored_card", heading: "Find it right here", body: "Use this control to open the feature whenever you need it." },
+    { pattern: "modal", heading: "You're ready", body: "Try it now and make the workflow your own." },
+  ];
+  if (id === "guide-product-tour") return [
+    { pattern: "modal", heading: "Your product tour", body: "Take a quick look at the areas that help teams move faster." },
+    { pattern: "anchored_card", heading: "Keep work organized", body: "Use this area to find, filter, and manage active work." },
+    { pattern: "anchored_card", heading: "See progress clearly", body: "Review progress and spot anything that needs attention." },
+    { pattern: "modal", heading: "Tour complete", body: "You're ready to explore. You can reopen this tour whenever you need it." },
+  ];
+  return [
+    { pattern: "modal", heading: "Welcome aboard", body: "Let's complete the essentials so you can get value right away." },
+    { pattern: "modal", heading: "Make it yours", body: "Set your preferences and invite teammates when you're ready." },
+    { pattern: "modal", heading: "Create your first win", body: "Start the core workflow now — we'll keep the next step clear." },
+  ];
+}
+
+function question(type: SurveyQuestion["type"], label: string, required = false): SurveyQuestion {
+  const id = onsiteId("question");
+  if (type === "single_choice" || type === "multiple_choice") return { id, type, label, required, options: ["Very useful", "Somewhat useful", "Not useful yet"].map(labelValue => ({ id: onsiteId("option"), label: labelValue })) };
+  if (type === "rating") return { id, type, label, required, min: 1, max: 5 };
+  if (type === "nps") return { id, type, label, required };
+  return { id, type, label, required, placeholder: "Share a little more…", maxLength: type === "short_text" ? 500 : 2000 };
+}
+
+function surveyQuestions(id: string): Array<{ heading: string; body: string; questions: SurveyQuestion[] }> {
+  if (id === "survey-nps") return [
+    { heading: "How likely are you to recommend us?", body: "Choose a score from 0 to 10.", questions: [question("nps", "How likely are you to recommend us to a friend or colleague?", true)] },
+    { heading: "What shaped your score?", body: "Your feedback helps us focus on what matters.", questions: [question("long_text", "What is the main reason for your score?")] },
+  ];
+  if (id === "survey-feature-feedback") return [
+    { heading: "How is this feature working for you?", body: "Tell us what helps and what could be better.", questions: [question("single_choice", "How useful is this feature?", true), question("long_text", "What would improve it most?")] },
+  ];
+  return [
+    { heading: "How satisfied are you?", body: "A quick rating helps us improve your experience.", questions: [question("rating", "How satisfied are you with your experience?", true), question("long_text", "What could we do better?")] },
+  ];
+}
+
+function checklistCopy(id: string): Pick<ChecklistExperienceDefinition, "title" | "description" | "items" | "completionMessage"> {
+  const rows = id === "checklist-account-setup" ? [
+    ["Complete your profile", "Add the details teammates use to recognize you."], ["Secure your account", "Review sign-in and recovery settings."], ["Invite a teammate", "Bring one collaborator into the workspace."],
+  ] : id === "checklist-product-activation" ? [
+    ["Connect your data", "Bring in the source that powers your workflow."], ["Create your first project", "Set up a real workspace for your team."], ["Complete the core action", "Finish one workflow from start to result."],
+  ] : [
+    ["Personalize your workspace", "Choose the settings that fit how you work."], ["Create your first item", "Turn an idea into a real piece of work."], ["Share it with your team", "Invite someone to review or collaborate."],
+  ];
+  return { title: id === "checklist-account-setup" ? "Set up your account" : id === "checklist-product-activation" ? "Activate your workspace" : "Getting started", description: "Complete these quick steps to get the most from your workspace.", items: rows.map(([title, description]) => ({ id: onsiteId("item"), title, description, action: { type: "none" as const }, completion: { type: "item_clicked" as const } })), completionMessage: { title: "You're all set", description: "Everything is ready for your next step.", acknowledgeLabel: "Continue" } };
+}
+
+function instantiateTemplate(definition: ExperienceDefinition, kind: ExperienceKind, widgetType: WidgetType | null, templateId: string): ExperienceDefinition {
+  if (templateId === "blank") return definition;
+  if (kind === "checklist" && "items" in definition) {
+    const copy = checklistCopy(templateId); Object.assign(definition, copy);
+    applyOnsiteDocument(definition.builder, createOnsiteChecklistDocument(definition), "checklist", undefined, definition);
+    return definition;
+  }
+  if (kind === "guide" && "steps" in definition) {
+    definition.steps = guideTemplateSteps(templateId).map((spec, index, all): GuideStep => {
+      const content: ExperienceContent = { heading: spec.heading, body: spec.body, primaryAction: { label: index === all.length - 1 ? "Finish" : "Next", type: index === all.length - 1 ? "dismiss" : "next_step" } };
+      return { id: onsiteId("step"), label: spec.heading, pattern: spec.pattern, content, builder: onsiteBuilder(content, spec.pattern), advance: { type: "button" }, behavior: spec.pattern === "modal" ? { dismissible: true } : { placement: "auto", alignment: "center", offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true } };
+    });
+    return definition;
+  }
+  if (kind === "widget" && widgetType === "survey" && "content" in definition) {
+    const steps = surveyQuestions(templateId); const submitLabel = "Submit feedback";
+    definition.survey = { showProgress: steps.length > 1, allowBack: true, submitLabel, steps: steps.map(spec => {
+      const builder: WidgetBuilderState = { version: 1, projectData: {}, html: "", css: "" };
+      const content = applyOnsiteDocument(builder, createOnsiteSurveyDocument(spec.questions, { heading: spec.heading, body: spec.body }), "survey", { questions: spec.questions, submitLabel }).content;
+      return { id: onsiteId("step"), content, questions: spec.questions, builder };
+    }) };
+    definition.content = { ...definition.survey.steps[0].content };
+    return definition;
+  }
+  if (kind === "widget" && "content" in definition) {
+    const copy = widgetTemplateCopy(templateId);
+    definition.content = { heading: copy.heading, body: copy.body, primaryAction: { label: copy.action, type: templateId === "widget-upgrade-slideout" ? "open_url" : "dismiss", ...(templateId === "widget-upgrade-slideout" ? { url: "https://example.com/plans" } : {}) } };
+    definition.builder = onsiteBuilder(definition.content, widgetType ?? "modal");
+  }
+  return definition;
+}
+
 async function serializeExperience(db: Db, row: typeof experiences.$inferSelect) {
   const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, row.id)).orderBy(desc(experienceVersions.versionNumber));
   const draft = versions.find((version) => version.state === "draft") ?? null;
@@ -240,6 +357,16 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     return reply.send({ experiences: await Promise.all(filtered.map((row) => serializeExperience(db, row))) });
   });
 
+  app.get("/orgs/:orgId/sites/:siteId/experience-templates", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
+    const { siteId } = request.params as { siteId: string };
+    const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const query = z.object({ kind: z.enum(["guide", "widget", "checklist"]), widgetType: z.enum(SUPPORTED_WIDGET_TYPES as [WidgetType, ...WidgetType[]]).nullable().optional() }).safeParse(request.query);
+    if (!query.success || (query.data.kind === "widget") !== Boolean(query.data.widgetType)) return reply.code(400).send({ error: "invalid_query" });
+    const [theme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
+    return reply.send({ templates: templatesFor(query.data.kind, query.data.widgetType), presets: ["minimal", "modern", "soft", "dark"], hasSiteTheme: Boolean(theme?.activeTokens) });
+  });
+
   app.post("/orgs/:orgId/sites/:siteId/experiences", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
     const { siteId } = request.params as { siteId: string };
     const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
@@ -263,9 +390,17 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const [storedTheme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
     const activeTheme = (storedTheme?.activeTokens ?? undefined) as SiteThemeTokens | undefined;
     if (parsed.data.builderMode === "onsite" && !onsiteCompatible(parsed.data.kind, parsed.data.widgetType ?? null)) return reply.code(400).send({ error: "onsite_builder_unsupported" });
-    const definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(parsed.data.template as ChecklistPreset, activeTheme) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules, activeTheme, parsed.data.builderMode, parsed.data.guidePattern);
-
-    if (parsed.data.kind === "checklist" && parsed.data.builderMode === "onsite" && isChecklistDefinition(definition)) applyOnsiteDocument(definition.builder,createOnsiteChecklistDocument(definition),"checklist",undefined,definition);
+    const isLegacyChecklistPreset = parsed.data.kind === "checklist" && ["default","minimal","soft","compact"].includes(parsed.data.template);
+    const legacyPreset = isLegacyChecklistPreset ? parsed.data.template as ChecklistPreset : "default";
+    let definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(legacyPreset, activeTheme) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules, activeTheme, parsed.data.builderMode, parsed.data.guidePattern);
+    const selectedTemplate = resolveTemplate(parsed.data.template, parsed.data.kind, parsed.data.widgetType ?? null);
+    const selectedTheme = visualTheme(selectedTemplate, parsed.data.theme, activeTheme);
+    if (parsed.data.builderMode === "onsite") {
+      definition = instantiateTemplate(definition, parsed.data.kind, parsed.data.widgetType ?? null, isLegacyChecklistPreset ? "blank" : parsed.data.template);
+      const design = { ...themedDesign(selectedTheme.tokens), ...(parsed.data.kind === "widget" ? { size: defaultWidgetSize(parsed.data.widgetType!) } : {}) };
+      applyDesign(definition, design, selectedTheme.state, selectedTemplate?.id);
+      if (parsed.data.kind === "checklist" && isChecklistDefinition(definition) && (parsed.data.template === "blank" || isLegacyChecklistPreset)) applyOnsiteDocument(definition.builder,createOnsiteChecklistDocument(definition),"checklist",undefined,definition);
+    }
 
     let experience: typeof experiences.$inferSelect;
     try {

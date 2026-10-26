@@ -122,6 +122,15 @@ export const siteThemes = sqliteTable("site_themes", {
     candidateCapturedAt: integer("candidate_captured_at", { mode: "timestamp_ms" }),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
 });
+export const siteStylePresets = sqliteTable("site_style_presets", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("style")),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    tokens: text("tokens", { mode: "json" }).notNull(),
+    createdBy: text("created_by").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+}, table => [uniqueIndex("site_style_presets_site_name_uidx").on(table.siteId, table.name), index("site_style_presets_site_idx").on(table.siteId)]);
 export const themeCaptureRequests = sqliteTable("theme_capture_requests", {
     id: text("id").primaryKey(),
     siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),

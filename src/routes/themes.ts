@@ -3,7 +3,7 @@ import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
-import { auditLogs, sites, siteThemes, themeCaptureRequests } from "../db/schema.js";
+import { auditLogs, sites, siteStylePresets, siteThemes, themeCaptureRequests } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { siteThemeTokensSchema, themeCapturePayloadSchema } from "../lib/themes/validation.js";
@@ -32,6 +32,49 @@ function captureStatus(capture: typeof themeCaptureRequests.$inferSelect, now = 
 }
 
 export function registerThemeRoutes(app: FastifyInstance, db: Db) {
+  app.get("/orgs/:orgId/sites/:siteId/style-presets", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
+    const { siteId } = request.params as { siteId: string };
+    const site = await siteInOrg(db, siteId, request.membership!.orgId);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const presets = await db.select().from(siteStylePresets).where(eq(siteStylePresets.siteId, site.id)).orderBy(desc(siteStylePresets.updatedAt));
+    return reply.send({ presets: presets.map(preset => ({ ...preset, createdAt: preset.createdAt.toISOString(), updatedAt: preset.updatedAt.toISOString() })) });
+  });
+
+  app.post("/orgs/:orgId/sites/:siteId/style-presets", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+    const parsed = z.object({ name: z.string().trim().min(1).max(80), tokens: siteThemeTokensSchema }).strict().safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+    const { siteId } = request.params as { siteId: string }; const site = await siteInOrg(db, siteId, request.membership!.orgId);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const existing = await db.select({ id: siteStylePresets.id }).from(siteStylePresets).where(eq(siteStylePresets.siteId, site.id));
+    if (existing.length >= 20) return reply.code(409).send({ error: "style_preset_limit" });
+    try {
+      const [created] = await db.insert(siteStylePresets).values({ siteId: site.id, name: parsed.data.name, tokens: parsed.data.tokens, createdBy: request.user!.id }).returning();
+      await db.insert(auditLogs).values({ orgId: site.orgId, userId: request.user!.id, action: "site_style_preset.created", detail: { siteId: site.publicId, presetId: created.id } });
+      return reply.code(201).send({ preset: { ...created, createdAt: created.createdAt.toISOString(), updatedAt: created.updatedAt.toISOString() } });
+    } catch { return reply.code(409).send({ error: "style_preset_name_exists" }); }
+  });
+
+  app.patch("/orgs/:orgId/sites/:siteId/style-presets/:presetId", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+    const parsed = z.object({ name: z.string().trim().min(1).max(80) }).strict().safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+    const { siteId, presetId } = request.params as { siteId: string; presetId: string }; const site = await siteInOrg(db, siteId, request.membership!.orgId);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const [preset] = await db.select().from(siteStylePresets).where(and(eq(siteStylePresets.id, presetId), eq(siteStylePresets.siteId, site.id))).limit(1);
+    if (!preset) return reply.code(404).send({ error: "style_preset_not_found" });
+    try { const [updated] = await db.update(siteStylePresets).set({ name: parsed.data.name, updatedAt: new Date() }).where(eq(siteStylePresets.id, preset.id)).returning(); return reply.send({ preset: { ...updated, createdAt: updated.createdAt.toISOString(), updatedAt: updated.updatedAt.toISOString() } }); }
+    catch { return reply.code(409).send({ error: "style_preset_name_exists" }); }
+  });
+
+  app.delete("/orgs/:orgId/sites/:siteId/style-presets/:presetId", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+    const { siteId, presetId } = request.params as { siteId: string; presetId: string }; const site = await siteInOrg(db, siteId, request.membership!.orgId);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const [preset] = await db.select().from(siteStylePresets).where(and(eq(siteStylePresets.id, presetId), eq(siteStylePresets.siteId, site.id))).limit(1);
+    if (!preset) return reply.code(404).send({ error: "style_preset_not_found" });
+    await db.delete(siteStylePresets).where(eq(siteStylePresets.id, preset.id));
+    await db.insert(auditLogs).values({ orgId: site.orgId, userId: request.user!.id, action: "site_style_preset.deleted", detail: { siteId: site.publicId, presetId: preset.id } });
+    return reply.code(204).send();
+  });
+
   app.get("/orgs/:orgId/sites/:siteId/theme", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
     const { siteId } = request.params as { siteId: string };
     const site = await siteInOrg(db, siteId, request.membership!.orgId);

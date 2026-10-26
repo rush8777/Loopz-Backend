@@ -3,9 +3,10 @@ import { DraftWriteError, saveExperienceDraft } from "../lib/experiences/draftWr
 import { sendEntitlementError } from "../lib/entitlements/http.js";
 import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
+import { z } from "zod";
 import { runInTransaction } from "../db/transaction.js";
-import { experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, surveyResponses, trackedUsers } from "../db/schema.js";
+import { experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, siteStylePresets, siteThemes, surveyResponses, trackedUsers } from "../db/schema.js";
 import { env } from "../config.js";
 import { signEditorAccessToken, verifyEditorAccessToken } from "../lib/auth.js";
 import { createSurveyResponseSchema, definitionSchemaFor, impressionSchema, manifestQuerySchema, updateDraftSchema, updateSurveyResponseSchema } from "../lib/experiences/validation.js";
@@ -14,6 +15,7 @@ import { matchesRules } from "../lib/pages/pageMatcher.js";
 import { evaluateSegment } from "../lib/segments/evaluator.js";
 import { deliveredChecklist } from "./public-checklists.js";
 import { getOrganizationSubscription, subscriptionIsActive } from "../lib/entitlements/subscription.js";
+import { siteThemeTokensSchema } from "../lib/themes/validation.js";
 function rawTokenHash(token) {
     return crypto.createHash("sha256").update(token).digest("hex");
 }
@@ -409,11 +411,15 @@ export function registerPublicExperienceRoutes(app, db) {
         const draft = versions.find((item) => item.state === "draft");
         if (!experience || !draft)
             return reply.code(404).send({ error: "draft_not_found" });
-        const references = experience.kind === "checklist" ? {
-            guides: await db.select({ id: experiences.id, name: experiences.name, status: experiences.status }).from(experiences).where(and(eq(experiences.siteId, session.siteId), eq(experiences.kind, "guide"))).limit(200),
-            segments: await db.select({ id: segments.id, name: segments.name }).from(segments).where(eq(segments.siteId, session.siteId)).limit(200),
-        } : undefined;
-        return reply.send({ ...(references ? { references } : {}), experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType, builderMode: experience.builderMode }, version: { id: draft.id, versionNumber: draft.versionNumber, revision: draft.revision, definition: draft.definition } });
+        const [theme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, session.siteId)).limit(1);
+        const stylePresets = await db.select({ id: siteStylePresets.id, name: siteStylePresets.name, tokens: siteStylePresets.tokens }).from(siteStylePresets).where(eq(siteStylePresets.siteId, session.siteId)).orderBy(desc(siteStylePresets.updatedAt)).limit(20);
+        const references = {
+            guides: experience.kind === "checklist" ? await db.select({ id: experiences.id, name: experiences.name, status: experiences.status }).from(experiences).where(and(eq(experiences.siteId, session.siteId), eq(experiences.kind, "guide"))).limit(200) : [],
+            segments: experience.kind === "checklist" ? await db.select({ id: segments.id, name: segments.name }).from(segments).where(eq(segments.siteId, session.siteId)).limit(200) : [],
+            stylePresets,
+            siteTheme: theme?.activeTokens ?? null,
+        };
+        return reply.send({ references, experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType, builderMode: experience.builderMode }, version: { id: draft.id, versionNumber: draft.versionNumber, revision: draft.revision, definition: draft.definition } });
     });
     app.patch("/public/experience-editor/:sessionId/draft", async (request, reply) => {
         const session = await validateEditorAccess(request, db);
@@ -451,6 +457,55 @@ export function registerPublicExperienceRoutes(app, db) {
                 return reply.code(error.status).send({ error: error.message });
             return sendEntitlementError(reply, error);
         }
+    });
+    app.post("/public/experience-editor/:sessionId/style-presets", async (request, reply) => {
+        const session = await validateEditorAccess(request, db);
+        const { sessionId } = request.params;
+        if (!session || session.id !== sessionId)
+            return reply.code(401).send({ error: "invalid_editor_access" });
+        const parsed = z.object({ name: z.string().trim().min(1).max(80), tokens: siteThemeTokensSchema }).strict().safeParse(request.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "invalid_body" });
+        const count = await db.select({ id: siteStylePresets.id }).from(siteStylePresets).where(eq(siteStylePresets.siteId, session.siteId));
+        if (count.length >= 20)
+            return reply.code(409).send({ error: "style_preset_limit" });
+        try {
+            const [preset] = await db.insert(siteStylePresets).values({ siteId: session.siteId, name: parsed.data.name, tokens: parsed.data.tokens, createdBy: session.dashboardUserId }).returning();
+            return reply.code(201).send({ preset: { id: preset.id, name: preset.name, tokens: preset.tokens } });
+        }
+        catch {
+            return reply.code(409).send({ error: "style_preset_name_exists" });
+        }
+    });
+    app.patch("/public/experience-editor/:sessionId/style-presets/:presetId", async (request, reply) => {
+        const session = await validateEditorAccess(request, db);
+        const { sessionId, presetId } = request.params;
+        if (!session || session.id !== sessionId)
+            return reply.code(401).send({ error: "invalid_editor_access" });
+        const parsed = z.object({ name: z.string().trim().min(1).max(80) }).strict().safeParse(request.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "invalid_body" });
+        const [preset] = await db.select().from(siteStylePresets).where(and(eq(siteStylePresets.id, presetId), eq(siteStylePresets.siteId, session.siteId))).limit(1);
+        if (!preset)
+            return reply.code(404).send({ error: "style_preset_not_found" });
+        try {
+            const [updated] = await db.update(siteStylePresets).set({ name: parsed.data.name, updatedAt: new Date() }).where(eq(siteStylePresets.id, preset.id)).returning();
+            return reply.send({ preset: { id: updated.id, name: updated.name, tokens: updated.tokens } });
+        }
+        catch {
+            return reply.code(409).send({ error: "style_preset_name_exists" });
+        }
+    });
+    app.delete("/public/experience-editor/:sessionId/style-presets/:presetId", async (request, reply) => {
+        const session = await validateEditorAccess(request, db);
+        const { sessionId, presetId } = request.params;
+        if (!session || session.id !== sessionId)
+            return reply.code(401).send({ error: "invalid_editor_access" });
+        const [preset] = await db.select().from(siteStylePresets).where(and(eq(siteStylePresets.id, presetId), eq(siteStylePresets.siteId, session.siteId))).limit(1);
+        if (!preset)
+            return reply.code(404).send({ error: "style_preset_not_found" });
+        await db.delete(siteStylePresets).where(eq(siteStylePresets.id, preset.id));
+        return reply.code(204).send();
     });
 }
 //# sourceMappingURL=public-experiences.js.map
