@@ -17,7 +17,7 @@ VERTEX_LOCATION=us-central1
 VERTEX_MODEL=gemini-2.5-flash
 
 GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-flash-lite-latest
 
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5-mini

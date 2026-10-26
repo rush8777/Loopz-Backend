@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "dev": "tsx watch src/server.ts",
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/with-system-ca.ps1 cmd.exe /c node node_modules\\tsx\\dist\\cli.mjs watch src\\server.ts",
     "start": "node dist/server.js",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",

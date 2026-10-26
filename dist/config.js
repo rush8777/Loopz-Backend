@@ -22,7 +22,7 @@ const envSchema = z.object({
     VERTEX_LOCATION: z.string().trim().min(1).default("us-central1"),
     VERTEX_MODEL: z.string().trim().min(1).default("gemini-2.5-flash"),
     GEMINI_API_KEY: z.string().trim().min(1).optional(),
-    GEMINI_MODEL: z.string().trim().min(1).default("gemini-2.5-flash"),
+    GEMINI_MODEL: z.string().trim().min(1).default("gemini-flash-lite-latest"),
     OPENAI_API_KEY: z.string().trim().min(1).optional(),
     OPENAI_MODEL: z.string().trim().min(1).default("gpt-5-mini"),
 });
