@@ -7,7 +7,7 @@ export interface AiGenerateInput {
 
 export interface AiGenerateResult {
   text: string;
-  provider: "vertex" | "openai" | "mock";
+  provider: "vertex" | "gemini" | "openai" | "mock";
   model: string;
   usage: { promptTokens: number; completionTokens: number; totalTokens: number };
 }

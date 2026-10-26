@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { GeminiApiProvider } from "../src/lib/ai/providers/gemini.js";
 import { OpenAiProvider } from "../src/lib/ai/providers/openai.js";
 import { VertexAiProvider } from "../src/lib/ai/providers/vertex.js";
 import { runAiTurn } from "../src/lib/ai/orchestrator.js";
@@ -20,6 +21,25 @@ describe("AI providers and response validation", () => {
     const provider = new VertexAiProvider("gemini-test", "project-test", "us-central1");
     expect(provider.name).toBe("vertex");
     expect(provider.model).toBe("gemini-test");
+  });
+
+  it("maps Gemini API output and keeps the API key out of the result", async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toContain("/models/gemini-test:generateContent");
+      expect((init?.headers as Record<string, string>)["x-goog-api-key"]).toBe("gemini-secret-key");
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        systemInstruction: { parts: [{ text: "system" }] },
+        generationConfig: { responseMimeType: "application/json" },
+      });
+      return new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: '{"markdown":"ok","proposal":null}' }] } }],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 4, totalTokenCount: 9 },
+      }), { status: 200 });
+    });
+    const provider = new GeminiApiProvider("gemini-test", "gemini-secret-key", fetcher as typeof fetch);
+    const result = await provider.generate({ system: "system", prompt: "prompt" });
+    expect(result).toMatchObject({ provider: "gemini", model: "gemini-test", usage: { totalTokens: 9 } });
+    expect(JSON.stringify(result)).not.toContain("gemini-secret-key");
   });
 
   it("rejects malformed model envelopes before persistence", async () => {

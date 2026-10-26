@@ -16,11 +16,14 @@ VERTEX_PROJECT=
 VERTEX_LOCATION=us-central1
 VERTEX_MODEL=gemini-2.5-flash
 
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
+
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5-mini
 ```
 
-Vertex uses Google Application Default Credentials. On Railway, mount a service-account credential and set `GOOGLE_APPLICATION_CREDENTIALS`, or use workload identity where available. Never expose either provider credential as a `VITE_*` variable.
+Set `AI_PROVIDER=gemini` to use a Google AI Studio Gemini API key through the Gemini Developer API. Set `GEMINI_API_KEY` and optionally override `GEMINI_MODEL`. Vertex remains separate and uses Google Application Default Credentials; on Railway, mount a service-account credential and set `GOOGLE_APPLICATION_CREDENTIALS`, or use workload identity where available. Never expose any provider credential as a `VITE_*` variable.
 
 ## Security and behavior
 

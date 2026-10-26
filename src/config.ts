@@ -16,12 +16,14 @@ const envSchema = z.object({
   PADDLE_GROWTH_PRICE_ID: z.string().trim().min(1).optional(),
   PADDLE_SCALE_PRICE_ID: z.string().trim().min(1).optional(),
   AI_ENABLED: z.string().trim().toLowerCase().default("false").transform((value) => value === "true"),
-  AI_PROVIDER: z.enum(["vertex", "openai"]).default("vertex"),
+  AI_PROVIDER: z.enum(["vertex", "gemini", "openai"]).default("vertex"),
   AI_DAILY_TOKEN_LIMIT: z.coerce.number().int().positive().default(250_000),
   AI_MAX_CONTEXT_CHARS: z.coerce.number().int().min(10_000).max(250_000).default(60_000),
   VERTEX_PROJECT: z.string().trim().min(1).optional(),
   VERTEX_LOCATION: z.string().trim().min(1).default("us-central1"),
   VERTEX_MODEL: z.string().trim().min(1).default("gemini-2.5-flash"),
+  GEMINI_API_KEY: z.string().trim().min(1).optional(),
+  GEMINI_MODEL: z.string().trim().min(1).default("gemini-2.5-flash"),
   OPENAI_API_KEY: z.string().trim().min(1).optional(),
   OPENAI_MODEL: z.string().trim().min(1).default("gpt-5-mini"),
 });
@@ -42,6 +44,10 @@ if (env.NODE_ENV === "production" && env.DATABASE_URL.startsWith("libsql://") &&
 
 if (env.AI_ENABLED && env.AI_PROVIDER === "vertex" && !env.VERTEX_PROJECT) {
   throw new Error("VERTEX_PROJECT is required when AI_ENABLED=true and AI_PROVIDER=vertex.");
+}
+
+if (env.AI_ENABLED && env.AI_PROVIDER === "gemini" && !env.GEMINI_API_KEY) {
+  throw new Error("GEMINI_API_KEY is required when AI_ENABLED=true and AI_PROVIDER=gemini.");
 }
 
 if (env.AI_ENABLED && env.AI_PROVIDER === "openai" && !env.OPENAI_API_KEY) {
