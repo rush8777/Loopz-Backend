@@ -398,9 +398,10 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
     const [experience] = await db.select().from(experiences).where(and(eq(experiences.id, session.experienceId), eq(experiences.siteId, session.siteId))).limit(1);
     const [site] = await db.select().from(sites).where(eq(sites.id, session.siteId)).limit(1);
     if (!experience || !site) return reply.code(404).send({ error: "experience_not_found" });
-    if (experience.builderMode !== "onsite" || !["widget", "guide"].includes(experience.kind) || experience.widgetType === "survey") return reply.code(409).send({ error: "ai_editor_unsupported" });
+    if (experience.builderMode !== "onsite" || !["widget", "guide"].includes(experience.kind)) return reply.code(409).send({ error: "ai_editor_unsupported" });
     const guideContext = "guide" in parsed.data.context;
-    if (parsed.data.context.experience.id !== experience.id || parsed.data.context.experience.widgetType !== experience.widgetType || guideContext !== (experience.kind === "guide")) return reply.code(409).send({ error: "stale_editor_context" });
+    const surveyContext = "steps" in parsed.data.context;
+    if (parsed.data.context.experience.id !== experience.id || parsed.data.context.experience.widgetType !== experience.widgetType || guideContext !== (experience.kind === "guide") || surveyContext !== (experience.widgetType === "survey")) return reply.code(409).send({ error: "stale_editor_context" });
     const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, experience.id));
     const draft = versions.find(item => item.state === "draft");
     if (!draft || draft.revision !== parsed.data.revision) return reply.code(409).send({ error: "draft_conflict", currentRevision: draft?.revision });

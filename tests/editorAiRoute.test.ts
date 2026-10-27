@@ -6,6 +6,10 @@ import { aiConversations, aiMessages } from "../src/db/schema.js";
 const provider: AiProvider = {
   name: "mock", model: "editor-test",
   async generate(input) {
+    if (input.prompt.includes('"widgetType":"survey"')) {
+      const stepId = input.prompt.match(/"currentStepId":"([^"]+)"/)?.[1] ?? "step_missing";
+      return { text: JSON.stringify({ markdown: "A safe Survey preview is ready.", proposal: { summary: "Clarify the first Survey step", operations: [{ type: "update_survey_step", stepId, patch: { heading: "Tell us what you think" } }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
+    }
     if (input.prompt.includes('"kind":"guide"')) {
       const stepId = input.prompt.match(/"currentStepId":"([^"]+)"/)?.[1] ?? "step_missing";
       return { text: JSON.stringify({ markdown: "A safe Guide preview is ready.", proposal: { summary: "Rename the first step", operations: [{ type: "update_guide_step", stepId, patch: { label: "Clear introduction" } }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
@@ -55,5 +59,19 @@ describe("editor-session AI route", () => {
     expect(response.statusCode, response.body).toBe(200); expect(response.json().proposal.operations[0]).toMatchObject({ type: "update_guide_step", stepId: step.id });
     const unsafe = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { prompt: "Pick target", revision: draft.version.revision, context: { ...context, guide: { ...context.guide, steps: [{ ...context.guide.steps[0], positionTarget: { configured: true, primarySelector: "#billing" } }] } } } });
     expect(unsafe.statusCode).toBe(400);
+  });
+
+  it("accepts a sanitized Survey context and returns a server-validated Survey proposal", async () => {
+    const owner = await signup(ctx.app); const headers = { authorization: `Bearer ${owner.accessToken}` };
+    const site = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites`, headers, payload: { name: "Survey AI", domain: "survey-ai.example.test" } })).json();
+    const base = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
+    const created = (await ctx.app.inject({ method: "POST", url: base, headers, payload: { kind: "widget", widgetType: "survey", builderMode: "onsite", name: "Research", buildUrl: "https://survey-ai.example.test", template: "blank", useBuildPageAsTarget: false } })).json();
+    const session = (await ctx.app.inject({ method: "POST", url: `${base}/${created.id}/editor-sessions`, headers })).json();
+    const exchange = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://survey-ai.example.test" }, payload: { token: new URL(session.launchUrl).searchParams.get("movcues_editor_token") } });
+    const editorHeaders = { origin: "https://survey-ai.example.test", authorization: `Bearer ${exchange.json().accessToken}` };
+    const draft = (await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders })).json(), survey = draft.version.definition.survey, step = survey.steps[0];
+    const context = { experience: { id: created.id, name: "Research", kind: "widget", widgetType: "survey", builderMode: "onsite" }, revision: draft.version.revision, scope: "survey", currentStepId: step.id, selection: { kind: "step", label: step.content.heading || "Survey" }, configuration: { showProgress: survey.showProgress, allowBack: survey.allowBack, submitLabel: survey.submitLabel }, steps: survey.steps.map((value: { id: string; content: { heading: string; body: string }; questions: unknown[]; branching?: unknown }) => ({ id: value.id, heading: value.content.heading, body: value.content.body, questions: value.questions, branching: value.branching })), currentDocument: step.builder.projectData.movcues.onsiteDocument, targeting: draft.version.definition.targeting };
+    const response = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { prompt: "Make the first step clearer", revision: draft.version.revision, context } });
+    expect(response.statusCode, response.body).toBe(200); expect(response.json().proposal.operations[0]).toMatchObject({ type: "update_survey_step", stepId: step.id });
   });
 });
