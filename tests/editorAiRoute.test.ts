@@ -6,6 +6,7 @@ import { aiConversations, aiMessages } from "../src/db/schema.js";
 const provider: AiProvider = {
   name: "mock", model: "editor-test",
   async generate(input) {
+    if (input.prompt.includes("Create a beautiful onboarding UI")) return { text: JSON.stringify({ markdown: "A complete onboarding redesign is ready.", proposal: { summary: "Redesign the onboarding widget", operations: [{ type: "redesign_layout", layout: { type: "group", gap: 16, padding: { top: 28, right: 28, bottom: 28, left: 28 }, style: { background: "#ffffff", borderColor: "#dbeafe", borderWidth: 1, borderRadius: 20 }, children: [{ type: "icon", icon: "rocket", size: 36, color: "#2563eb", align: "center" }, { type: "heading", text: "Welcome aboard", fontSize: 30, align: "center" }, { type: "text", text: "Let's complete your setup.", color: "#475569", align: "center" }, { type: "button", label: "Start setup", action: { type: "track_event", eventName: "onboarding_started" }, width: "full", radius: 12 }] } }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 } };
     if (input.prompt.includes('"kind":"checklist"')) {
       const itemId = input.prompt.match(/"selectedItemId":"([^"]+)"/)?.[1] ?? "item_missing";
       return { text: JSON.stringify({ markdown: "A safe Checklist preview is ready.", proposal: { summary: "Connect the first task", operations: [{ type: "update_checklist_task", itemId, patch: { title: "Take the product tour" } }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
@@ -43,7 +44,9 @@ describe("editor-session AI route", () => {
     expect(denied.statusCode).toBe(401);
     const response = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload });
     expect(response.statusCode, response.body).toBe(200); expect(response.json()).toMatchObject({ revision: draft.version.revision, proposal: { operations: [{ type: "update_text", blockId: firstCell.block.id }] } });
-    expect(await ctx.db.select().from(aiConversations)).toHaveLength(1); expect(await ctx.db.select().from(aiMessages)).toHaveLength(2);
+    const redesign = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { ...payload, conversationId: response.json().conversationId, prompt: "Create a beautiful onboarding UI" } });
+    expect(redesign.statusCode, redesign.body).toBe(200); expect(redesign.json().proposal.operations[0]).toMatchObject({ type: "redesign_layout", layout: { type: "group", children: expect.any(Array) } });
+    expect(await ctx.db.select().from(aiConversations)).toHaveLength(1); expect(await ctx.db.select().from(aiMessages)).toHaveLength(4);
     const stale = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { ...payload, revision: 999 } });
     expect(stale.statusCode).toBe(409); expect(stale.json().error).toBe("draft_conflict");
   });
