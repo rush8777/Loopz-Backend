@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { editorAiRequestSchema, runEditorAiTurn, validateEditorProposalAgainstDraft } from "../src/lib/ai/editor.js";
 import type { AiProvider } from "../src/lib/ai/providers/types.js";
 import type { ExperienceDefinition } from "../src/lib/experiences/types.js";
+import checklistFixture from "./fixtures/checklist-v4.json";
 
 const context = { experience: { id: "exp_1", name: "Welcome", widgetType: "modal", builderMode: "onsite" as const }, selection: { kind: "step" as const, label: "Step" }, document: { schemaVersion: 2, id: "document_1", root: {} } };
 
@@ -53,5 +54,24 @@ describe("editor AI contract", () => {
     expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Valid", operations: [{ type: "update_survey_option", stepId: "step_1", questionId: "question_1", optionId: "option_1", label: "Starter" }, { type: "update_text", stepId: "step_1", blockId: "block_heading", text: "Choose a plan" }] })).not.toThrow();
     expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Invented", operations: [{ type: "update_survey_option", stepId: "step_1", questionId: "question_1", optionId: "option_missing", label: "Bad" }] })).toThrow(/Unknown Survey option/);
     expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Backward", operations: [{ type: "update_survey_branching", stepId: "step_2", branching: { rules: [{ questionId: "question_1", operator: "answered", nextStepId: "step_1" }] } }] })).toThrow(/Unknown Survey question|move forward/);
+  });
+
+  it("accepts bounded Checklist context and validates site resources and schema-v4 references", () => {
+    const source = structuredClone(checklistFixture) as any;
+    const definition = { ...source.definition, targeting: { pageRules: [], audience: { type: "all" }, priority: 0 }, builder: { version: 1, html: "", css: "", projectData: { movcues: { onsiteDocument: source.document } } } } as ExperienceDefinition;
+    const resources = { guides: [{ id: "guide_1", name: "Product tour", status: "published" }], segments: [{ id: "segment_1", name: "Activated" }] };
+    const checklistContext = {
+      experience: { id: "checklist_1", name: "Setup", kind: "checklist", widgetType: null, builderMode: "onsite" }, revision: 5, currentView: "expanded",
+      selection: { kind: "step", label: "Checklist" }, selectedItemId: "item_one",
+      checklist: { title: source.definition.title, description: source.definition.description, totalTasks: source.definition.items.length, behavior: source.definition.behavior, completionMessage: source.definition.completionMessage, items: source.definition.items.map((item: any, position: number) => ({ ...item, position })) },
+      resources, currentDocument: source.document, targeting: (definition as any).targeting,
+    };
+    const request = editorAiRequestSchema.parse({ prompt: "Connect activation", revision: 5, context: checklistContext });
+    expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Valid", operations: [{ type: "update_checklist_task_action", itemId: "item_one", action: { type: "launch_guide", experienceId: "guide_1" } }, { type: "update_checklist_task_completion", itemId: "item_one", completion: { type: "segment", segmentId: "segment_1" } }, { type: "update_checklist_style", blockId: "block_003", patch: { fontSize: 18 } }] }, resources)).not.toThrow();
+    expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Foreign Guide", operations: [{ type: "update_checklist_task_action", itemId: "item_one", action: { type: "launch_guide", experienceId: "guide_other" } }] }, resources)).toThrow(/Unknown site Guide/);
+    expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Invented block", operations: [{ type: "update_checklist_style", blockId: "block_other", patch: { color: "#111111" } }] }, resources)).toThrow(/Unknown Checklist block/);
+    expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Invented task", operations: [{ type: "remove_checklist_task", itemId: "item_other" }] }, resources)).toThrow(/Unknown Checklist task/);
+    expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Unsafe structure", operations: [{ type: "remove_cell", cellId: "cell_002" }] } as any, resources)).toThrow(/Only safe cell styling/);
+    expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Valid", operations: [{ type: "update_checklist_behavior", patch: {} }] }, { ...resources, guides: [] })).toThrow(/resource context is stale/);
   });
 });

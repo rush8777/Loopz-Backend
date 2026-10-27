@@ -6,6 +6,10 @@ import { aiConversations, aiMessages } from "../src/db/schema.js";
 const provider: AiProvider = {
   name: "mock", model: "editor-test",
   async generate(input) {
+    if (input.prompt.includes('"kind":"checklist"')) {
+      const itemId = input.prompt.match(/"selectedItemId":"([^"]+)"/)?.[1] ?? "item_missing";
+      return { text: JSON.stringify({ markdown: "A safe Checklist preview is ready.", proposal: { summary: "Connect the first task", operations: [{ type: "update_checklist_task", itemId, patch: { title: "Take the product tour" } }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
+    }
     if (input.prompt.includes('"widgetType":"survey"')) {
       const stepId = input.prompt.match(/"currentStepId":"([^"]+)"/)?.[1] ?? "step_missing";
       return { text: JSON.stringify({ markdown: "A safe Survey preview is ready.", proposal: { summary: "Clarify the first Survey step", operations: [{ type: "update_survey_step", stepId, patch: { heading: "Tell us what you think" } }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
@@ -73,5 +77,23 @@ describe("editor-session AI route", () => {
     const context = { experience: { id: created.id, name: "Research", kind: "widget", widgetType: "survey", builderMode: "onsite" }, revision: draft.version.revision, scope: "survey", currentStepId: step.id, selection: { kind: "step", label: step.content.heading || "Survey" }, configuration: { showProgress: survey.showProgress, allowBack: survey.allowBack, submitLabel: survey.submitLabel }, steps: survey.steps.map((value: { id: string; content: { heading: string; body: string }; questions: unknown[]; branching?: unknown }) => ({ id: value.id, heading: value.content.heading, body: value.content.body, questions: value.questions, branching: value.branching })), currentDocument: step.builder.projectData.movcues.onsiteDocument, targeting: draft.version.definition.targeting };
     const response = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { prompt: "Make the first step clearer", revision: draft.version.revision, context } });
     expect(response.statusCode, response.body).toBe(200); expect(response.json().proposal.operations[0]).toMatchObject({ type: "update_survey_step", stepId: step.id });
+  });
+
+  it("accepts Checklist context only with the server-owned site resources", async () => {
+    const owner = await signup(ctx.app); const headers = { authorization: `Bearer ${owner.accessToken}` };
+    const site = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites`, headers, payload: { name: "Checklist AI", domain: "checklist-ai.example.test" } })).json();
+    const base = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
+    await ctx.app.inject({ method: "POST", url: base, headers, payload: { kind: "guide", name: "Product tour", builderMode: "onsite", buildUrl: "https://checklist-ai.example.test", template: "blank", useBuildPageAsTarget: false } });
+    await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/segments`, headers, payload: { name: "Activated", definition: { logic: "and", conditions: [{ type: "event", eventName: "activated", operator: "performed" }] } } });
+    const created = (await ctx.app.inject({ method: "POST", url: base, headers, payload: { kind: "checklist", name: "Setup", builderMode: "onsite", buildUrl: "https://checklist-ai.example.test", template: "default", useBuildPageAsTarget: false } })).json();
+    const session = (await ctx.app.inject({ method: "POST", url: `${base}/${created.id}/editor-sessions`, headers })).json();
+    const exchange = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://checklist-ai.example.test" }, payload: { token: new URL(session.launchUrl).searchParams.get("movcues_editor_token") } });
+    const editorHeaders = { origin: "https://checklist-ai.example.test", authorization: `Bearer ${exchange.json().accessToken}` };
+    const draft = (await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders })).json(), definition = draft.version.definition, item = definition.items[0];
+    const context = { experience: { id: created.id, name: "Setup", kind: "checklist", widgetType: null, builderMode: "onsite" }, revision: draft.version.revision, currentView: "expanded", selection: { kind: "step", label: "Checklist" }, selectedItemId: item.id, checklist: { title: definition.title, description: definition.description, totalTasks: definition.items.length, behavior: definition.behavior, completionMessage: definition.completionMessage, items: definition.items.map((value: any, position: number) => ({ ...value, position })) }, resources: { guides: draft.references.guides, segments: draft.references.segments }, currentDocument: definition.builder.projectData.movcues.onsiteDocument, targeting: definition.targeting };
+    const response = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { prompt: "Improve the first task", revision: draft.version.revision, context } });
+    expect(response.statusCode, response.body).toBe(200); expect(response.json().proposal.operations[0]).toMatchObject({ type: "update_checklist_task", itemId: item.id });
+    const tampered = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { prompt: "Use another guide", revision: draft.version.revision, context: { ...context, resources: { ...context.resources, guides: [...context.resources.guides, { id: "guide_foreign", name: "Foreign", status: "published" }] } } } });
+    expect(tampered.statusCode).toBe(409); expect(tampered.json().error).toBe("stale_editor_context");
   });
 });
