@@ -73,5 +73,6 @@ describe("editor AI contract", () => {
     expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Invented task", operations: [{ type: "remove_checklist_task", itemId: "item_other" }] }, resources)).toThrow(/Unknown Checklist task/);
     expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Unsafe structure", operations: [{ type: "remove_cell", cellId: "cell_002" }] } as any, resources)).toThrow(/Only safe cell styling/);
     expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Valid", operations: [{ type: "update_checklist_behavior", patch: {} }] }, { ...resources, guides: [] })).toThrow(/resource context is stale/);
+    expect(() => validateEditorProposalAgainstDraft(definition, request, { summary: "Too many", operations: Array.from({ length: 18 }, () => ({ type: "duplicate_checklist_task" as const, itemId: "item_one" })) }, resources)).toThrow(/task limit exceeded/);
   });
 });
