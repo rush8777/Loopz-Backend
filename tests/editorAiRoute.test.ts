@@ -6,6 +6,7 @@ import { aiConversations, aiMessages } from "../src/db/schema.js";
 const provider: AiProvider = {
   name: "mock", model: "editor-test",
   async generate(input) {
+    if (input.prompt.includes("force failure")) throw new Error("editor_ai_invalid_response");
     if (input.prompt.includes("Create a beautiful onboarding UI")) return { text: JSON.stringify({ markdown: "A complete onboarding redesign is ready.", proposal: { summary: "Redesign the onboarding widget", operations: [{ type: "redesign_layout", layout: { type: "group", gap: 16, padding: { top: 28, right: 28, bottom: 28, left: 28 }, style: { background: "#ffffff", borderColor: "#dbeafe", borderWidth: 1, borderRadius: 20 }, children: [{ type: "icon", icon: "rocket", size: 36, color: "#2563eb", align: "center" }, { type: "heading", text: "Welcome aboard", fontSize: 30, align: "center" }, { type: "text", text: "Let's complete your setup.", color: "#475569", align: "center" }, { type: "button", label: "Start setup", action: { type: "track_event", eventName: "onboarding_started" }, width: "full", radius: 12 }] } }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 } };
     if (input.prompt.includes('"kind":"checklist"')) {
       const itemId = input.prompt.match(/"selectedItemId":"([^"]+)"/)?.[1] ?? "item_missing";
@@ -19,7 +20,8 @@ const provider: AiProvider = {
       const stepId = input.prompt.match(/"currentStepId":"([^"]+)"/)?.[1] ?? "step_missing";
       return { text: JSON.stringify({ markdown: "A safe Guide preview is ready.", proposal: { summary: "Rename the first step", operations: [{ type: "update_guide_step", stepId, patch: { label: "Clear introduction" } }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
     }
-    const match = input.prompt.match(/"blockId":"([^"]+)"/);
+    const matches = [...input.prompt.matchAll(/"blockId":"([^"]+)"/g)];
+    const match = matches.at(-1);
     return { text: JSON.stringify({ markdown: "A safe preview is ready.", proposal: { summary: "Rewrite the heading", operations: [{ type: "update_text", blockId: match?.[1] ?? "block_missing", text: "A clearer welcome" }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
   },
 };
@@ -47,6 +49,8 @@ describe("editor-session AI route", () => {
     const redesign = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { ...payload, conversationId: response.json().conversationId, prompt: "Create a beautiful onboarding UI" } });
     expect(redesign.statusCode, redesign.body).toBe(200); expect(redesign.json().proposal.operations[0]).toMatchObject({ type: "redesign_layout", layout: { type: "group", children: expect.any(Array) } });
     expect(await ctx.db.select().from(aiConversations)).toHaveLength(1); expect(await ctx.db.select().from(aiMessages)).toHaveLength(4);
+    const failed = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { ...payload, conversationId: response.json().conversationId, prompt: "force failure" } });
+    expect(failed.statusCode, failed.body).toBe(502); expect(failed.json()).toMatchObject({ error: "ai_generation_failed", failureCode: "editor_ai_invalid_response", message: "AI request failed: editor_ai_invalid_response. Your message was preserved; please retry." });
     const stale = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { ...payload, revision: 999 } });
     expect(stale.statusCode).toBe(409); expect(stale.json().error).toBe("draft_conflict");
   });

@@ -431,7 +431,8 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
       return { conversationId: conversation.id, revision: draft.revision, markdown: result.markdown, proposal: result.proposal };
     } catch (error) {
       request.log.error({ err: error, sessionId }, "Editor AI turn failed");
-      return reply.code(502).send({ error: "ai_generation_failed", conversationId: conversation.id, message: "Movcues AI could not complete this request. Your message was preserved; please retry." });
+      const failureCode = editorAiFailureCode(error);
+      return reply.code(502).send({ error: "ai_generation_failed", failureCode, conversationId: conversation.id, message: `AI request failed: ${failureCode}. Your message was preserved; please retry.` });
     }
   });
 
@@ -461,4 +462,13 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
     const [preset] = await db.select().from(siteStylePresets).where(and(eq(siteStylePresets.id, presetId), eq(siteStylePresets.siteId, session.siteId))).limit(1); if (!preset) return reply.code(404).send({ error: "style_preset_not_found" });
     await db.delete(siteStylePresets).where(eq(siteStylePresets.id, preset.id)); return reply.code(204).send();
   });
+}
+
+function editorAiFailureCode(error: unknown): string {
+  const message = error instanceof Error
+    ? error.message.replace(/\s+/g, " ").trim()
+    : "";
+
+  // Keep the editor response actionable, without returning a stack or cause object.
+  return message ? message.slice(0, 500) : "ai_generation_failed";
 }

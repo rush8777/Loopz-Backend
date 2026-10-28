@@ -8,6 +8,7 @@
     "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/with-system-ca.ps1 cmd.exe /c node node_modules\\tsx\\dist\\cli.mjs watch src\\server.ts",
     "start": "node dist/server.js",
     "test": "vitest run",
+    "test:ai:live": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/with-system-ca.ps1 cmd.exe /c \"set RUN_LIVE_AI_TESTS=true&& node node_modules\\vitest\\vitest.mjs run tests\\editorAi.live.test.ts\"",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/run-migrations.ts"
   },

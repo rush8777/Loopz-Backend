@@ -18,6 +18,26 @@ describe("editor AI contract", () => {
     expect(result.proposal?.operations[0]).toEqual({ type: "update_text", blockId: "block_1", text: "Hello" });
   });
 
+  it("retries once when the model returns malformed JSON", async () => {
+    let calls = 0;
+    const valid = { markdown: "Preview ready", proposal: { summary: "Rewrite heading", operations: [{ type: "update_text", blockId: "block_1", text: "Hello" }] } };
+    const provider: AiProvider = { name: "mock", model: "mock", async generate() { calls += 1; return { text: calls === 1 ? '{"markdown":"broken",}' : JSON.stringify(valid), provider: "mock", model: "mock", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } }; } };
+    const request = editorAiRequestSchema.parse({ prompt: "Improve it", revision: 1, context });
+    await expect(runEditorAiTurn(provider, request, [])).resolves.toMatchObject(valid);
+    expect(calls).toBe(2);
+  });
+
+  it("feeds schema validation errors back to the model and accepts a corrected proposal", async () => {
+    let calls = 0, correctionPrompt = "";
+    const valid = { markdown: "Preview ready", proposal: { summary: "Rewrite heading", operations: [{ type: "update_text", blockId: "block_1", text: "Hello" }] } };
+    const provider: AiProvider = { name: "mock", model: "mock", async generate(input) { calls += 1; if (calls === 2) correctionPrompt = input.prompt; return { text: calls === 1 ? JSON.stringify({ markdown: "Broken proposal", proposal: { summary: "Bad layout", operations: [{ type: "redesign_layout", root: { type: "group", children: [] } }] } }) : JSON.stringify(valid), provider: "mock", model: "mock", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } }; } };
+    const request = editorAiRequestSchema.parse({ prompt: "Improve it", revision: 1, context });
+    await expect(runEditorAiTurn(provider, request, [])).resolves.toMatchObject(valid);
+    expect(calls).toBe(2);
+    expect(correctionPrompt).toContain("layout: Invalid input: expected object, received undefined");
+    expect(correctionPrompt).toContain('response: Unrecognized key: "root"');
+  });
+
   it("accepts a complete ID-less Widget redesign and enforces Movcues button semantics", async () => {
     const proposal = { summary: "Redesign onboarding", operations: [{ type: "redesign_layout", layout: { type: "group", gap: 16, padding: { top: 24, right: 24, bottom: 24, left: 24 }, style: { background: "#ffffff", borderColor: "#dbeafe", borderWidth: 1, borderRadius: 18 }, children: [{ type: "icon", icon: "rocket", color: "#2563eb", size: 36 }, { type: "heading", text: "Welcome aboard", fontSize: 28 }, { type: "text", text: "Let's finish your setup." }, { type: "button", label: "Start", action: { type: "track_event", eventName: "onboarding_started" }, width: "full" }] } }] };
     const provider: AiProvider = { name: "mock", model: "mock", async generate() { return { text: JSON.stringify({ markdown: "A full redesign is ready.", proposal }), provider: "mock", model: "mock", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } }; } };
