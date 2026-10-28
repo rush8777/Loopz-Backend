@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GeminiApiProvider } from "../src/lib/ai/providers/gemini.js";
-import { OpenAiProvider } from "../src/lib/ai/providers/openai.js";
+import { OpenAiProvider, OpenAiProviderError } from "../src/lib/ai/providers/openai.js";
 import { VertexAiProvider } from "../src/lib/ai/providers/vertex.js";
 import { runAiTurn } from "../src/lib/ai/orchestrator.js";
 import type { AiProvider } from "../src/lib/ai/providers/types.js";
@@ -15,6 +15,30 @@ describe("AI providers and response validation", () => {
     const result = await provider.generate({ system: "system", prompt: "prompt" });
     expect(result).toMatchObject({ provider: "openai", model: "gpt-test", usage: { totalTokens: 7 } });
     expect(JSON.stringify(result)).not.toContain("secret-test-key");
+  });
+
+  it("retries a temporary OpenAI rate limit and respects Retry-After", async () => {
+    const sleeper = vi.fn(async () => undefined);
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { type: "rate_limit_error", code: "rate_limit_exceeded" } }), { status: 429, headers: { "retry-after": "1" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"markdown":"ok","proposal":null}' } }] }), { status: 200 }));
+    const provider = new OpenAiProvider("gpt-test", "secret-test-key", fetcher as typeof fetch, sleeper);
+
+    await expect(provider.generate({ system: "system", prompt: "prompt" })).resolves.toMatchObject({ provider: "openai" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(sleeper).toHaveBeenCalledTimes(1);
+    expect(sleeper.mock.calls[0]?.[0]).toBeGreaterThanOrEqual(1000);
+  });
+
+  it("does not retry OpenAI credit or quota failures", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: { type: "insufficient_quota", code: "credit_balance_exhausted" } }), { status: 429 }));
+    const provider = new OpenAiProvider("gpt-test", "secret-test-key", fetcher as typeof fetch);
+
+    const failure = await provider.generate({ system: "system", prompt: "prompt" }).catch(error => error);
+    expect(failure).toBeInstanceOf(OpenAiProviderError);
+    expect(failure).toMatchObject({ code: "credit_balance_exhausted", retryable: false });
+    expect(failure.message).toContain("credits are exhausted");
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("initializes the Vertex provider with an explicit backend model", () => {
