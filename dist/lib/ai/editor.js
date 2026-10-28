@@ -569,7 +569,7 @@ Return one strict JSON object: {"markdown":"short explanation","proposal":{"summ
 export async function runEditorAiTurn(provider, input, history, signal) {
     const catalog = [...standardEditorOperationSchema.options, ...guideEditorOperationSchema.options, ...surveyEditorOperationSchema.options, ...checklistEditorOperationSchema.options].map(option => option.shape.type.value);
     const prompt = `OPERATION_CATALOG:\n${JSON.stringify(catalog)}\n\nRECENT_CONVERSATION:\n${history.slice(-8).map(item => `${item.role.toUpperCase()}: ${item.content.slice(0, 1500)}`).join("\n") || "(new)"}\n\nEDITOR_CONTEXT:\n${JSON.stringify(input.context)}\n\nCURRENT_DRAFT_REVISION: ${input.revision}\n\nUSER_REQUEST:\n${input.prompt}`;
-    const generated = await provider.generate({ system: SYSTEM, prompt, maxOutputTokens: 16_000, signal });
+    const generated = await provider.generate({ system: SYSTEM, prompt, maxOutputTokens: 8_000, signal });
     const stripped = generated.text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
     return { ...responseSchema.parse(JSON.parse(stripped)), generation: generated };
 }
