@@ -1,7 +1,7 @@
 import type { AiGenerateInput, AiGenerateResult, AiProvider } from "./types.js";
 
 type OpenAiErrorBody = {
-  error?: { code?: string | null; type?: string | null };
+  error?: { code?: string | null; type?: string | null; message?: string | null };
 };
 
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
@@ -51,11 +51,7 @@ export class OpenAiProvider implements AiProvider {
       const retryAfter = retryAfterMilliseconds(response.headers.get("retry-after"));
       const delay = retryAfter ?? (400 * 2 ** attempt + Math.floor(Math.random() * 100));
       if (delay > MAX_INTERACTIVE_RETRY_DELAY_MS) {
-        throw new OpenAiProviderError(
-          "openai_retry_deferred",
-          `OpenAI is temporarily rate-limited. Retry after ${Math.ceil(delay / 1000)} seconds.`,
-          true,
-        );
+        throw classified;
       }
       await this.sleeper(delay + Math.floor(Math.random() * 100), input.signal);
     }
@@ -91,25 +87,27 @@ async function readProviderError(response: Response): Promise<OpenAiErrorBody> {
 function classifyProviderError(status: number, body: OpenAiErrorBody): OpenAiProviderError {
   const code = body.error?.code?.toLowerCase() ?? "";
   const type = body.error?.type?.toLowerCase() ?? "";
+  const exactMessage = body.error?.message?.trim();
+  const message = (fallback: string): string => exactMessage || fallback;
   if (code === "credit_balance_exhausted") {
-    return new OpenAiProviderError(code, "OpenAI API credits are exhausted. Add credits, then retry.", false);
+    return new OpenAiProviderError(code, message("OpenAI API credits are exhausted. Add credits, then retry."), false);
   }
   if (["organization_spend_limit_exceeded", "project_spend_limit_exceeded", "billing_hard_limit_reached"].includes(code)) {
-    return new OpenAiProviderError(code, "The OpenAI project or organization spend limit has been reached. Increase the limit, then retry.", false);
+    return new OpenAiProviderError(code, message("The OpenAI project or organization spend limit has been reached. Increase the limit, then retry."), false);
   }
   if (["organization_usage_limit_exceeded", "project_usage_limit_exceeded"].includes(code)) {
-    return new OpenAiProviderError(code, "The OpenAI project or organization usage limit has been reached. Increase the limit, then retry.", false);
+    return new OpenAiProviderError(code, message("The OpenAI project or organization usage limit has been reached. Increase the limit, then retry."), false);
   }
   if (code === "insufficient_quota" || type === "insufficient_quota") {
-    return new OpenAiProviderError("insufficient_quota", "The OpenAI API quota is exhausted. Check billing and usage limits, then retry.", false);
+    return new OpenAiProviderError("insufficient_quota", message("The OpenAI API quota is exhausted. Check billing and usage limits, then retry."), false);
   }
   if (status === 429) {
-    return new OpenAiProviderError(code || "openai_rate_limited", "OpenAI is temporarily rate-limited. Wait briefly and retry.", true);
+    return new OpenAiProviderError(code || "openai_rate_limited", message("OpenAI is temporarily rate-limited. Wait briefly and retry."), true);
   }
   if (status === 503) {
-    return new OpenAiProviderError(code || "openai_overloaded", "OpenAI is temporarily overloaded. Wait briefly and retry.", true);
+    return new OpenAiProviderError(code || "openai_overloaded", message("OpenAI is temporarily overloaded. Wait briefly and retry."), true);
   }
-  return new OpenAiProviderError(code || `openai_http_${status}`, `OpenAI request failed (HTTP ${status}).`, RETRYABLE_STATUSES.has(status));
+  return new OpenAiProviderError(code || `openai_http_${status}`, message(`OpenAI request failed (HTTP ${status}).`), RETRYABLE_STATUSES.has(status));
 }
 
 function retryAfterMilliseconds(value: string | null): number | undefined {

@@ -41,6 +41,19 @@ describe("AI providers and response validation", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves the exact OpenAI error message when a retry must be deferred", async () => {
+    const exact = "Rate limit reached for gpt-test on tokens per day. Please try again tomorrow.";
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: { type: "rate_limit_error", code: "rate_limit_exceeded", message: exact } }), { status: 429, headers: { "retry-after": "3600" } }));
+    const provider = new OpenAiProvider("gpt-test", "secret-test-key", fetcher as typeof fetch);
+
+    await expect(provider.generate({ system: "system", prompt: "prompt" })).rejects.toMatchObject({
+      code: "rate_limit_exceeded",
+      message: exact,
+      retryable: true,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("initializes the Vertex provider with an explicit backend model", () => {
     const provider = new VertexAiProvider("gemini-test", "project-test", "us-central1");
     expect(provider.name).toBe("vertex");

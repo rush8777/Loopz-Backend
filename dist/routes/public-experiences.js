@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { and, desc, eq, gte, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { runInTransaction } from "../db/transaction.js";
-import { aiConversations, aiMessages, aiProviderUsage, experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, siteStylePresets, siteThemes, surveyResponses, trackedUsers } from "../db/schema.js";
+import { aiConversations, aiMessages, aiProviderUsage, aiToolExecutions, experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, siteStylePresets, siteThemes, surveyResponses, trackedUsers } from "../db/schema.js";
 import { env } from "../config.js";
 import { signEditorAccessToken, verifyEditorAccessToken } from "../lib/auth.js";
 import { createSurveyResponseSchema, definitionSchemaFor, impressionSchema, manifestQuerySchema, updateDraftSchema, updateSurveyResponseSchema } from "../lib/experiences/validation.js";
@@ -508,7 +508,15 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
         if (!conversation)
             [conversation] = await db.insert(aiConversations).values({ orgId: site.orgId, siteId: site.id, userId: session.dashboardUserId, title: `Builder: ${experience.name}`.slice(0, 120) }).returning();
         const now = new Date();
-        await db.insert(aiMessages).values({ conversationId: conversation.id, role: "user", content: parsed.data.prompt, createdAt: now });
+        const [userMessage] = await db.insert(aiMessages).values({ conversationId: conversation.id, role: "user", content: parsed.data.prompt, createdAt: now }).returning();
+        const [execution] = await db.insert(aiToolExecutions).values({
+            conversationId: conversation.id,
+            messageId: userMessage.id,
+            toolName: "live_editor_generation",
+            status: "running",
+            inputSummary: { promptLength: parsed.data.prompt.length, revision: parsed.data.revision, selectionKind: parsed.data.context.selection.kind },
+            startedAt: now,
+        }).returning();
         try {
             const history = await db.select({ role: aiMessages.role, content: aiMessages.content }).from(aiMessages).where(eq(aiMessages.conversationId, conversation.id)).orderBy(desc(aiMessages.createdAt)).limit(10);
             const result = await runEditorAiTurn(aiProvider, parsed.data, history.reverse());
@@ -517,13 +525,18 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
             await Promise.all([
                 db.insert(aiMessages).values({ conversationId: conversation.id, role: "assistant", content: result.markdown, proposal: result.proposal, createdAt: new Date() }),
                 db.insert(aiProviderUsage).values({ orgId: site.orgId, siteId: site.id, userId: session.dashboardUserId, conversationId: conversation.id, provider: result.generation.provider, model: result.generation.model, promptTokens: result.generation.usage.promptTokens, completionTokens: result.generation.usage.completionTokens, totalTokens: result.generation.usage.totalTokens }),
+                db.update(aiToolExecutions).set({ status: "completed", outputSummary: { proposalOperations: result.proposal?.operations.length ?? 0 }, completedAt: new Date() }).where(eq(aiToolExecutions.id, execution.id)),
                 db.update(aiConversations).set({ updatedAt: new Date() }).where(eq(aiConversations.id, conversation.id)),
             ]);
             return { conversationId: conversation.id, revision: draft.revision, markdown: result.markdown, proposal: result.proposal };
         }
         catch (error) {
             request.log.error({ err: error, sessionId }, "Editor AI turn failed");
-            return reply.code(502).send({ error: "ai_generation_failed", conversationId: conversation.id, message: "Movcues AI could not complete this request. Your message was preserved; please retry." });
+            const failure = error instanceof Error && error.message.trim()
+                ? error.message
+                : "ai_generation_failed";
+            await db.update(aiToolExecutions).set({ status: "failed", errorCode: failure, completedAt: new Date() }).where(eq(aiToolExecutions.id, execution.id));
+            return reply.code(502).send({ error: "ai_generation_failed", conversationId: conversation.id, message: `AI request failed: ${failure}. Your message was preserved; please retry.` });
         }
     });
     app.post("/public/experience-editor/:sessionId/style-presets", async (request, reply) => {

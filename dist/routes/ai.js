@@ -125,10 +125,10 @@ export function registerAiRoutes(app, db, providerOverride) {
             return { userMessage: messageJson(userMessage), assistantMessage: messageJson(assistantMessage, approval), preview };
         }
         catch (error) {
-            const code = error instanceof Error ? error.message.slice(0, 120) : "ai_generation_failed";
-            await db.update(aiToolExecutions).set({ status: "failed", errorCode: code, completedAt: new Date() }).where(eq(aiToolExecutions.id, execution.id));
+            const failure = exactAiFailure(error);
+            await db.update(aiToolExecutions).set({ status: "failed", errorCode: failure, completedAt: new Date() }).where(eq(aiToolExecutions.id, execution.id));
             request.log.error({ err: error, conversationId }, "AI turn failed");
-            return reply.code(502).send({ error: "ai_generation_failed", message: "Movcues AI could not complete this request. Your message was preserved; please retry." });
+            return reply.code(502).send({ error: "ai_generation_failed", message: `AI request failed: ${failure}. Your message was preserved; please retry.` });
         }
     });
     app.post("/orgs/:orgId/sites/:siteId/ai/approvals/:approvalId/approve", { preHandler: admin }, async (request, reply) => {
@@ -170,6 +170,11 @@ export function registerAiRoutes(app, db, providerOverride) {
             return reply.code(404).send({ error: "pending_approval_not_found" });
         return { approval: { id: row.id, status: row.status } };
     });
+}
+function exactAiFailure(error) {
+    if (error instanceof Error && error.message.trim())
+        return error.message;
+    return typeof error === "string" && error.trim() ? error : "ai_generation_failed";
 }
 function resourcePath(type, id) {
     if (type === "dashboard")

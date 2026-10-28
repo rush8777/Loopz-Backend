@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AiProvider } from "../src/lib/ai/providers/types.js";
+import { aiToolExecutions } from "../src/db/schema.js";
 import { createTestApp, signup } from "./helpers.js";
 
 const mockProvider: AiProvider = {
   name: "mock",
   model: "deterministic-test-model",
   async generate(input) {
+    if (input.prompt.includes("force exact failure")) throw new Error("provider_exact_failure_message");
     const proposal = input.prompt.includes("create dashboard") ? {
       type: "dashboard",
       data: {
@@ -63,6 +65,18 @@ describe("Movcues AI", () => {
     const second = await setup();
     const cross = await ctx.app.inject({ method: "GET", url: second.base + "/conversations/" + conversation.id, headers: second.auth });
     expect(cross.statusCode).toBe(404);
+  });
+
+  it("returns and stores the exact provider failure", async () => {
+    const { auth, base } = await setup();
+    const conversation = (await ctx.app.inject({ method: "POST", url: base + "/conversations", headers: auth, payload: {} })).json();
+    const failed = await ctx.app.inject({ method: "POST", url: base + "/conversations/" + conversation.id + "/messages", headers: auth, payload: { content: "force exact failure" } });
+
+    expect(failed.statusCode, failed.body).toBe(502);
+    expect(failed.json().message).toBe("AI request failed: provider_exact_failure_message. Your message was preserved; please retry.");
+    expect(await ctx.db.select().from(aiToolExecutions)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: "failed", errorCode: "provider_exact_failure_message" }),
+    ]));
   });
   it("rejects a site that does not belong to the requested organization", async () => {
     const first = await setup();

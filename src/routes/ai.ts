@@ -124,10 +124,10 @@ export function registerAiRoutes(app: FastifyInstance, db: Db, providerOverride?
       ]);
       return { userMessage: messageJson(userMessage), assistantMessage: messageJson(assistantMessage, approval), preview };
     } catch (error) {
-      const code = error instanceof Error ? error.message.slice(0, 120) : "ai_generation_failed";
-      await db.update(aiToolExecutions).set({ status: "failed", errorCode: code, completedAt: new Date() }).where(eq(aiToolExecutions.id, execution.id));
+      const failure = exactAiFailure(error);
+      await db.update(aiToolExecutions).set({ status: "failed", errorCode: failure, completedAt: new Date() }).where(eq(aiToolExecutions.id, execution.id));
       request.log.error({ err: error, conversationId }, "AI turn failed");
-      return reply.code(502).send({ error: "ai_generation_failed", message: "Movcues AI could not complete this request. Your message was preserved; please retry." });
+      return reply.code(502).send({ error: "ai_generation_failed", message: `AI request failed: ${failure}. Your message was preserved; please retry.` });
     }
   });
 
@@ -160,6 +160,11 @@ export function registerAiRoutes(app: FastifyInstance, db: Db, providerOverride?
     if (!row) return reply.code(404).send({ error: "pending_approval_not_found" });
     return { approval: { id: row.id, status: row.status } };
   });
+}
+
+function exactAiFailure(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return typeof error === "string" && error.trim() ? error : "ai_generation_failed";
 }
 
 function resourcePath(type: string, id: string) {
