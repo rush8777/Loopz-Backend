@@ -3,6 +3,7 @@ import { surveyQuestionMarkup, surveyControlsMarkup, surveyQuestionErrors, SURVE
 import type { ExperienceAction, ExperienceContent, SurveyQuestion, WidgetBuilderState, WidgetType } from "./types.js";
 import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
 import { builderImageUrlIsSafe, builderLinkUrlIsSafe } from "./builderContentContract.js";
+import { isSourceAuthored, sourceContentProjection, validateSourceMarkup, type SourceAction } from "./sourceMarkup.js";
 
 export const ONSITE_SCHEMA_VERSION = 2 as const;
 export const ONSITE_SURVEY_SCHEMA_VERSION = 3 as const;
@@ -211,6 +212,17 @@ export function rawOnsiteDocument(builder?: WidgetBuilderState): unknown {
 }
 
 export function validateCompiledOnsiteBuilder(builder: WidgetBuilderState, content: ExperienceContent, widgetType: WidgetType | "anchored_card" | "modal" | "checklist", guide: boolean, survey?: OnsiteSurveyContext, checklist?: OnsiteChecklistContext): string[] {
+  if (isSourceAuthored(builder)) {
+    const movcues = builder.projectData.movcues as Record<string, unknown>;
+    const bindings = movcues.actionBindings && typeof movcues.actionBindings === "object" ? movcues.actionBindings as Record<string, SourceAction> : {};
+    const errors = validateSourceMarkup({ html: builder.html, css: builder.css, actionBindings: bindings }, {
+      widgetType, guide,
+      survey: survey ? { questions: survey.questions.map(question => ({ id: question.id, type: question.type })), submitLabel: survey.submitLabel } : undefined,
+      checklist: checklist ? { items: checklist.items.map(item => ({ id: item.id })) } : undefined,
+    });
+    if (JSON.stringify(sourceContentProjection(builder.html, content)) !== JSON.stringify(content)) errors.push("Source-authored content projection is inconsistent.");
+    return errors;
+  }
   const raw = rawOnsiteDocument(builder); if (raw === undefined) return [];
   const result = validateOnsiteDocument(raw); if (!result.valid) return result.errors;
   const document = raw as OnsiteDocument; let compiled: CompiledOnsiteDocument;

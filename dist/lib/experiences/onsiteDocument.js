@@ -2,6 +2,7 @@ import { checklistCopy, escapeChecklist, CHECKLIST_CELL_CSS } from "./checklistM
 import { surveyQuestionMarkup, surveyControlsMarkup, surveyQuestionErrors, SURVEY_CELL_CSS } from "./surveyMarkup.js";
 import { parseFragment } from "parse5";
 import { builderImageUrlIsSafe, builderLinkUrlIsSafe } from "./builderContentContract.js";
+import { isSourceAuthored, sourceContentProjection, validateSourceMarkup } from "./sourceMarkup.js";
 export const ONSITE_SCHEMA_VERSION = 2;
 export const ONSITE_SURVEY_SCHEMA_VERSION = 3;
 export const ONSITE_CHECKLIST_SCHEMA_VERSION = 4;
@@ -214,6 +215,18 @@ export function rawOnsiteDocument(builder) {
     return movcues && typeof movcues === "object" ? movcues.onsiteDocument : undefined;
 }
 export function validateCompiledOnsiteBuilder(builder, content, widgetType, guide, survey, checklist) {
+    if (isSourceAuthored(builder)) {
+        const movcues = builder.projectData.movcues;
+        const bindings = movcues.actionBindings && typeof movcues.actionBindings === "object" ? movcues.actionBindings : {};
+        const errors = validateSourceMarkup({ html: builder.html, css: builder.css, actionBindings: bindings }, {
+            widgetType, guide,
+            survey: survey ? { questions: survey.questions.map(question => ({ id: question.id, type: question.type })), submitLabel: survey.submitLabel } : undefined,
+            checklist: checklist ? { items: checklist.items.map(item => ({ id: item.id })) } : undefined,
+        });
+        if (JSON.stringify(sourceContentProjection(builder.html, content)) !== JSON.stringify(content))
+            errors.push("Source-authored content projection is inconsistent.");
+        return errors;
+    }
     const raw = rawOnsiteDocument(builder);
     if (raw === undefined)
         return [];
