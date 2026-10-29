@@ -20,6 +20,12 @@ describe("source-authored builder contract", () => {
     expect(validateSourceMarkup({ html: candidateHtml, css: candidateCss, actionBindings: { start_now: { type: "dismiss" } } }, { widgetType: "modal", guide: false }).length).toBeGreaterThan(0);
   });
 
+  it("reports precise CSS repair feedback while preserving scoped media queries", () => {
+    expect(validateSourceMarkup({ html, css: ".movcues-widget{transition:opacity .2s}", actionBindings: { start_now: { type: "dismiss" } } }, { widgetType: "modal", guide: false })).toContain("CSS transition declarations are not supported.");
+    expect(validateSourceMarkup({ html, css: "@import 'theme.css';.movcues-widget{color:#111}", actionBindings: { start_now: { type: "dismiss" } } }, { widgetType: "modal", guide: false })).toContain("CSS @import is not supported.");
+    expect(validateSourceMarkup({ html, css, actionBindings: { start_now: { type: "dismiss" } } }, { widgetType: "modal", guide: false })).toEqual([]);
+  });
+
   it("keeps the structured recovery document while making source the explicit canonical surface", () => {
     const builder: WidgetBuilderState = { version: 1, projectData: {}, html: "", css: "" };
     const compiled = applyOnsiteDocument(builder, createOnsiteDocument(), "modal");

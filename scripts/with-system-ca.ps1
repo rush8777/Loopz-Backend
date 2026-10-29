@@ -6,6 +6,24 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Local development is configured by Loopz-Backend/.env. PowerShell child
+# processes inherit machine/user environment variables, and dotenv deliberately
+# does not overwrite them. Clear only the AI variables here so an old key in the
+# Windows environment cannot silently take precedence over the current .env.
+$envFile = Join-Path (Split-Path -Parent $PSScriptRoot) ".env"
+if (Test-Path -LiteralPath $envFile) {
+    @(
+        "AI_ENABLED",
+        "AI_PROVIDER",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "GEMINI_API_KEY",
+        "GEMINI_MODEL"
+    ) | ForEach-Object {
+        Remove-Item -LiteralPath "Env:$_" -ErrorAction SilentlyContinue
+    }
+}
+
 # Node does not always receive the intermediate certificates that Windows uses
 # for TLS validation. Export Windows' trusted root and intermediate stores for
 # this local development process while retaining normal certificate validation.

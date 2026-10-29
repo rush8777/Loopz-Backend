@@ -7,6 +7,12 @@ const provider: AiProvider = {
   name: "mock", model: "editor-test",
   async generate(input) {
     if (input.prompt.includes("force failure")) throw new Error("editor_ai_invalid_response");
+    if (input.prompt.includes('"kind":"checklist"') && input.prompt.includes('"authoringSurface":"source"')) {
+      const serialized = input.prompt.split("\n\nEDITOR_CONTEXT:\n")[1]?.split("\n\nCURRENT_DRAFT_REVISION:")[0];
+      const context = JSON.parse(serialized ?? "null") as { source?: { html: string; css: string; actionBindings: Record<string, unknown> } } | null;
+      if (!context?.source) throw new Error("source_context_missing");
+      return { text: JSON.stringify({ markdown: "A safe source redesign is ready.", proposal: { summary: "Preserve and revalidate the source design", operations: [{ type: "replace_markup", html: context.source.html, css: context.source.css, actionBindings: context.source.actionBindings }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
+    }
     if (input.prompt.includes('"kind":"checklist"')) {
       const itemId = input.prompt.match(/"selectedItemId":"([^"]+)"/)?.[1] ?? "item_missing";
       return { text: JSON.stringify({ markdown: "A safe Checklist preview is ready.", proposal: { summary: "Connect the first task", operations: [{ type: "update_checklist_task", itemId, patch: { title: "Take the product tour" } }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
@@ -97,7 +103,14 @@ describe("editor-session AI route", () => {
     const context = { experience: { id: created.id, name: "Setup", kind: "checklist", widgetType: null, builderMode: "onsite" }, revision: draft.version.revision, currentView: "expanded", selection: { kind: "step", label: "Checklist" }, selectedItemId: item.id, checklist: { title: definition.title, description: definition.description, totalTasks: definition.items.length, behavior: definition.behavior, completionMessage: definition.completionMessage, items: definition.items.map((value: any, position: number) => ({ ...value, position })) }, resources: { guides: draft.references.guides, segments: draft.references.segments }, currentDocument: definition.builder.projectData.movcues.onsiteDocument, targeting: definition.targeting };
     const response = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { prompt: "Improve the first task", revision: draft.version.revision, context } });
     expect(response.statusCode, response.body).toBe(200); expect(response.json().proposal.operations[0]).toMatchObject({ type: "update_checklist_task", itemId: item.id });
-    const tampered = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { prompt: "Use another guide", revision: draft.version.revision, context: { ...context, resources: { ...context.resources, guides: [...context.resources.guides, { id: "guide_foreign", name: "Foreign", status: "published" }] } } } });
+    const sourceDefinition = structuredClone(definition); sourceDefinition.builder.projectData.movcues = { ...sourceDefinition.builder.projectData.movcues, authoringSurface: "source", sourceVersion: 1, actionBindings: {} };
+    const saved = await ctx.app.inject({ method: "PATCH", url: `/public/experience-editor/${session.sessionId}/draft`, headers: editorHeaders, payload: { revision: draft.version.revision, definition: sourceDefinition } });
+    expect(saved.statusCode, saved.body).toBe(200);
+    const sourceRevision = saved.json().version.revision;
+    const sourceContext = { ...context, revision: sourceRevision, source: { html: sourceDefinition.builder.html, css: sourceDefinition.builder.css, authoringSurface: "source", actionBindings: {}, supportedActions: ["dismiss", "open_url", "track_event"] } };
+    const followUp = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { prompt: "Improve the source design again", revision: sourceRevision, context: sourceContext } });
+    expect(followUp.statusCode, followUp.body).toBe(200); expect(followUp.json().proposal.operations[0]).toMatchObject({ type: "replace_markup" });
+    const tampered = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { prompt: "Use another guide", revision: sourceRevision, context: { ...sourceContext, resources: { ...sourceContext.resources, guides: [...sourceContext.resources.guides, { id: "guide_foreign", name: "Foreign", status: "published" }] } } } });
     expect(tampered.statusCode).toBe(409); expect(tampered.json().error).toBe("stale_editor_context");
   });
 });

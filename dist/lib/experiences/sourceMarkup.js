@@ -1,9 +1,9 @@
 import { parseFragment } from "parse5";
 import postcss from "postcss";
-import { builderCssIsSafe, builderHtmlIsSafe, builderImageUrlIsSafe } from "./builderContentContract.js";
+import { builderCssIsSafe, builderHtmlIsSafe } from "./builderContentContract.js";
 const actionIdPattern = /^[A-Za-z][A-Za-z0-9_-]{2,63}$/;
 const safeEventPattern = /^[^\u0000-\u001f\u007f]{1,200}$/;
-const allowedAtRules = new Set(["media", "supports"]);
+const allowedAtRules = new Set(["media"]);
 function attribute(element, name) { return element.attrs.find(value => value.name === name)?.value; }
 function hasClass(element, name) { return (attribute(element, "class") ?? "").split(/\s+/).includes(name); }
 function htmlFacts(html) {
@@ -27,8 +27,6 @@ function htmlFacts(html) {
 export function sourceCssErrors(css) {
     if (css.length > 100_000)
         return ["Source CSS exceeds 100 KB."];
-    if (!builderCssIsSafe(css))
-        return ["Source CSS contains an unsafe construct or unscoped selector."];
     let root;
     try {
         root = postcss.parse(css);
@@ -48,12 +46,15 @@ export function sourceCssErrors(css) {
     });
     root.walkDecls(declaration => {
         const property = declaration.prop.toLowerCase(), value = declaration.value;
+        if (["animation", "transition"].includes(property))
+            errors.push(`CSS ${property} declarations are not supported.`);
         if (["behavior", "-moz-binding"].includes(property) || /expression\s*\(|javascript\s*:/i.test(value))
             errors.push(`Unsafe CSS declaration: ${declaration.prop}`);
-        for (const match of value.matchAll(/url\(\s*(["']?)(.*?)\1\s*\)/gi))
-            if (!builderImageUrlIsSafe(match[2]))
-                errors.push("CSS URLs must use HTTP(S), site-relative, or supported data-image URLs.");
+        if (/url\s*\(/i.test(value))
+            errors.push("CSS url() values are not supported.");
     });
+    if (!builderCssIsSafe(css) && !errors.length)
+        errors.push("Source CSS contains an unsafe construct or unscoped selector.");
     return [...new Set(errors)];
 }
 function count(elements, name, value) {

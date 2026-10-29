@@ -20,7 +20,7 @@ import type { SegmentDefinition } from "../lib/segments/types.js";
 import { deliveredChecklist } from "./public-checklists.js";
 import { getOrganizationSubscription, subscriptionIsActive } from "../lib/entitlements/subscription.js";
 import { siteThemeTokensSchema } from "../lib/themes/validation.js";
-import { editorAiRequestSchema, runEditorAiTurn, validateEditorProposalAgainstDraft } from "../lib/ai/editor.js";
+import { editorAiRequestSchema, editorProposalSchema, runEditorAiTurn, validateEditorProposalAgainstDraft } from "../lib/ai/editor.js";
 import { createConfiguredAiProvider, type AiProvider } from "../lib/ai/providers/index.js";
 
 function rawTokenHash(token: string): string {
@@ -410,7 +410,16 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
       guides: await db.select({ id: experiences.id, name: experiences.name, status: experiences.status }).from(experiences).where(and(eq(experiences.siteId, session.siteId), eq(experiences.kind, "guide"))).limit(200),
       segments: await db.select({ id: segments.id, name: segments.name }).from(segments).where(eq(segments.siteId, session.siteId)).limit(200),
     } : undefined;
-    if (checklistContext) try { validateEditorProposalAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, { summary: "Validate Checklist context", operations: [{ type: "update_checklist_behavior", patch: {} }] }, serverResources); } catch { return reply.code(409).send({ error: "stale_editor_context" }); }
+    if (checklistContext) try {
+      const source = parsed.data.context.source;
+      const contextProbe = editorProposalSchema.parse(source?.authoringSurface === "source"
+        ? { summary: "Validate Checklist source context", operations: [{ type: "replace_markup" as const, html: source.html, css: source.css, actionBindings: source.actionBindings }] }
+        : { summary: "Validate Checklist context", operations: [{ type: "update_checklist_behavior" as const, patch: {} }] });
+      validateEditorProposalAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, contextProbe, serverResources);
+    } catch (error) {
+      request.log.warn({ err: error, sessionId }, "Editor AI context is stale");
+      return reply.code(409).send({ error: "stale_editor_context", message: error instanceof Error ? error.message : "Editor context no longer matches the draft." });
+    }
     const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
     const usage = await db.select({ totalTokens: aiProviderUsage.totalTokens }).from(aiProviderUsage).where(and(eq(aiProviderUsage.orgId, site.orgId), gte(aiProviderUsage.createdAt, dayStart)));
     if (usage.reduce((total, row) => total + row.totalTokens, 0) >= env.AI_DAILY_TOKEN_LIMIT) return reply.code(429).send({ error: "ai_daily_limit", message: "This workspace reached its daily AI usage limit." });
@@ -429,8 +438,7 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
     }).returning();
     try {
       const history = await db.select({ role: aiMessages.role, content: aiMessages.content }).from(aiMessages).where(eq(aiMessages.conversationId, conversation.id)).orderBy(desc(aiMessages.createdAt)).limit(10);
-      const result = await runEditorAiTurn(aiProvider, parsed.data, history.reverse());
-      if (result.proposal) validateEditorProposalAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, result.proposal, serverResources);
+      const result = await runEditorAiTurn(aiProvider, parsed.data, history.reverse(), undefined, proposal => validateEditorProposalAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, proposal, serverResources));
       await Promise.all([
         db.insert(aiMessages).values({ conversationId: conversation.id, role: "assistant", content: result.markdown, proposal: result.proposal, createdAt: new Date() }),
         db.insert(aiProviderUsage).values({ orgId: site.orgId, siteId: site.id, userId: session.dashboardUserId, conversationId: conversation.id, provider: result.generation.provider, model: result.generation.model, promptTokens: result.generation.usage.promptTokens, completionTokens: result.generation.usage.completionTokens, totalTokens: result.generation.usage.totalTokens }),

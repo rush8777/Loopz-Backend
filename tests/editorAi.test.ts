@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { editorAiRequestSchema, runEditorAiTurn, validateEditorProposalAgainstDraft } from "../src/lib/ai/editor.js";
 import type { AiProvider } from "../src/lib/ai/providers/types.js";
 import type { ExperienceDefinition } from "../src/lib/experiences/types.js";
+import { validateSourceMarkup } from "../src/lib/experiences/sourceMarkup.js";
 import checklistFixture from "./fixtures/checklist-v4.json";
 
 const context = { experience: { id: "exp_1", name: "Welcome", widgetType: "modal", builderMode: "onsite" as const }, selection: { kind: "step" as const, label: "Step" }, document: { schemaVersion: 2, id: "document_1", root: {} } };
@@ -16,6 +17,50 @@ describe("editor AI contract", () => {
     const request = editorAiRequestSchema.parse({ prompt: "Improve it", revision: 1, context });
     const result = await runEditorAiTurn(provider, request, []);
     expect(result.proposal?.operations[0]).toEqual({ type: "update_text", blockId: "block_1", text: "Hello" });
+  });
+
+  it("repairs invalid model output with exact server validation feedback", async () => {
+    const prompts: string[] = [];
+    const provider: AiProvider = { name: "mock", model: "mock", async generate(input) {
+      prompts.push(input.prompt);
+      const css = prompts.length === 1 ? ".movcues-widget{transition:opacity .2s}" : ".movcues-widget{opacity:1}";
+      return { text: JSON.stringify({ markdown: "Preview ready", proposal: { summary: "Redesign", operations: [{ type: "replace_markup", html: "<section class=\"movcues-widget\" data-movcues-widget-type=\"modal\" data-movcues-document-version=\"2\"></section>", css, actionBindings: {} }] } }), provider: "mock", model: "mock", usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 } };
+    } };
+    const request = editorAiRequestSchema.parse({ prompt: "Redesign it", revision: 1, context });
+    const result = await runEditorAiTurn(provider, request, [{ role: "assistant", content: "The editor context is stale. Refresh the selected widget and try again." }], undefined, proposal => {
+      const operation = proposal.operations[0] as { html: string; css: string; actionBindings: {} };
+      const errors = validateSourceMarkup(operation, { widgetType: "modal", guide: false });
+      if (errors.length) throw new Error(errors.join(" "));
+    });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("SERVER_VALIDATION_FEEDBACK");
+    expect(prompts[1]).toContain("CSS transition declarations are not supported.");
+    expect(result.generation.usage).toEqual({ promptTokens: 4, completionTokens: 6, totalTokens: 10 });
+    expect((result.proposal?.operations[0] as { css: string }).css).toBe(".movcues-widget{opacity:1}");
+  });
+
+  it("repairs a model-invented stale-context refusal", async () => {
+    const prompts: string[] = [];
+    const sourceHtml = "<section class=\"movcues-widget\" data-movcues-widget-type=\"modal\" data-movcues-document-version=\"2\"><div class=\"compact\"></div></section>";
+    const provider: AiProvider = { name: "mock", model: "mock", async generate(input) {
+      prompts.push(input.prompt);
+      const response = prompts.length === 1
+        ? { markdown: "The editor context is stale. Refresh the selected widget and try again.", proposal: null }
+        : { markdown: "I’ll make the tooltip compact.", proposal: { summary: "Remove empty space", operations: [{ type: "replace_markup", html: sourceHtml, css: ".movcues-widget{padding:8px}.movcues-widget .compact{min-height:0}", actionBindings: {} }] } };
+      return { text: JSON.stringify(response), provider: "mock", model: "mock", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    } };
+    const sourceContext = { ...context, source: { html: sourceHtml, css: ".movcues-widget{padding:24px}", authoringSurface: "source", actionBindings: {}, supportedActions: ["dismiss", "open_url", "track_event"] } };
+    const request = editorAiRequestSchema.parse({ prompt: "Make the tooltip minimal", revision: 1, context: sourceContext });
+    const result = await runEditorAiTurn(provider, request, [], undefined, proposal => {
+      const operation = proposal.operations[0] as { html: string; css: string; actionBindings: {} };
+      const errors = validateSourceMarkup(operation, { widgetType: "modal", guide: false });
+      if (errors.length) throw new Error(errors.join(" "));
+    });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain("EDITOR_CONTEXT_STATUS:\nserver_verified_current");
+    expect(prompts[0]).not.toContain("ASSISTANT: The editor context is stale");
+    expect(prompts[1]).toContain("Do not claim it is stale");
+    expect(result.proposal?.operations[0]).toMatchObject({ type: "replace_markup" });
   });
 
   it("rejects model output that attempts raw HTML operations", async () => {
