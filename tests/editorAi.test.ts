@@ -19,6 +19,13 @@ describe("editor AI contract", () => {
     expect(result.proposal?.operations[0]).toEqual({ type: "update_text", blockId: "block_1", text: "Hello" });
   });
 
+  it("accepts a bounded outer width for modal source replacements", async () => {
+    const operation = { type: "replace_markup", widthPx: 640, html: '<section class="movcues-widget" data-movcues-widget-type="modal" data-movcues-document-version="2"></section>', css: ".movcues-widget{width:100%}", actionBindings: {} };
+    const provider: AiProvider = { name: "mock", model: "mock", async generate() { return { text: JSON.stringify({ markdown: "Preview ready", proposal: { summary: "Widen modal", operations: [operation] } }), provider: "mock", model: "mock", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } }; } };
+    const result = await runEditorAiTurn(provider, editorAiRequestSchema.parse({ prompt: "Widen it", revision: 1, context }), []);
+    expect(result.proposal?.operations[0]).toMatchObject({ type: "replace_markup", widthPx: 640 });
+  });
+
   it("repairs invalid model output with exact server validation feedback", async () => {
     const prompts: string[] = [];
     const provider: AiProvider = { name: "mock", model: "mock", async generate(input) {
