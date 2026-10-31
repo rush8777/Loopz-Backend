@@ -126,6 +126,18 @@ describe("visual experiences", () => {
     expect(published.statusCode).toBe(200); expect(published.json().publishedVersion.versionNumber).toBe(1); expect(published.json().draftVersion.versionNumber).toBe(2);
   });
 
+  it("defaults new banners to inline while preserving and validating explicit display modes", async () => {
+    const { owner, site } = await setup(ctx.app, "banner-mode"); const headers = { authorization: `Bearer ${owner.accessToken}` }; const url = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
+    const created = (await ctx.app.inject({ method: "POST", url, headers, payload: { kind: "widget", widgetType: "banner", name: "Banner", buildUrl: "https://banner-mode.example.com", template: "blank", useBuildPageAsTarget: false } })).json();
+    expect(created.draftVersion.definition.behavior).toMatchObject({ bannerPosition: "top", bannerDisplayMode: "inline" });
+    const definition = structuredClone(created.draftVersion.definition); definition.behavior.bannerDisplayMode = "overlay";
+    const saved = await ctx.app.inject({ method: "PATCH", url: `${url}/${created.id}`, headers, payload: { definition, revision: created.draftVersion.revision } });
+    expect(saved.statusCode, saved.body).toBe(200); expect(saved.json().draftVersion.definition.behavior.bannerDisplayMode).toBe("overlay");
+    const invalid = structuredClone(saved.json().draftVersion.definition); invalid.behavior.bannerDisplayMode = "floating";
+    const rejected = await ctx.app.inject({ method: "PATCH", url: `${url}/${created.id}`, headers, payload: { definition: invalid, revision: saved.json().draftVersion.revision } });
+    expect(rejected.statusCode).toBe(400);
+  });
+
   it("persists launch setup completion independently from publishing", async () => {
     const { owner, site } = await setup(ctx.app, "launch-setup");
     const authorization = { authorization: `Bearer ${owner.accessToken}` };

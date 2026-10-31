@@ -82,6 +82,7 @@ export interface ExperienceBehavior {
   closeOnBackdrop?: boolean;
   slideoutPosition?: "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center-left" | "center-right";
   bannerPosition?: "top" | "bottom";
+  bannerDisplayMode?: "inline" | "overlay";
   hotspotStyle?: "pulse" | "dot" | "question";
   hotspotColor?: string;
 }

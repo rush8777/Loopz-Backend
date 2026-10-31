@@ -113,6 +113,7 @@ const behaviorSchema = z.object({
   closeOnBackdrop: z.boolean().optional(),
   slideoutPosition: z.enum(["top-left", "top-right", "bottom-left", "bottom-right", "center-left", "center-right"]).optional(),
   bannerPosition: z.enum(["top", "bottom"]).optional(),
+  bannerDisplayMode: z.enum(["inline", "overlay"]).optional(),
   hotspotStyle: z.enum(["pulse", "dot", "question"]).optional(),
   hotspotColor: safeColorSchema.optional(),
 });
