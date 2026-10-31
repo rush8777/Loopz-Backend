@@ -415,7 +415,7 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
       const contextProbe = editorProposalSchema.parse(source?.authoringSurface === "source"
         ? { summary: "Validate Checklist source context", operations: [{ type: "replace_markup" as const, html: source.html, css: source.css, actionBindings: source.actionBindings }] }
         : { summary: "Validate Checklist context", operations: [{ type: "update_checklist_behavior" as const, patch: {} }] });
-      validateEditorProposalAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, contextProbe, serverResources);
+      validateEditorProposalAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, contextProbe, serverResources, { contextOnly: true });
     } catch (error) {
       request.log.warn({ err: error, sessionId }, "Editor AI context is stale");
       return reply.code(409).send({ error: "stale_editor_context", message: error instanceof Error ? error.message : "Editor context no longer matches the draft." });

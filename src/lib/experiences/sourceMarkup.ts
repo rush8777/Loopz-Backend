@@ -1,3 +1,5 @@
+import { SOURCE_EDITABILITY, sourceEditabilityErrors, type SourceElement } from "./sourceEditability.js";
+import { sourceEditingCssErrors } from "./sourceStyles.js";
 import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
 import postcss from "postcss";
 import { builderCssIsSafe, builderHtmlIsSafe } from "./builderContentContract.js";
@@ -14,7 +16,7 @@ export interface SourceMarkupProposal {
   actionBindings: Record<string, SourceAction>;
 }
 
-export interface SourceSurveyContract { questions: Array<{ id: string; type: string }>; submitLabel?: string }
+export interface SourceSurveyContract { questions: Array<{ id: string; type: string; options?: Array<{ id: string }>; min?: number; max?: number; maxLength?: number; required?: boolean }>; submitLabel?: string }
 export interface SourceChecklistContract { items: Array<{ id: string }> }
 
 type HtmlNode = DefaultTreeAdapterMap["node"];
@@ -37,7 +39,7 @@ function htmlFacts(html: string) {
   walk(fragment);
   const roots = elements.filter(element => hasClass(element, "movcues-widget"));
   const ids = elements.map(element => attribute(element, "id")).filter((value): value is string => Boolean(value));
-  const actionIds = elements.filter(element => element.tagName === "button" && !attribute(element, "data-movcues-survey-action") && !attribute(element, "data-movcues-checklist-role") && !attribute(element, "data-movcues-checklist-item-role")).map(element => attribute(element, "data-movcues-action-id"));
+  const actionIds = elements.filter(element => element.tagName === "button" && !attribute(element, "data-movcues-survey-action") && !attribute(element, "data-movcues-option-id") && !attribute(element, "data-movcues-checklist-role") && !attribute(element, "data-movcues-checklist-item-role")).map(element => attribute(element, "data-movcues-action-id"));
   const topLevelElements = fragment.childNodes.filter((node): node is HtmlElement => "tagName" in node);
   const nonWhitespaceText = fragment.childNodes.some(node => "value" in node && node.value.trim());
   return { elements, roots, ids, actionIds, topLevelElements, nonWhitespaceText };
@@ -70,7 +72,7 @@ function count(elements: HtmlElement[], name: string, value?: string): number {
   return elements.filter(element => attribute(element, name) !== undefined && (value === undefined || attribute(element, name) === value)).length;
 }
 
-export function validateSourceMarkup(input: SourceMarkupProposal, options: { widgetType: WidgetType | "checklist"; guide: boolean; survey?: SourceSurveyContract; checklist?: SourceChecklistContract }): string[] {
+export function validateSourceMarkup(input: SourceMarkupProposal, options: { widgetType: WidgetType | "checklist"; guide: boolean; survey?: SourceSurveyContract; checklist?: SourceChecklistContract; editable?: boolean; previousHtml?: string }): string[] {
   const errors: string[] = [];
   if (input.html.length > 100_000) errors.push("Source HTML exceeds 100 KB.");
   if (!builderHtmlIsSafe(input.html, Boolean(options.survey))) errors.push("Source HTML contains unsupported or unsafe markup.");
@@ -105,6 +107,7 @@ export function validateSourceMarkup(input: SourceMarkupProposal, options: { wid
     for (const role of ["root", "title", "items", "progress", "launcher-label", "remaining-count", "completion-title", "completion-description", "completion-acknowledge"]) if (count(facts.elements, "data-movcues-checklist-role", role) !== 1) errors.push(`Checklist role ${role} must remain exactly once.`);
     for (const item of options.checklist.items) if (count(facts.elements, "data-movcues-checklist-item-id", item.id) !== 1) errors.push(`Checklist item ${item.id} must remain exactly once.`);
   }
+  if (options.editable && root) errors.push(...sourceEditabilityErrors(sourceElement(root), options.previousHtml ? htmlFacts(options.previousHtml).roots.map(sourceElement)[0] : undefined, options.survey?.questions), ...sourceEditingCssErrors(input.css));
   return [...new Set(errors)];
 }
 
@@ -124,10 +127,14 @@ export function applySourceMarkup(builder: WidgetBuilderState, source: SourceMar
   const previous = builder.projectData.movcues && typeof builder.projectData.movcues === "object" ? builder.projectData.movcues as Record<string, unknown> : {};
   builder.html = source.html;
   builder.css = source.css;
-  builder.projectData = { ...builder.projectData, movcues: { ...previous, authoringSurface: "source", sourceVersion: 1, actionBindings: structuredClone(source.actionBindings) } };
+  builder.projectData = { ...builder.projectData, movcues: { ...previous, authoringSurface: "source", sourceVersion: 1, sourceEditabilityVersion: htmlFacts(source.html).roots[0] && !sourceEditabilityErrors(sourceElement(htmlFacts(source.html).roots[0])).length && !sourceEditingCssErrors(source.css).length ? SOURCE_EDITABILITY.version : undefined, actionBindings: structuredClone(source.actionBindings) } };
 }
 
 export function isSourceAuthored(builder?: WidgetBuilderState): boolean {
   const movcues = builder?.projectData.movcues;
   return Boolean(movcues && typeof movcues === "object" && (movcues as Record<string, unknown>).authoringSurface === "source");
+}
+
+function sourceElement(element: HtmlElement): SourceElement {
+  return { tag: element.tagName, attrs: Object.fromEntries(element.attrs.map(attr => [attr.name, attr.value])), text: element.childNodes.filter(node => "value" in node).map(node => "value" in node ? node.value : "").join(""), children: element.childNodes.filter((node): node is HtmlElement => "tagName" in node).map(sourceElement) };
 }

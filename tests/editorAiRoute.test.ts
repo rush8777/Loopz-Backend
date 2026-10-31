@@ -11,7 +11,7 @@ const provider: AiProvider = {
       const serialized = input.prompt.split("\n\nEDITOR_CONTEXT:\n")[1]?.split("\n\nCURRENT_DRAFT_REVISION:")[0];
       const context = JSON.parse(serialized ?? "null") as { source?: { html: string; css: string; actionBindings: Record<string, unknown> } } | null;
       if (!context?.source) throw new Error("source_context_missing");
-      return { text: JSON.stringify({ markdown: "A safe source redesign is ready.", proposal: { summary: "Preserve and revalidate the source design", operations: [{ type: "replace_markup", html: context.source.html, css: context.source.css, actionBindings: context.source.actionBindings }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
+      return { text: JSON.stringify({ markdown: "A safe source redesign is ready.", proposal: { summary: "Preserve and revalidate the source design", operations: [{ type: "replace_markup", html: context.source.html.replace("<section ", '<section data-movcues-node-id="source_root" '), css: context.source.css, actionBindings: context.source.actionBindings }] } }), provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
     }
     if (input.prompt.includes('"kind":"checklist"')) {
       const itemId = input.prompt.match(/"selectedItemId":"([^"]+)"/)?.[1] ?? "item_missing";

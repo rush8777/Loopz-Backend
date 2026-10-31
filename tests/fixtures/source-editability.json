@@ -1,0 +1,9 @@
+{
+  "html": "<section class=\"movcues-widget\" data-movcues-widget-type=\"modal\" data-movcues-document-version=\"2\" data-movcues-node-id=\"root_node\"><div class=\"hero\" data-movcues-node-id=\"hero_node\"><h2 class=\"hero-title\" data-movcues-node-id=\"node_title_block\" data-movcues-block-id=\"title_block\" data-movcues-content=\"heading\">Welcome <span class=\"accent\">aboard</span></h2><p data-movcues-node-id=\"node_body_block\" data-movcues-block-id=\"body_block\" data-movcues-content=\"body\">Build <strong>something</strong> memorable.</p><button type=\"button\" data-movcues-node-id=\"node_button_block\" data-movcues-block-id=\"button_block\" data-movcues-action-id=\"start_now\">Start</button></div><div class=\"footer\" data-movcues-node-id=\"footer_node\"><p data-movcues-node-id=\"node_footer_text\" data-movcues-block-id=\"footer_text\">Made for you</p></div></section>",
+  "css": ".movcues-widget { background: #fff; padding: 24px; }\n.movcues-widget .hero { display: flex; flex-direction: column; gap: 16px; }\n/* keep this comment */\n.movcues-widget .hero-title { font-size: 32px; font-weight: 700; letter-spacing: -1px; color: #111827; }\n.movcues-widget .accent { color: #2563eb; }\n@media(max-width:480px) { .movcues-widget .hero { gap: 10px; } }",
+  "actionBindings": {
+    "start_now": {
+      "type": "dismiss"
+    }
+  }
+}
