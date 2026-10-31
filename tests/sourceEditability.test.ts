@@ -1,3 +1,4 @@
+import checklistFixture from "./fixtures/checklist-v4.json";
 import { applyOnsiteDocument, createOnsiteSurveyDocument } from "../src/lib/experiences/onsiteDocument.js";
 import type { SurveyQuestion } from "../src/lib/experiences/types.js";
 import { describe, expect, it } from "vitest";
@@ -24,6 +25,10 @@ describe("source visual editability contract", () => {
     expect(validateSourceMarkup({ ...source, html }, options).length).toBeGreaterThan(0);
   });
   it("preserves surviving IDs and refuses CSS outside the declared editing capabilities", () => {
+    const value = { version: 1 as const, html: "", css: "", projectData: {} }, f = structuredClone(checklistFixture);
+    applyOnsiteDocument(value, f.document as Parameters<typeof applyOnsiteDocument>[1], "checklist", undefined, f.definition as Parameters<typeof applyOnsiteDocument>[4]);
+    const extra = '<button data-movcues-checklist-role="item" data-movcues-checklist-item-id="foreign_task">Unexpected</button>';
+    expect(validateSourceMarkup({ html: value.html.replace("</section>", `${extra}</section>`), css: value.css, actionBindings: {} }, { widgetType: "checklist", guide: false, checklist: f.definition }).join(" ")).toContain("Checklist source task identities must match the canonical items exactly.");
     expect(validateSourceMarkup({ ...source, html: fixture.html.replace("title_block", "replaced_title") }, { ...options, previousHtml: fixture.html }).join(" ")).toContain("must preserve");
     for (const css of [".movcues-widget .hero{position:fixed}", ".movcues-widget .hero{flex-direction:row-reverse}", ".movcues-widget::before{content:'Hi'}", ".movcues-widget #title{color:red}"]) expect(validateSourceMarkup({ ...source, css }, options).length).toBeGreaterThan(0);
   });

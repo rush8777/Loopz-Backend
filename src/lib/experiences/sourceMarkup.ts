@@ -104,6 +104,10 @@ export function validateSourceMarkup(input: SourceMarkupProposal, options: { wid
     if (count(facts.elements, "data-movcues-survey-action", "submit") !== 1) errors.push("Survey submission control must remain exactly once.");
   }
   if (options.checklist) {
+    const taskElements = facts.elements.filter(element => attribute(element, "data-movcues-checklist-item-id") !== undefined || attribute(element, "data-movcues-checklist-role") === "item");
+    const taskIds = taskElements.map(element => attribute(element, "data-movcues-checklist-item-id") ?? "");
+    if (taskElements.some(element => element.tagName !== "button" || attribute(element, "data-movcues-checklist-role") !== "item")) errors.push("Checklist task components must use canonical button/item semantics.");
+    if (taskIds.length !== options.checklist.items.length || taskIds.some(id => !options.checklist!.items.some(item => item.id === id))) errors.push("Checklist source task identities must match the canonical items exactly.");
     for (const role of ["root", "title", "items", "progress", "launcher-label", "remaining-count", "completion-title", "completion-description", "completion-acknowledge"]) if (count(facts.elements, "data-movcues-checklist-role", role) !== 1) errors.push(`Checklist role ${role} must remain exactly once.`);
     for (const item of options.checklist.items) if (count(facts.elements, "data-movcues-checklist-item-id", item.id) !== 1) errors.push(`Checklist item ${item.id} must remain exactly once.`);
   }
