@@ -106,8 +106,8 @@ function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, 
   };
   if (kind === "guide") {
     const behavior = guidePattern === "modal"
-      ? { dismissible: true }
-      : { placement: "auto" as const, alignment: "center" as const, offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true };
+      ? { dismissible: true, layer: { mode: "always_on_top" as const } }
+      : { placement: "auto" as const, alignment: "center" as const, offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true, layer: { mode: "auto" as const } };
     return { steps: [{ id: onsiteId("step"), pattern: guidePattern, content, ...(builderMode === "onsite" ? { builder: onsiteBuilder(content, guidePattern) } : {}), behavior }], design: themedDesign(siteTheme), behavior: { layer: { mode: "auto" } }, targeting: targeting(pageRules) };
   }
   const definition: ExperienceDefinition = {
@@ -115,7 +115,7 @@ function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, 
     design: { ...themedDesign(siteTheme), size: defaultWidgetSize(widgetType!) },
     behavior: {
       dismissible: true,
-      layer: { mode: "auto" },
+      layer: { mode: widgetType === "modal" ? "always_on_top" : "auto" },
       ...(widgetType === "toast" ? { toastPosition: "bottom-right" as const, autoDismissMs: null } : {}),
       ...(widgetType === "cursor_follow" ? { cursorOffset: { x: 16, y: 16 } } : {}),
       ...(widgetType === "anchored_card" || widgetType === "hotspot" ? { placement: "auto" as const, alignment: "center" as const, offset: 8 } : {}),

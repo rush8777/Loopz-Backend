@@ -104,8 +104,8 @@ function initialDefinition(kind, widgetType, pageRules, siteTheme, builderMode =
     };
     if (kind === "guide") {
         const behavior = guidePattern === "modal"
-            ? { dismissible: true }
-            : { placement: "auto", alignment: "center", offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true };
+            ? { dismissible: true, layer: { mode: "always_on_top" } }
+            : { placement: "auto", alignment: "center", offset: 8, pointer: { enabled: true, size: 10 }, dismissible: true, layer: { mode: "auto" } };
         return { steps: [{ id: onsiteId("step"), pattern: guidePattern, content, ...(builderMode === "onsite" ? { builder: onsiteBuilder(content, guidePattern) } : {}), behavior }], design: themedDesign(siteTheme), behavior: { layer: { mode: "auto" } }, targeting: targeting(pageRules) };
     }
     const definition = {
@@ -113,7 +113,7 @@ function initialDefinition(kind, widgetType, pageRules, siteTheme, builderMode =
         design: { ...themedDesign(siteTheme), size: defaultWidgetSize(widgetType) },
         behavior: {
             dismissible: true,
-            layer: { mode: "auto" },
+            layer: { mode: widgetType === "modal" ? "always_on_top" : "auto" },
             ...(widgetType === "toast" ? { toastPosition: "bottom-right", autoDismissMs: null } : {}),
             ...(widgetType === "cursor_follow" ? { cursorOffset: { x: 16, y: 16 } } : {}),
             ...(widgetType === "anchored_card" || widgetType === "hotspot" ? { placement: "auto", alignment: "center", offset: 8 } : {}),

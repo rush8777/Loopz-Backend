@@ -170,6 +170,7 @@ describe("visual experiences", () => {
     });
     expect(created.draftVersion.definition.builder.html).toContain('data-movcues-content="heading"');
     expect(created.draftVersion.definition.content.primaryAction).toEqual({ label: "Got it", type: "dismiss" });
+    expect(created.draftVersion.definition.behavior.layer).toEqual({ mode: "always_on_top" });
 
     const modalGuideResponse = await ctx.app.inject({
       method: "POST",
@@ -188,9 +189,16 @@ describe("visual experiences", () => {
     expect(modalGuideResponse.statusCode).toBe(201);
     expect(modalGuideResponse.json().draftVersion.definition.steps[0]).toMatchObject({
       pattern: "modal",
-      behavior: { dismissible: true },
+      behavior: { dismissible: true, layer: { mode: "always_on_top" } },
       builder: { projectData: { movcues: { authoringSurface: "onsite" } } },
     });
+
+    const anchoredGuideResponse = await ctx.app.inject({
+      method: "POST", url, headers: authorization,
+      payload: { kind: "guide", builderMode: "onsite", guidePattern: "anchored_card", name: "On-site anchored guide", buildUrl: "https://onsite-mode.example.com/home", template: "blank", useBuildPageAsTarget: false },
+    });
+    expect(anchoredGuideResponse.statusCode).toBe(201);
+    expect(anchoredGuideResponse.json().draftVersion.definition.steps[0].behavior.layer).toEqual({ mode: "auto" });
 
     const incompatible = await ctx.app.inject({
       method: "POST",
