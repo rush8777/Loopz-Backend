@@ -1,3 +1,5 @@
+import { SOURCE_EDITABILITY, sourceEditabilityErrors } from "./sourceEditability.js";
+import { sourceEditingCssErrors } from "./sourceStyles.js";
 import { parseFragment } from "parse5";
 import postcss from "postcss";
 import { builderCssIsSafe, builderHtmlIsSafe } from "./builderContentContract.js";
@@ -18,7 +20,7 @@ function htmlFacts(html) {
     walk(fragment);
     const roots = elements.filter(element => hasClass(element, "movcues-widget"));
     const ids = elements.map(element => attribute(element, "id")).filter((value) => Boolean(value));
-    const actionIds = elements.filter(element => element.tagName === "button" && !attribute(element, "data-movcues-survey-action") && !attribute(element, "data-movcues-checklist-role") && !attribute(element, "data-movcues-checklist-item-role")).map(element => attribute(element, "data-movcues-action-id"));
+    const actionIds = elements.filter(element => element.tagName === "button" && !attribute(element, "data-movcues-survey-action") && !attribute(element, "data-movcues-option-id") && !attribute(element, "data-movcues-checklist-role") && !attribute(element, "data-movcues-checklist-item-role")).map(element => attribute(element, "data-movcues-action-id"));
     const topLevelElements = fragment.childNodes.filter((node) => "tagName" in node);
     const nonWhitespaceText = fragment.childNodes.some(node => "value" in node && node.value.trim());
     return { elements, roots, ids, actionIds, topLevelElements, nonWhitespaceText };
@@ -116,6 +118,8 @@ export function validateSourceMarkup(input, options) {
             if (count(facts.elements, "data-movcues-checklist-item-id", item.id) !== 1)
                 errors.push(`Checklist item ${item.id} must remain exactly once.`);
     }
+    if (options.editable && root)
+        errors.push(...sourceEditabilityErrors(sourceElement(root), options.previousHtml ? htmlFacts(options.previousHtml).roots.map(sourceElement)[0] : undefined, options.survey?.questions), ...sourceEditingCssErrors(input.css));
     return [...new Set(errors)];
 }
 function textContent(node) {
@@ -133,10 +137,13 @@ export function applySourceMarkup(builder, source) {
     const previous = builder.projectData.movcues && typeof builder.projectData.movcues === "object" ? builder.projectData.movcues : {};
     builder.html = source.html;
     builder.css = source.css;
-    builder.projectData = { ...builder.projectData, movcues: { ...previous, authoringSurface: "source", sourceVersion: 1, actionBindings: structuredClone(source.actionBindings) } };
+    builder.projectData = { ...builder.projectData, movcues: { ...previous, authoringSurface: "source", sourceVersion: 1, sourceEditabilityVersion: htmlFacts(source.html).roots[0] && !sourceEditabilityErrors(sourceElement(htmlFacts(source.html).roots[0])).length && !sourceEditingCssErrors(source.css).length ? SOURCE_EDITABILITY.version : undefined, actionBindings: structuredClone(source.actionBindings) } };
 }
 export function isSourceAuthored(builder) {
     const movcues = builder?.projectData.movcues;
     return Boolean(movcues && typeof movcues === "object" && movcues.authoringSurface === "source");
+}
+function sourceElement(element) {
+    return { tag: element.tagName, attrs: Object.fromEntries(element.attrs.map(attr => [attr.name, attr.value])), text: element.childNodes.filter(node => "value" in node).map(node => "value" in node ? node.value : "").join(""), children: element.childNodes.filter((node) => "tagName" in node).map(sourceElement) };
 }
 //# sourceMappingURL=sourceMarkup.js.map

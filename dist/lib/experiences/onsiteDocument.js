@@ -219,8 +219,8 @@ export function validateCompiledOnsiteBuilder(builder, content, widgetType, guid
         const movcues = builder.projectData.movcues;
         const bindings = movcues.actionBindings && typeof movcues.actionBindings === "object" ? movcues.actionBindings : {};
         const errors = validateSourceMarkup({ html: builder.html, css: builder.css, actionBindings: bindings }, {
-            widgetType, guide,
-            survey: survey ? { questions: survey.questions.map(question => ({ id: question.id, type: question.type })), submitLabel: survey.submitLabel } : undefined,
+            widgetType, guide, editable: movcues.sourceEditabilityVersion === 1,
+            survey: survey ? { questions: survey.questions, submitLabel: survey.submitLabel } : undefined,
             checklist: checklist ? { items: checklist.items.map(item => ({ id: item.id })) } : undefined,
         });
         if (JSON.stringify(sourceContentProjection(builder.html, content)) !== JSON.stringify(content))

@@ -496,7 +496,7 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
                 const contextProbe = editorProposalSchema.parse(source?.authoringSurface === "source"
                     ? { summary: "Validate Checklist source context", operations: [{ type: "replace_markup", html: source.html, css: source.css, actionBindings: source.actionBindings }] }
                     : { summary: "Validate Checklist context", operations: [{ type: "update_checklist_behavior", patch: {} }] });
-                validateEditorProposalAgainstDraft(draft.definition, parsed.data, contextProbe, serverResources);
+                validateEditorProposalAgainstDraft(draft.definition, parsed.data, contextProbe, serverResources, { contextOnly: true });
             }
             catch (error) {
                 request.log.warn({ err: error, sessionId }, "Editor AI context is stale");
