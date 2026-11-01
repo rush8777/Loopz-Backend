@@ -11,6 +11,20 @@ describe("source-authored builder contract", () => {
     expect(validateSourceMarkup({ html, css, actionBindings: { start_now: { type: "dismiss" } } }, { widgetType: "modal", guide: false })).toEqual([]);
   });
 
+  it("validates ordinary action payloads and Guide-only navigation from the shared contract", () => {
+    expect(validateSourceMarkup({ html, css, actionBindings: { start_now: { type: "next_step" } } }, { widgetType: "modal", guide: false }).join(" ")).toContain("only supported by Guides");
+    expect(validateSourceMarkup({ html, css, actionBindings: { start_now: { type: "next_step" } } }, { widgetType: "modal", guide: true })).toEqual([]);
+    expect(validateSourceMarkup({ html, css, actionBindings: { start_now: { type: "open_url", url: "" } } }, { widgetType: "modal", guide: false }).join(" ")).toContain("complete HTTP(S) URL");
+    expect(validateSourceMarkup({ html, css, actionBindings: { start_now: { type: "track_event", eventName: "" } } }, { widgetType: "modal", guide: false }).join(" ")).toContain("event name");
+  });
+
+  it("rejects an authored icon-only close control because runtime chrome owns it", () => {
+    const duplicateClose = html.replace("</div></section>", '<button type="button" aria-label="Close" data-movcues-action-id="close_icon">×</button></div></section>');
+    const errors = validateSourceMarkup({ html: duplicateClose, css, actionBindings: { start_now: { type: "dismiss" }, close_icon: { type: "dismiss" } } }, { widgetType: "modal", guide: false });
+    expect(errors).toContain("Do not include an icon-only close button in authored HTML; the runtime supplies the dismiss control.");
+    expect(validateSourceMarkup({ html: html.replace("Get started", "Close tour"), css, actionBindings: { start_now: { type: "dismiss" } } }, { widgetType: "modal", guide: false })).toEqual([]);
+  });
+
   it.each([
     [html.replace("<span>New</span>", "<script>alert(1)</script>"), css],
     [html, `body{color:red}`],

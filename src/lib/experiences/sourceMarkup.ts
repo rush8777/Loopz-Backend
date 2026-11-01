@@ -4,11 +4,9 @@ import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
 import postcss from "postcss";
 import { builderCssIsSafe, builderHtmlIsSafe } from "./builderContentContract.js";
 import type { ExperienceContent, WidgetBuilderState, WidgetType } from "./types.js";
+import { ORDINARY_ACTION_ID_PATTERN, ordinaryButtonActionErrors, type OrdinaryButtonActionConfig } from "./ordinaryButtonAction.js";
 
-export type SourceAction =
-  | { type: "dismiss" | "next_step" | "previous_step" }
-  | { type: "open_url"; url: string }
-  | { type: "track_event"; eventName: string };
+export type SourceAction = OrdinaryButtonActionConfig;
 
 export interface SourceMarkupProposal {
   html: string;
@@ -22,8 +20,6 @@ export interface SourceChecklistContract { items: Array<{ id: string }> }
 type HtmlNode = DefaultTreeAdapterMap["node"];
 type HtmlElement = DefaultTreeAdapterMap["element"];
 
-const actionIdPattern = /^[A-Za-z][A-Za-z0-9_-]{2,63}$/;
-const safeEventPattern = /^[^\u0000-\u001f\u007f]{1,200}$/;
 const allowedAtRules = new Set(["media"]);
 
 function attribute(element: HtmlElement, name: string): string | undefined { return element.attrs.find(value => value.name === name)?.value; }
@@ -39,10 +35,11 @@ function htmlFacts(html: string) {
   walk(fragment);
   const roots = elements.filter(element => hasClass(element, "movcues-widget"));
   const ids = elements.map(element => attribute(element, "id")).filter((value): value is string => Boolean(value));
-  const actionIds = elements.filter(element => element.tagName === "button" && !attribute(element, "data-movcues-survey-action") && !attribute(element, "data-movcues-option-id") && !attribute(element, "data-movcues-checklist-role") && !attribute(element, "data-movcues-checklist-item-role")).map(element => attribute(element, "data-movcues-action-id"));
+  const ordinaryButtons = elements.filter(element => element.tagName === "button" && !attribute(element, "data-movcues-survey-action") && !attribute(element, "data-movcues-option-id") && !attribute(element, "data-movcues-checklist-role") && !attribute(element, "data-movcues-checklist-item-role"));
+  const actionIds = ordinaryButtons.map(element => attribute(element, "data-movcues-action-id"));
   const topLevelElements = fragment.childNodes.filter((node): node is HtmlElement => "tagName" in node);
   const nonWhitespaceText = fragment.childNodes.some(node => "value" in node && node.value.trim());
-  return { elements, roots, ids, actionIds, topLevelElements, nonWhitespaceText };
+  return { elements, roots, ids, ordinaryButtons, actionIds, topLevelElements, nonWhitespaceText };
 }
 
 /** Parses the complete stylesheet before enforcing root scoping on every style rule. */
@@ -84,17 +81,14 @@ export function validateSourceMarkup(input: SourceMarkupProposal, options: { wid
   if (root && attribute(root, "data-movcues-widget-type") !== options.widgetType) errors.push("The widget root type cannot be changed.");
   if (root && !attribute(root, "data-movcues-document-version")) errors.push("The widget root must preserve data-movcues-document-version.");
   if (new Set(facts.ids).size !== facts.ids.length) errors.push("Source HTML contains duplicate element IDs.");
-  if (facts.actionIds.some(value => !value || !actionIdPattern.test(value))) errors.push("Every button must have a valid data-movcues-action-id.");
+  if (facts.actionIds.some(value => !value || !ORDINARY_ACTION_ID_PATTERN.test(value))) errors.push("Every button must have a valid data-movcues-action-id.");
   const usedActions = facts.actionIds.filter((value): value is string => Boolean(value));
   if (new Set(usedActions).size !== usedActions.length) errors.push("Functional action IDs must be unique in the source HTML.");
   const bindingIds = Object.keys(input.actionBindings);
-  if (bindingIds.some(value => !actionIdPattern.test(value)) || new Set(bindingIds).size !== bindingIds.length) errors.push("The action binding map contains invalid IDs.");
+  if (bindingIds.some(value => !ORDINARY_ACTION_ID_PATTERN.test(value)) || new Set(bindingIds).size !== bindingIds.length) errors.push("The action binding map contains invalid IDs.");
   if (usedActions.length !== bindingIds.length || usedActions.some(value => !Object.hasOwn(input.actionBindings, value))) errors.push("Every button action must resolve exactly once, without orphan bindings.");
-  for (const action of Object.values(input.actionBindings)) {
-    if (!options.guide && (action.type === "next_step" || action.type === "previous_step")) errors.push(`${action.type} is only supported by Guides.`);
-    if (action.type === "open_url" && !/^https?:\/\//i.test(action.url)) errors.push("Open URL actions must use HTTP(S).");
-    if (action.type === "track_event" && (!action.eventName.trim() || !safeEventPattern.test(action.eventName))) errors.push("Track-event actions require a safe event name.");
-  }
+  if (facts.ordinaryButtons.some(element => isRuntimeOwnedCloseControl(element, input.actionBindings[attribute(element, "data-movcues-action-id") ?? ""]))) errors.push("Do not include an icon-only close button in authored HTML; the runtime supplies the dismiss control.");
+  for (const action of Object.values(input.actionBindings)) errors.push(...ordinaryButtonActionErrors(action, options.guide ? "guide" : "widget"));
   if (options.survey) {
     for (const question of options.survey.questions) {
       const matches = facts.elements.filter(element => attribute(element, "data-movcues-question-id") === question.id);
@@ -118,6 +112,13 @@ export function validateSourceMarkup(input: SourceMarkupProposal, options: { wid
 function textContent(node: HtmlNode): string {
   if ("value" in node) return node.value;
   return "childNodes" in node ? node.childNodes.map(textContent).join("") : "";
+}
+
+function isRuntimeOwnedCloseControl(element: HtmlElement, binding?: SourceAction): boolean {
+  const icon = textContent(element).replace(/\s+/g, "");
+  if (!/^(?:x|\u00d7|\u2715|\u2716)$/i.test(icon)) return false;
+  const accessibleName = `${attribute(element, "aria-label") ?? ""} ${attribute(element, "title") ?? ""}`;
+  return binding?.type === "dismiss" || /\b(?:close|dismiss)\b/i.test(accessibleName);
 }
 
 export function sourceContentProjection(html: string, fallback: ExperienceContent): ExperienceContent {

@@ -4,6 +4,7 @@ import type { ExperienceAction, ExperienceContent, SurveyQuestion, WidgetBuilder
 import { parseFragment, type DefaultTreeAdapterMap } from "parse5";
 import { builderImageUrlIsSafe, builderLinkUrlIsSafe } from "./builderContentContract.js";
 import { isSourceAuthored, sourceContentProjection, validateSourceMarkup, type SourceAction } from "./sourceMarkup.js";
+import { ordinaryButtonActionErrors } from "./ordinaryButtonAction.js";
 
 export const ONSITE_SCHEMA_VERSION = 2 as const;
 export const ONSITE_SURVEY_SCHEMA_VERSION = 3 as const;
@@ -377,9 +378,7 @@ function validateBlock(block: OnsiteBlock, path: string, addId: (id: unknown, pa
     if (!block.label?.trim() || block.label.length > 80) errors.push(`${path} label must contain 1–80 characters.`);
     addId(block.action?.id, `${path} action`);
     if (!block.action || !["next_step", "previous_step", "dismiss", "open_url", "track_event"].includes(block.action.type)) errors.push(`${path} has an invalid action.`);
-    else unexpectedKeys(block.action as unknown as Record<string, unknown>, block.action.type === "open_url" ? ["id", "type", "url"] : block.action.type === "track_event" ? ["id", "type", "eventName"] : ["id", "type"], `${path} action`, errors);
-    if (block.action?.type === "open_url" && (!builderLinkUrlIsSafe(block.action.url) || !/^https?:\/\//i.test(block.action.url))) errors.push(`${path} URL must use HTTP(S).`);
-    if (block.action?.type === "track_event" && (!block.action.eventName?.trim() || block.action.eventName.length > 200)) errors.push(`${path} custom event must contain 1–200 characters.`);
+    else { unexpectedKeys(block.action as unknown as Record<string, unknown>, block.action.type === "open_url" ? ["id", "type", "url"] : block.action.type === "track_event" ? ["id", "type", "eventName"] : ["id", "type"], `${path} action`, errors); errors.push(...ordinaryButtonActionErrors(block.action, "guide").map(error => `${path}: ${error}`)); }
     if (!["primary", "secondary", "outline"].includes(block.variant)) errors.push(`${path} has an invalid variant.`); if (!["hug", "full"].includes(block.width)) errors.push(`${path} has an invalid width behavior.`); number(block.radius, 0, 48, `${path} radius`); number(block.paddingX, 4, 48, `${path} horizontal padding`); number(block.paddingY, 4, 32, `${path} vertical padding`);
   } else if (block.type === "image") {
     if (!onsiteImageSourceIsSafe(block.src)) errors.push(`${path} image must use a safe URL (up to 2,000 characters) or a small PNG, JPEG, WebP or GIF image (up to 64 KB encoded).`);
