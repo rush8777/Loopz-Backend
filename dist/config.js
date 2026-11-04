@@ -18,6 +18,7 @@ const envSchema = z.object({
     AI_PROVIDER: z.enum(["vertex", "gemini", "openai"]).default("vertex"),
     AI_DAILY_TOKEN_LIMIT: z.coerce.number().int().positive().default(250_000),
     AI_MAX_CONTEXT_CHARS: z.coerce.number().int().min(10_000).max(250_000).default(60_000),
+    EDITOR_AI_DEADLINE_MS: z.coerce.number().int().min(10_000).max(180_000).default(90_000),
     VERTEX_PROJECT: z.string().trim().min(1).optional(),
     VERTEX_LOCATION: z.string().trim().min(1).default("us-central1"),
     VERTEX_MODEL: z.string().trim().min(1).default("gemini-2.5-flash"),

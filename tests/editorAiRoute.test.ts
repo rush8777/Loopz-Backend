@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestApp, signup } from "./helpers.js";
 import type { AiProvider } from "../src/lib/ai/providers/types.js";
-import { aiConversations, aiMessages, aiToolExecutions } from "../src/db/schema.js";
+import { aiConversations, aiMessages, aiProviderUsage, aiToolExecutions } from "../src/db/schema.js";
 
 const provider: AiProvider = {
   name: "mock", model: "editor-test",
   async generate(input) {
+    if (input.prompt.includes("invalid twice")) return { text: "{}", provider: "mock", model: "editor-test", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
     if (input.prompt.includes("force failure")) throw new Error("editor_ai_invalid_response");
     if (input.prompt.includes('"kind":"checklist"') && input.prompt.includes('"authoringSurface":"source"')) {
       const serialized = input.prompt.split("\n\nEDITOR_CONTEXT:\n")[1]?.split("\n\nCURRENT_DRAFT_REVISION:")[0];
@@ -51,9 +52,14 @@ describe("editor-session AI route", () => {
     const response = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload });
     expect(response.statusCode, response.body).toBe(200); expect(response.json()).toMatchObject({ revision: draft.version.revision, proposal: { operations: [{ type: "update_text", blockId: firstCell.block.id }] } });
     expect(await ctx.db.select().from(aiConversations)).toHaveLength(1); expect(await ctx.db.select().from(aiMessages)).toHaveLength(2);
+    const streamed = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: { ...editorHeaders, accept: "application/x-ndjson" }, payload: { ...payload, conversationId: response.json().conversationId, prompt: "Make it clearer again" } });
+    expect(streamed.statusCode, streamed.body).toBe(200); expect(streamed.headers["content-type"]).toContain("application/x-ndjson");
+    const streamEvents = streamed.body.trim().split("\n").map(line => JSON.parse(line)); expect(streamEvents.map(event => event.type)).toEqual(["progress", "progress", "progress", "result"]); expect(streamEvents.map(event => event.sequence)).toEqual([1, 2, 3, 4]);
     const failed = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { ...payload, conversationId: response.json().conversationId, prompt: "force failure" } });
     expect(failed.statusCode, failed.body).toBe(502); expect(failed.json()).toMatchObject({ error: "ai_generation_failed", message: "AI request failed: editor_ai_invalid_response. Your message was preserved; please retry." });
     expect(await ctx.db.select().from(aiToolExecutions)).toEqual(expect.arrayContaining([expect.objectContaining({ status: "completed" }), expect.objectContaining({ status: "failed", errorCode: "editor_ai_invalid_response" })]));
+    const invalid = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { ...payload, conversationId: response.json().conversationId, prompt: "invalid twice" } });
+    expect(invalid.statusCode).toBe(502); expect(await ctx.db.select().from(aiProviderUsage)).toEqual(expect.arrayContaining([expect.objectContaining({ totalTokens: 30 })]));
     const stale = await ctx.app.inject({ method: "POST", url: `/public/experience-editor/${session.sessionId}/ai/chat`, headers: editorHeaders, payload: { ...payload, revision: 999 } });
     expect(stale.statusCode).toBe(409); expect(stale.json().error).toBe("draft_conflict");
   });

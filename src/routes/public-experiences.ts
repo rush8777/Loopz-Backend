@@ -2,6 +2,7 @@ import { surveyPath } from "../lib/experiences/surveyLogic.js";
 import { DraftWriteError, saveExperienceDraft } from "../lib/experiences/draftWrites.js";
 import { sendEntitlementError } from "../lib/entitlements/http.js";
 import crypto from "node:crypto";
+import { PassThrough } from "node:stream";
 import { isDeepStrictEqual } from "node:util";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { and, desc, eq, gte, isNull } from "drizzle-orm";
@@ -20,7 +21,8 @@ import type { SegmentDefinition } from "../lib/segments/types.js";
 import { deliveredChecklist } from "./public-checklists.js";
 import { getOrganizationSubscription, subscriptionIsActive } from "../lib/entitlements/subscription.js";
 import { siteThemeTokensSchema } from "../lib/themes/validation.js";
-import { editorAiRequestSchema, editorProposalSchema, runEditorAiTurn, validateEditorProposalAgainstDraft } from "../lib/ai/editor.js";
+import { EditorAiTurnError, editorAiRequestSchema, runEditorAiTurn, validateEditorContextAgainstDraft, validateEditorProposalAgainstDraft } from "../lib/ai/editor.js";
+import { EDITOR_AI_STREAM_MEDIA_TYPE, editorAiStreamFrame, type EditorAiStreamEvent, type EditorAiStreamEventInput } from "../lib/ai/editorProgress.js";
 import { createConfiguredAiProvider, type AiProvider } from "../lib/ai/providers/index.js";
 
 function rawTokenHash(token: string): string {
@@ -410,12 +412,8 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
       guides: await db.select({ id: experiences.id, name: experiences.name, status: experiences.status }).from(experiences).where(and(eq(experiences.siteId, session.siteId), eq(experiences.kind, "guide"))).limit(200),
       segments: await db.select({ id: segments.id, name: segments.name }).from(segments).where(eq(segments.siteId, session.siteId)).limit(200),
     } : undefined;
-    if (checklistContext) try {
-      const source = parsed.data.context.source;
-      const contextProbe = editorProposalSchema.parse(source?.authoringSurface === "source"
-        ? { summary: "Validate Checklist source context", operations: [{ type: "replace_markup" as const, html: source.html, css: source.css, actionBindings: source.actionBindings }] }
-        : { summary: "Validate Checklist context", operations: [{ type: "update_checklist_behavior" as const, patch: {} }] });
-      validateEditorProposalAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, contextProbe, serverResources, { contextOnly: true });
+    try {
+      validateEditorContextAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, serverResources);
     } catch (error) {
       request.log.warn({ err: error, sessionId }, "Editor AI context is stale");
       return reply.code(409).send({ error: "stale_editor_context", message: error instanceof Error ? error.message : "Editor context no longer matches the draft." });
@@ -436,23 +434,59 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
       inputSummary: { promptLength: parsed.data.prompt.length, revision: parsed.data.revision, selectionKind: parsed.data.context.selection.kind },
       startedAt: now,
     }).returning();
+    const history = await db.select({ role: aiMessages.role, content: aiMessages.content }).from(aiMessages).where(eq(aiMessages.conversationId, conversation.id)).orderBy(desc(aiMessages.createdAt)).limit(10);
+    const wantsStream = String(request.headers.accept ?? "").toLowerCase().includes(EDITOR_AI_STREAM_MEDIA_TYPE);
+    const startedAt = Date.now(); const abort = new AbortController(); let stream: PassThrough | null = null; let sequence = 0; let terminal = false; let heartbeat: NodeJS.Timeout | undefined;
+    const elapsedMs = () => Math.max(0, Date.now() - startedAt);
+    const writeEvent = (event: EditorAiStreamEventInput) => {
+      if (!stream || terminal) return;
+      const terminalEvent = event.type === "result" || event.type === "error";
+      stream.write(editorAiStreamFrame({ ...event, requestId: execution.id, sequence: ++sequence, elapsedMs: elapsedMs() } as EditorAiStreamEvent));
+      if (terminalEvent) { terminal = true; stream.end(); }
+    };
+    const onIncomingAborted = () => abort.abort(new DOMException("The client disconnected.", "AbortError"));
+    const onOutgoingClose = () => { if (!reply.raw.writableEnded) abort.abort(new DOMException("The client disconnected.", "AbortError")); };
+    if (wantsStream) {
+      stream = new PassThrough();
+      request.raw.once("aborted", onIncomingAborted); reply.raw.once("close", onOutgoingClose);
+      reply.header("cache-control", "no-cache, no-transform").header("x-accel-buffering", "no").type(EDITOR_AI_STREAM_MEDIA_TYPE).send(stream);
+      heartbeat = setInterval(() => writeEvent({ type: "heartbeat" }), 10_000);
+    }
     try {
-      const history = await db.select({ role: aiMessages.role, content: aiMessages.content }).from(aiMessages).where(eq(aiMessages.conversationId, conversation.id)).orderBy(desc(aiMessages.createdAt)).limit(10);
-      const result = await runEditorAiTurn(aiProvider, parsed.data, history.reverse(), undefined, proposal => validateEditorProposalAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, proposal, serverResources));
+      const result = await runEditorAiTurn(aiProvider, parsed.data, history.reverse(), abort.signal, proposal => validateEditorProposalAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, proposal, serverResources), {
+        deadlineMs: env.EDITOR_AI_DEADLINE_MS,
+        onProgress: progress => writeEvent({ type: "progress", ...progress }),
+      });
+      const finalResult = { conversationId: conversation.id, revision: draft.revision, markdown: result.markdown, proposal: result.proposal };
+      const completedAt = new Date();
       await Promise.all([
-        db.insert(aiMessages).values({ conversationId: conversation.id, role: "assistant", content: result.markdown, proposal: result.proposal, createdAt: new Date() }),
+        db.insert(aiMessages).values({ conversationId: conversation.id, role: "assistant", content: result.markdown, proposal: result.proposal, createdAt: completedAt }),
         db.insert(aiProviderUsage).values({ orgId: site.orgId, siteId: site.id, userId: session.dashboardUserId, conversationId: conversation.id, provider: result.generation.provider, model: result.generation.model, promptTokens: result.generation.usage.promptTokens, completionTokens: result.generation.usage.completionTokens, totalTokens: result.generation.usage.totalTokens }),
-        db.update(aiToolExecutions).set({ status: "completed", outputSummary: { proposalOperations: result.proposal?.operations.length ?? 0 }, completedAt: new Date() }).where(eq(aiToolExecutions.id, execution.id)),
-        db.update(aiConversations).set({ updatedAt: new Date() }).where(eq(aiConversations.id, conversation.id)),
+        db.update(aiToolExecutions).set({ status: "completed", outputSummary: { proposalOperations: result.proposal?.operations.length ?? 0, logicalAttempts: result.generation.logicalAttempts, providerHttpAttempts: result.generation.httpAttempts ?? result.generation.logicalAttempts, phases: result.generation.phases, provider: result.generation.provider, model: result.generation.model, durationMs: elapsedMs(), outcome: result.proposal ? "proposal" : "explanation" }, completedAt }).where(eq(aiToolExecutions.id, execution.id)),
+        db.update(aiConversations).set({ updatedAt: completedAt }).where(eq(aiConversations.id, conversation.id)),
       ]);
-      return { conversationId: conversation.id, revision: draft.revision, markdown: result.markdown, proposal: result.proposal };
+      if (wantsStream) { writeEvent({ type: "result", result: finalResult }); return reply; }
+      return finalResult;
     } catch (error) {
       request.log.error({ err: error, sessionId }, "Editor AI turn failed");
-      const failure = error instanceof Error && error.message.trim()
-        ? error.message
-        : "ai_generation_failed";
-      await db.update(aiToolExecutions).set({ status: "failed", errorCode: failure, completedAt: new Date() }).where(eq(aiToolExecutions.id, execution.id));
-      return reply.code(502).send({ error: "ai_generation_failed", conversationId: conversation.id, message: `AI request failed: ${failure}. Your message was preserved; please retry.` });
+      const failure = error instanceof Error && error.message.trim() ? error.message : "ai_generation_failed";
+      const generation = error instanceof EditorAiTurnError ? error.generation : undefined;
+      const failedAt = new Date(); const writes: Array<Promise<unknown>> = [
+        db.update(aiToolExecutions).set({ status: abort.signal.aborted ? "cancelled" : "failed", errorCode: error instanceof EditorAiTurnError ? error.code : failure, outputSummary: { logicalAttempts: generation?.logicalAttempts ?? 0, providerHttpAttempts: generation?.httpAttempts ?? 0, phases: generation?.phases, provider: generation?.provider ?? aiProvider.name, model: generation?.model ?? aiProvider.model, durationMs: elapsedMs(), outcome: abort.signal.aborted ? "cancelled" : "failed" }, completedAt: failedAt }).where(eq(aiToolExecutions.id, execution.id)),
+      ];
+      if (generation && generation.usage.totalTokens > 0) writes.push(db.insert(aiProviderUsage).values({ orgId: site.orgId, siteId: site.id, userId: session.dashboardUserId, conversationId: conversation.id, provider: generation.provider, model: generation.model, promptTokens: generation.usage.promptTokens, completionTokens: generation.usage.completionTokens, totalTokens: generation.usage.totalTokens }));
+      await Promise.all(writes);
+      const errorCode = abort.signal.aborted ? "ai_request_cancelled" : error instanceof EditorAiTurnError && error.code === "deadline_exceeded" ? "ai_deadline_exceeded" : "ai_generation_failed";
+      const message = abort.signal.aborted ? "The AI request was canceled."
+        : error instanceof EditorAiTurnError && error.code === "output_invalid" ? "The generated proposal did not pass the editor checks after one focused repair. Your message was preserved; try a more focused request."
+        : error instanceof EditorAiTurnError && error.code === "candidate_too_large" ? failure
+        : `${failure}. Your message was preserved; please retry.`;
+      if (wantsStream) { writeEvent({ type: "error", error: errorCode, conversationId: conversation.id, message }); return reply; }
+      return reply.code(errorCode === "ai_deadline_exceeded" ? 504 : errorCode === "ai_request_cancelled" ? 499 : 502).send({ error: errorCode, conversationId: conversation.id, message: errorCode === "ai_generation_failed" ? `AI request failed: ${message}` : message });
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+      request.raw.removeListener("aborted", onIncomingAborted); reply.raw.removeListener("close", onOutgoingClose);
+      if (wantsStream && stream && !terminal) stream.end();
     }
   });
 

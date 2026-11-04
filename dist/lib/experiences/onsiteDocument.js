@@ -3,6 +3,7 @@ import { surveyQuestionMarkup, surveyControlsMarkup, surveyQuestionErrors, SURVE
 import { parseFragment } from "parse5";
 import { builderImageUrlIsSafe, builderLinkUrlIsSafe } from "./builderContentContract.js";
 import { isSourceAuthored, sourceContentProjection, validateSourceMarkup } from "./sourceMarkup.js";
+import { ordinaryButtonActionErrors } from "./ordinaryButtonAction.js";
 export const ONSITE_SCHEMA_VERSION = 2;
 export const ONSITE_SURVEY_SCHEMA_VERSION = 3;
 export const ONSITE_CHECKLIST_SCHEMA_VERSION = 4;
@@ -512,12 +513,10 @@ function validateBlock(block, path, addId, number, errors) {
         addId(block.action?.id, `${path} action`);
         if (!block.action || !["next_step", "previous_step", "dismiss", "open_url", "track_event"].includes(block.action.type))
             errors.push(`${path} has an invalid action.`);
-        else
+        else {
             unexpectedKeys(block.action, block.action.type === "open_url" ? ["id", "type", "url"] : block.action.type === "track_event" ? ["id", "type", "eventName"] : ["id", "type"], `${path} action`, errors);
-        if (block.action?.type === "open_url" && (!builderLinkUrlIsSafe(block.action.url) || !/^https?:\/\//i.test(block.action.url)))
-            errors.push(`${path} URL must use HTTP(S).`);
-        if (block.action?.type === "track_event" && (!block.action.eventName?.trim() || block.action.eventName.length > 200))
-            errors.push(`${path} custom event must contain 1–200 characters.`);
+            errors.push(...ordinaryButtonActionErrors(block.action, "guide").map(error => `${path}: ${error}`));
+        }
         if (!["primary", "secondary", "outline"].includes(block.variant))
             errors.push(`${path} has an invalid variant.`);
         if (!["hug", "full"].includes(block.width))

@@ -120,7 +120,7 @@ function initialDefinition(kind, widgetType, pageRules, siteTheme, builderMode =
             ...(widgetType === "anchored_card" ? { pointer: { enabled: true, size: 10 } } : {}),
             ...(widgetType === "modal" || widgetType === "survey" ? { modalLayout: "center", backdrop: true, backdropOpacity: 0.45, closeOnBackdrop: false } : {}),
             ...(widgetType === "slideout" ? { slideoutPosition: "bottom-right", backdrop: false, backdropOpacity: 0.35, closeOnBackdrop: false } : {}),
-            ...(widgetType === "banner" ? { bannerPosition: "top" } : {}),
+            ...(widgetType === "banner" ? { bannerPosition: "top", bannerDisplayMode: "inline" } : {}),
             ...(widgetType === "hotspot" ? { hotspotStyle: "pulse", hotspotColor: siteTheme?.colors.primary ?? DEFAULT_DESIGN.theme.primary } : {}),
         },
         targeting: targeting(pageRules),

@@ -38,8 +38,9 @@ export class OpenAiProvider implements AiProvider {
       signal: input.signal,
     };
 
-    let response: Response | undefined;
+    let response: Response | undefined; let httpAttempts = 0;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      httpAttempts = attempt + 1;
       response = await this.fetcher("https://api.openai.com/v1/chat/completions", request);
       if (response.ok) break;
 
@@ -72,6 +73,7 @@ export class OpenAiProvider implements AiProvider {
         completionTokens: body.usage?.completion_tokens ?? 0,
         totalTokens: body.usage?.total_tokens ?? 0,
       },
+      httpAttempts,
     };
   }
 }
@@ -122,13 +124,14 @@ function retryAfterMilliseconds(value: string | null): number | undefined {
 function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+      reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
       return;
     }
-    const timer = setTimeout(resolve, milliseconds);
-    signal?.addEventListener("abort", () => {
+    const onAbort = () => {
       clearTimeout(timer);
-      reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
-    }, { once: true });
+      reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+    };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, milliseconds);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }

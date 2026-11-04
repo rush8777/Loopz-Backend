@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { editorAiRequestSchema, runEditorAiTurn, validateEditorProposalAgainstDraft } from "../src/lib/ai/editor.js";
+import { EditorAiTurnError, editorAiRequestSchema, runEditorAiTurn, validateEditorProposalAgainstDraft } from "../src/lib/ai/editor.js";
 import type { AiProvider } from "../src/lib/ai/providers/types.js";
 import type { ExperienceDefinition } from "../src/lib/experiences/types.js";
 import { validateSourceMarkup } from "../src/lib/experiences/sourceMarkup.js";
@@ -41,9 +41,43 @@ describe("editor AI contract", () => {
     });
     expect(prompts).toHaveLength(2);
     expect(prompts[1]).toContain("SERVER_VALIDATION_FEEDBACK");
+    expect(prompts[1]).toContain("REJECTED_CANDIDATE_UNTRUSTED_DATA");
+    expect(prompts[1]).toContain("transition:opacity .2s");
     expect(prompts[1]).toContain("CSS transition declarations are not supported.");
     expect(result.generation.usage).toEqual({ promptTokens: 4, completionTokens: 6, totalTokens: 10 });
     expect((result.proposal?.operations[0] as { css: string }).css).toBe(".movcues-widget{opacity:1}");
+  });
+
+  it("uses one logical call for valid and null-proposal responses", async () => {
+    let calls = 0;
+    const provider: AiProvider = { name: "mock", model: "mock", async generate() { calls++; return { text: JSON.stringify({ markdown: "No edit is needed; the heading already matches the request.", proposal: null }), provider: "mock", model: "mock", usage: { promptTokens: 2, completionTokens: 1, totalTokens: 3 } }; } };
+    const result = await runEditorAiTurn(provider, editorAiRequestSchema.parse({ prompt: "Is this already clear?", revision: 1, context }), []);
+    expect(calls).toBe(1); expect(result.proposal).toBeNull(); expect(result.generation.logicalAttempts).toBe(1);
+  });
+
+  it("never repairs a failed repair and retains usage from both responses", async () => {
+    let calls = 0;
+    const provider: AiProvider = { name: "mock", model: "mock", async generate() { calls++; return { text: "{}", provider: "mock", model: "mock", usage: { promptTokens: 2, completionTokens: 1, totalTokens: 3 } }; } };
+    const failure = await runEditorAiTurn(provider, editorAiRequestSchema.parse({ prompt: "Improve it", revision: 1, context }), []).catch(error => error);
+    expect(calls).toBe(2); expect(failure).toBeInstanceOf(EditorAiTurnError); expect((failure as EditorAiTurnError).generation).toMatchObject({ logicalAttempts: 2, usage: { promptTokens: 4, completionTokens: 2, totalTokens: 6 } });
+  });
+
+  it("retains initial usage when the repair provider call fails", async () => {
+    let calls = 0;
+    const provider: AiProvider = { name: "mock", model: "mock", async generate() { calls++; if (calls === 2) throw new Error("repair_network_failure"); return { text: "{}", provider: "mock", model: "mock", usage: { promptTokens: 4, completionTokens: 2, totalTokens: 6 } }; } };
+    const failure = await runEditorAiTurn(provider, editorAiRequestSchema.parse({ prompt: "Improve it", revision: 1, context }), []).catch(error => error);
+    expect(failure).toMatchObject({ code: "provider_failure", generation: { logicalAttempts: 2, usage: { totalTokens: 6 } } }); expect(calls).toBe(2);
+  });
+
+  it("does not repair provider failures, cancellation, or total-deadline expiry", async () => {
+    let providerCalls = 0;
+    const failedProvider: AiProvider = { name: "mock", model: "mock", async generate() { providerCalls++; throw new Error("network_down"); } };
+    const request = editorAiRequestSchema.parse({ prompt: "Improve it", revision: 1, context });
+    await expect(runEditorAiTurn(failedProvider, request, [])).rejects.toThrow("network_down"); expect(providerCalls).toBe(1);
+    const cancelled = new AbortController(); cancelled.abort(new DOMException("Cancelled", "AbortError"));
+    await expect(runEditorAiTurn(failedProvider, request, [], cancelled.signal)).rejects.toMatchObject({ code: "cancelled" }); expect(providerCalls).toBe(1);
+    const waitingProvider: AiProvider = { name: "mock", model: "mock", async generate(input) { providerCalls++; return new Promise((_, reject) => input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true })); } };
+    await expect(runEditorAiTurn(waitingProvider, request, [], undefined, undefined, { deadlineMs: 5 })).rejects.toMatchObject({ code: "deadline_exceeded" }); expect(providerCalls).toBe(2);
   });
 
   it("repairs a model-invented stale-context refusal", async () => {

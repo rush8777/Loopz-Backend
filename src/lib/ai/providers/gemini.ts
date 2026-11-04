@@ -30,8 +30,9 @@ export class GeminiApiProvider implements AiProvider {
       signal: input.signal,
     };
 
-    let response: Response | undefined;
+    let response: Response | undefined; let httpAttempts = 0;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      httpAttempts = attempt + 1;
       response = await this.fetcher(endpoint, request);
       if (response.ok) break;
       if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 2) {
@@ -57,16 +58,19 @@ export class GeminiApiProvider implements AiProvider {
         completionTokens: body.usageMetadata?.candidatesTokenCount ?? 0,
         totalTokens: body.usageMetadata?.totalTokenCount ?? 0,
       },
+      httpAttempts,
     };
   }
 }
 
 function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, milliseconds);
-    signal?.addEventListener("abort", () => {
+    if (signal?.aborted) { reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError")); return; }
+    const onAbort = () => {
       clearTimeout(timer);
-      reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
-    }, { once: true });
+      reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+    };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, milliseconds);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }

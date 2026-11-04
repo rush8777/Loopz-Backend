@@ -10,6 +10,8 @@ export interface AiGenerateResult {
   provider: "vertex" | "gemini" | "openai" | "mock";
   model: string;
   usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+  /** Provider HTTP attempts for this logical output call, when observable. */
+  httpAttempts?: number;
 }
 
 export interface AiProvider {

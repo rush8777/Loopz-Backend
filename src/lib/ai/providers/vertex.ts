@@ -43,6 +43,7 @@ export class VertexAiProvider implements AiProvider {
         completionTokens: body.usageMetadata?.candidatesTokenCount ?? 0,
         totalTokens: body.usageMetadata?.totalTokenCount ?? 0,
       },
+      httpAttempts: 1,
     };
   }
 }

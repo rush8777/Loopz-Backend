@@ -29,7 +29,9 @@ export class GeminiApiProvider {
             signal: input.signal,
         };
         let response;
+        let httpAttempts = 0;
         for (let attempt = 0; attempt < 3; attempt += 1) {
+            httpAttempts = attempt + 1;
             response = await this.fetcher(endpoint, request);
             if (response.ok)
                 break;
@@ -53,16 +55,22 @@ export class GeminiApiProvider {
                 completionTokens: body.usageMetadata?.candidatesTokenCount ?? 0,
                 totalTokens: body.usageMetadata?.totalTokenCount ?? 0,
             },
+            httpAttempts,
         };
     }
 }
 function wait(milliseconds, signal) {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(resolve, milliseconds);
-        signal?.addEventListener("abort", () => {
-            clearTimeout(timer);
+        if (signal?.aborted) {
             reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
-        }, { once: true });
+            return;
+        }
+        const onAbort = () => {
+            clearTimeout(timer);
+            reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+        };
+        const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, milliseconds);
+        signal?.addEventListener("abort", onAbort, { once: true });
     });
 }
 //# sourceMappingURL=gemini.js.map
