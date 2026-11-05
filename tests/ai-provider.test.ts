@@ -9,9 +9,10 @@ describe("AI providers and response validation", () => {
   it("maps OpenAI output and usage without exposing the credential", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect((init?.headers as Record<string, string>).authorization).toBe("Bearer secret-test-key");
+      expect(JSON.parse(String(init?.body))).toMatchObject({ reasoning_effort: "none" });
       return new Response(JSON.stringify({ choices: [{ message: { content: '{"markdown":"ok","proposal":null}' } }], usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 } }), { status: 200 });
     });
-    const provider = new OpenAiProvider("gpt-test", "secret-test-key", fetcher as typeof fetch);
+    const provider = new OpenAiProvider("gpt-test", "secret-test-key", "none", fetcher as typeof fetch);
     const result = await provider.generate({ system: "system", prompt: "prompt" });
     expect(result).toMatchObject({ provider: "openai", model: "gpt-test", usage: { totalTokens: 7 } });
     expect(JSON.stringify(result)).not.toContain("secret-test-key");
@@ -22,7 +23,7 @@ describe("AI providers and response validation", () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: { type: "rate_limit_error", code: "rate_limit_exceeded" } }), { status: 429, headers: { "retry-after": "1" } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"markdown":"ok","proposal":null}' } }] }), { status: 200 }));
-    const provider = new OpenAiProvider("gpt-test", "secret-test-key", fetcher as typeof fetch, sleeper);
+    const provider = new OpenAiProvider("gpt-test", "secret-test-key", "none", fetcher as typeof fetch, sleeper);
 
     await expect(provider.generate({ system: "system", prompt: "prompt" })).resolves.toMatchObject({ provider: "openai" });
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -32,7 +33,7 @@ describe("AI providers and response validation", () => {
 
   it("does not retry OpenAI credit or quota failures", async () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: { type: "insufficient_quota", code: "credit_balance_exhausted" } }), { status: 429 }));
-    const provider = new OpenAiProvider("gpt-test", "secret-test-key", fetcher as typeof fetch);
+    const provider = new OpenAiProvider("gpt-test", "secret-test-key", "none", fetcher as typeof fetch);
 
     const failure = await provider.generate({ system: "system", prompt: "prompt" }).catch(error => error);
     expect(failure).toBeInstanceOf(OpenAiProviderError);
@@ -44,7 +45,7 @@ describe("AI providers and response validation", () => {
   it("preserves the exact OpenAI error message when a retry must be deferred", async () => {
     const exact = "Rate limit reached for gpt-test on tokens per day. Please try again tomorrow.";
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: { type: "rate_limit_error", code: "rate_limit_exceeded", message: exact } }), { status: 429, headers: { "retry-after": "3600" } }));
-    const provider = new OpenAiProvider("gpt-test", "secret-test-key", fetcher as typeof fetch);
+    const provider = new OpenAiProvider("gpt-test", "secret-test-key", "none", fetcher as typeof fetch);
 
     await expect(provider.generate({ system: "system", prompt: "prompt" })).rejects.toMatchObject({
       code: "rate_limit_exceeded",

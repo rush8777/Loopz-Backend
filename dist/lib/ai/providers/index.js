@@ -8,7 +8,7 @@ export function createConfiguredAiProvider() {
     if (env.AI_PROVIDER === "openai") {
         if (!env.OPENAI_API_KEY)
             throw new Error("OPENAI_API_KEY is required");
-        return new OpenAiProvider(env.OPENAI_MODEL, env.OPENAI_API_KEY);
+        return new OpenAiProvider(env.OPENAI_MODEL, env.OPENAI_API_KEY, env.OPENAI_REASONING_EFFORT);
     }
     if (env.AI_PROVIDER === "gemini") {
         if (!env.GEMINI_API_KEY)

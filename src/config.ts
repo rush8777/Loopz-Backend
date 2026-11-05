@@ -27,6 +27,7 @@ const envSchema = z.object({
   GEMINI_MODEL: z.string().trim().min(1).default("gemini-flash-lite-latest"),
   OPENAI_API_KEY: z.string().trim().min(1).optional(),
   OPENAI_MODEL: z.string().trim().min(1).default("gpt-5-mini"),
+  OPENAI_REASONING_EFFORT: z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]).default("none"),
 });
 
 export const env = envSchema.parse(process.env);

@@ -21,6 +21,7 @@ export class OpenAiProvider implements AiProvider {
   constructor(
     readonly model: string,
     private readonly apiKey: string,
+    private readonly reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" = "none",
     private readonly fetcher: typeof fetch = fetch,
     private readonly sleeper: (milliseconds: number, signal?: AbortSignal) => Promise<void> = wait,
   ) {}
@@ -33,6 +34,7 @@ export class OpenAiProvider implements AiProvider {
         model: this.model,
         messages: [{ role: "system", content: input.system }, { role: "user", content: input.prompt }],
         response_format: { type: "json_object" },
+        reasoning_effort: this.reasoningEffort,
         max_completion_tokens: input.maxOutputTokens ?? 1800,
       }),
       signal: input.signal,

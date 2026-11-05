@@ -19,6 +19,15 @@ describe("editor AI contract", () => {
     expect(result.proposal?.operations[0]).toEqual({ type: "update_text", blockId: "block_1", text: "Hello" });
   });
 
+  it("tells the design assistant that CSS-only Checklist redesigns preserve protected controls", async () => {
+    const provider: AiProvider = { name: "mock", model: "mock", async generate(input) {
+      expect(input.system).toContain("A CSS-only source redesign is safe and supported, including for a Checklist");
+      expect(input.system).toContain("source.html and source.actionBindings copied unchanged");
+      return { text: JSON.stringify({ markdown: "Preview ready", proposal: null }), provider: "mock", model: "mock", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    } };
+    await runEditorAiTurn(provider, editorAiRequestSchema.parse({ prompt: "Restyle the checklist", revision: 1, context }), []);
+  });
+
   it("accepts a bounded outer width for modal source replacements", async () => {
     const operation = { type: "replace_markup", widthPx: 640, html: '<section class="movcues-widget" data-movcues-widget-type="modal" data-movcues-document-version="2"></section>', css: ".movcues-widget{width:100%}", actionBindings: {} };
     const provider: AiProvider = { name: "mock", model: "mock", async generate() { return { text: JSON.stringify({ markdown: "Preview ready", proposal: { summary: "Widen modal", operations: [operation] } }), provider: "mock", model: "mock", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } }; } };

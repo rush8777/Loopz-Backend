@@ -14,12 +14,14 @@ export class OpenAiProviderError extends Error {
 export class OpenAiProvider {
     model;
     apiKey;
+    reasoningEffort;
     fetcher;
     sleeper;
     name = "openai";
-    constructor(model, apiKey, fetcher = fetch, sleeper = wait) {
+    constructor(model, apiKey, reasoningEffort = "none", fetcher = fetch, sleeper = wait) {
         this.model = model;
         this.apiKey = apiKey;
+        this.reasoningEffort = reasoningEffort;
         this.fetcher = fetcher;
         this.sleeper = sleeper;
     }
@@ -31,6 +33,7 @@ export class OpenAiProvider {
                 model: this.model,
                 messages: [{ role: "system", content: input.system }, { role: "user", content: input.prompt }],
                 response_format: { type: "json_object" },
+                reasoning_effort: this.reasoningEffort,
                 max_completion_tokens: input.maxOutputTokens ?? 1800,
             }),
             signal: input.signal,
