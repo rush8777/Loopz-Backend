@@ -115,6 +115,7 @@ function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, 
     design: { ...themedDesign(siteTheme), size: defaultWidgetSize(widgetType!) },
     behavior: {
       dismissible: true,
+      showCloseButton: true,
       layer: { mode: widgetType === "modal" ? "always_on_top" : "auto" },
       ...(widgetType === "toast" ? { toastPosition: "bottom-right" as const, autoDismissMs: null } : {}),
       ...(widgetType === "cursor_follow" ? { cursorOffset: { x: 16, y: 16 } } : {}),
@@ -307,11 +308,25 @@ async function serializeExperience(db: Db, row: typeof experiences.$inferSelect)
   };
 }
 
+function hasDismissAction(definition: ExperienceDefinition): boolean {
+  if (!("content" in definition)) return false;
+  if (definition.content.primaryAction?.type === "dismiss" || definition.content.secondaryAction?.type === "dismiss") return true;
+  const projectData = definition.builder?.projectData;
+  const movcues = projectData && typeof projectData === "object" ? (projectData as Record<string, unknown>).movcues : null;
+  const bindings = movcues && typeof movcues === "object" ? (movcues as Record<string, unknown>).actionBindings : null;
+  return Boolean(bindings && typeof bindings === "object" && Object.values(bindings as Record<string, unknown>).some(action => Boolean(action && typeof action === "object" && (action as Record<string, unknown>).type === "dismiss")));
+}
+
 function validatePublishRequirements(kind: ExperienceKind, widgetType: WidgetType | null, definition: ExperienceDefinition): string | null {
   if (kind === "guide") {
     if (!("steps" in definition) || definition.steps.some((step) => guideStepRequiresTarget(step) && !step.target)) return "target_required";
   } else if ((widgetType === "anchored_card" || widgetType === "hotspot") && (!("content" in definition) || !definition.target)) {
     return "target_required";
+  } else if (widgetType !== "survey" && "content" in definition && definition.behavior.backdrop) {
+    const behavior = definition.behavior;
+    const hasRuntimeExit = behavior.dismissible && (behavior.showCloseButton !== false || behavior.closeOnBackdrop === true);
+    const hasTimedExit = typeof behavior.autoDismissMs === "number" && behavior.autoDismissMs > 0;
+    if (!hasRuntimeExit && !hasTimedExit && !hasDismissAction(definition)) return "blocking_widget_no_exit";
   }
   return null;
 }

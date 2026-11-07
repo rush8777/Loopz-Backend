@@ -13,7 +13,7 @@ import { requiredExperienceFeatures } from "../entitlements/experienceFeatures.j
 import { runEntitlementTransaction } from "../../db/transaction.js";
 
 function siteOrigin(domain: string | null): string | null { try { return domain ? new URL(/^https?:\/\//i.test(domain) ? domain : `https://${domain}`).origin : null; } catch { return null; } }
-export const ONSITE_WIDGET_TYPES = new Set<WidgetType>(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "banner", "survey"]);
+export const ONSITE_WIDGET_TYPES = new Set<WidgetType>(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"]);
 export function onsiteCompatible(kind: ExperienceKind, widgetType: WidgetType | null): boolean { return kind === "checklist" || kind === "guide" || (kind === "widget" && !!widgetType && ONSITE_WIDGET_TYPES.has(widgetType)); }
 export class DraftWriteError extends Error { constructor(readonly status: number, message: string) { super(message); } }
 export async function validateReferences(db: Db, siteId: string, definition: ExperienceDefinition, publishing = false): Promise<string | null> {

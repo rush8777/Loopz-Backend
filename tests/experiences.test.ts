@@ -212,7 +212,7 @@ describe("visual experiences", () => {
     expect(anchoredGuideResponse.statusCode).toBe(201);
     expect(anchoredGuideResponse.json().draftVersion.definition.steps[0].behavior.layer).toEqual({ mode: "auto" });
 
-    const incompatible = await ctx.app.inject({
+    const hotspotResponse = await ctx.app.inject({
       method: "POST",
       url,
       headers: authorization,
@@ -220,14 +220,27 @@ describe("visual experiences", () => {
         kind: "widget",
         widgetType: "hotspot",
         builderMode: "onsite",
-        name: "Unsupported hotspot",
+        name: "On-site hotspot",
         buildUrl: "https://onsite-mode.example.com/home",
         template: "blank",
         useBuildPageAsTarget: false,
       },
     });
-    expect(incompatible.statusCode).toBe(400);
-    expect(incompatible.json().error).toBe("onsite_builder_unsupported");
+    expect(hotspotResponse.statusCode, hotspotResponse.body).toBe(201);
+    const hotspot = hotspotResponse.json();
+    expect(hotspot).toMatchObject({ builderMode: "onsite", widgetType: "hotspot", draftVersion: { definition: { behavior: { placement: "auto", hotspotStyle: "pulse" }, builder: { projectData: { movcues: { authoringSurface: "onsite" } } } } } });
+    const hotspotSession = (await ctx.app.inject({ method: "POST", url: `${url}/${hotspot.id}/editor-sessions`, headers: authorization })).json();
+    const hotspotToken = new URL(hotspotSession.launchUrl).searchParams.get("movcues_editor_token");
+    const hotspotAccess = (await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange", headers: { origin: "https://onsite-mode.example.com" }, payload: { token: hotspotToken } })).json();
+    const hotspotHeaders = { origin: "https://onsite-mode.example.com", authorization: `Bearer ${hotspotAccess.accessToken}` };
+    const hotspotDraft = (await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${hotspotSession.sessionId}/draft`, headers: hotspotHeaders })).json().version;
+    hotspotDraft.definition.target = { primarySelector: "#feature", fallbackSelectors: [], reliability: "reliable" };
+    const hotspotSaved = await ctx.app.inject({ method: "PATCH", url: `/public/experience-editor/${hotspotSession.sessionId}/draft`, headers: hotspotHeaders, payload: { definition: hotspotDraft.definition, revision: hotspotDraft.revision } });
+    expect(hotspotSaved.statusCode, hotspotSaved.body).toBe(200);
+    const hotspotReloaded = await ctx.app.inject({ method: "GET", url: `/public/experience-editor/${hotspotSession.sessionId}/draft`, headers: hotspotHeaders });
+    expect(hotspotReloaded.json().version.definition.target).toMatchObject({ primarySelector: "#feature" });
+    const hotspotPublished = await publishReviewed(ctx.app, { method: "POST", url: `${url}/${hotspot.id}/publish`, headers: authorization });
+    expect(hotspotPublished.statusCode, hotspotPublished.body).toBe(200);
 
     const locked = await ctx.app.inject({ method: "PATCH", url: `${url}/${created.id}`, headers: authorization, payload: { builderMode: "grapesjs" } });
     expect(locked.statusCode).toBe(409);
@@ -449,6 +462,28 @@ describe("visual experiences", () => {
     definition.design.size = { width: { mode: "fixed", value: 961 }, height: { mode: "auto" } };
     const oversized = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: saved.json().draftVersion.revision } }); expect(oversized.statusCode).toBe(400); expect(oversized.json().error).toBe("invalid_widget_size");
     delete definition.design.size; expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: saved.json().draftVersion.revision } })).statusCode).toBe(200);
+  });
+
+  it("persists close-button behavior and rejects a blocking widget without an exit", async () => {
+    const { owner, site } = await setup(ctx.app, "close-button"); const authorization = { authorization: `Bearer ${owner.accessToken}` };
+    const created = (await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences`, headers: authorization, payload: { kind: "widget", widgetType: "modal", name: "Close behavior", buildUrl: "https://close-button.example.com/home", template: "blank", useBuildPageAsTarget: false } })).json();
+    expect(created.draftVersion.definition.behavior.showCloseButton).toBe(true);
+    const definition = created.draftVersion.definition;
+    definition.behavior.showCloseButton = false;
+    definition.behavior.closeOnBackdrop = false;
+    const saved = await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition, revision: created.draftVersion.revision } });
+    expect(saved.statusCode).toBe(200); expect(saved.json().draftVersion.definition.behavior.showCloseButton).toBe(false);
+    const reloaded = await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization });
+    expect(reloaded.statusCode).toBe(200); expect(reloaded.json().draftVersion.definition.behavior.showCloseButton).toBe(false);
+    const blocked = await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization });
+    expect(blocked.statusCode).toBe(400); expect(blocked.json().error).toBe("blocking_widget_no_exit");
+
+    const recoverable = saved.json().draftVersion.definition;
+    recoverable.behavior.closeOnBackdrop = true;
+    expect((await ctx.app.inject({ method: "PATCH", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}`, headers: authorization, payload: { definition: recoverable, revision: saved.json().draftVersion.revision } })).statusCode).toBe(200);
+    expect((await publishReviewed(ctx.app, { method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/experiences/${created.id}/publish`, headers: authorization })).statusCode).toBe(200);
+    const manifest = await ctx.app.inject({ method: "GET", url: `/public/sites/${site.siteId}/experiences?url=https%3A%2F%2Fclose-button.example.com%2Fhome&anonymousId=close_button_anon&sessionId=close_button_session` });
+    expect(manifest.json().experiences[0].definition.behavior.showCloseButton).toBe(false);
   });
 
   it("creates and publishes a validated multi-step survey and persists submitted or abandoned structured responses", async () => {
