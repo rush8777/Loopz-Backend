@@ -8,6 +8,7 @@ import { runAiTurn } from "../lib/ai/orchestrator.js";
 import { createConfiguredAiProvider } from "../lib/ai/providers/index.js";
 import { previewProposal, saveApprovedProposal, validateProposalReferences } from "../lib/ai/resourceCreation.js";
 import { aiProposalSchema } from "../lib/ai/skills/registry.js";
+import { aiContentBlocksSchema, orderAiContentBlocks } from "../lib/ai/content.js";
 import { sendEntitlementError } from "../lib/entitlements/http.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
@@ -16,8 +17,9 @@ const sendMessageSchema = z.object({ content: z.string().trim().min(1).max(8000)
 function iso(date) { return date.toISOString(); }
 function conversationJson(row) { return { ...row, createdAt: iso(row.createdAt), updatedAt: iso(row.updatedAt) }; }
 function messageJson(row, approval) {
+    const parsedBlocks = aiContentBlocksSchema.safeParse(row.contentBlocks);
     return {
-        id: row.id, role: row.role, content: row.content, evidence: row.evidence ?? [], proposal: row.proposal ?? null, createdAt: iso(row.createdAt),
+        id: row.id, role: row.role, content: row.content, contentBlocks: parsedBlocks.success ? parsedBlocks.data : [], evidence: row.evidence ?? [], proposal: row.proposal ?? null, createdAt: iso(row.createdAt),
         approval: approval ? { id: approval.id, status: approval.status, resourceType: approval.resourceType, resourceId: approval.resourceId, decidedAt: approval.decidedAt?.toISOString() ?? null } : null,
     };
 }
@@ -77,7 +79,7 @@ export function registerAiRoutes(app, db, providerOverride) {
         config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
     }, async (request, reply) => {
         if (!provider)
-            return reply.code(503).send({ error: "ai_disabled", message: "Movcues AI is not configured on the backend." });
+            return reply.code(503).send({ error: "ai_disabled", message: "Geo is not configured on the backend." });
         const parsed = sendMessageSchema.safeParse(request.body);
         if (!parsed.success)
             return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
@@ -97,11 +99,11 @@ export function registerAiRoutes(app, db, providerOverride) {
             await db.update(aiConversations).set({ title: parsed.data.content.slice(0, 72), updatedAt: now }).where(eq(aiConversations.id, conversationId));
         const [execution] = await db.insert(aiToolExecutions).values({ conversationId, messageId: userMessage.id, toolName: "product_context_and_reasoning", status: "running", inputSummary: { promptLength: parsed.data.content.length }, startedAt: now }).returning();
         try {
-            const context = await buildAiContext(db, orgId, siteId, parsed.data.content, env.AI_MAX_CONTEXT_CHARS);
-            if (!context)
-                return reply.code(404).send({ error: "site_not_found" });
             const historyRows = await db.select({ role: aiMessages.role, content: aiMessages.content }).from(aiMessages).where(eq(aiMessages.conversationId, conversationId)).orderBy(desc(aiMessages.createdAt)).limit(12);
             const history = historyRows.reverse().map(item => ({ role: item.role === "assistant" ? "assistant" : "user", content: item.content }));
+            const context = await buildAiContext(db, orgId, siteId, parsed.data.content, env.AI_MAX_CONTEXT_CHARS, history.slice(0, -1));
+            if (!context)
+                return reply.code(404).send({ error: "site_not_found" });
             const result = await runAiTurn({ provider, prompt: parsed.data.content, history, contextJson: context.contextJson });
             let proposal = result.proposal;
             let preview = null;
@@ -113,12 +115,13 @@ export function registerAiRoutes(app, db, providerOverride) {
                     preview = await previewProposal(db, siteId, validated.data);
             }
             const completedAt = new Date();
-            const [assistantMessage] = await db.insert(aiMessages).values({ conversationId, role: "assistant", content: result.markdown, evidence: context.evidence, proposal: proposal ?? null, createdAt: completedAt }).returning();
+            const contentBlocks = aiContentBlocksSchema.parse(orderAiContentBlocks(result.markdown, result.blocks, context.contentBlocks));
+            const [assistantMessage] = await db.insert(aiMessages).values({ conversationId, role: "assistant", content: result.markdown, contentBlocks, evidence: context.evidence, proposal: proposal ?? null, createdAt: completedAt }).returning();
             let approval;
             if (proposal)
                 [approval] = await db.insert(aiPendingApprovals).values({ conversationId, messageId: assistantMessage.id, orgId, siteId, requestedBy: request.user.id, resourceType: proposal.type, proposal, idempotencyKey: conversationId + ":" + assistantMessage.id + ":" + proposal.type }).returning();
             await Promise.all([
-                db.update(aiToolExecutions).set({ messageId: assistantMessage.id, status: "completed", outputSummary: { evidenceSources: context.evidence.length, proposalType: proposal?.type ?? null }, completedAt }).where(eq(aiToolExecutions.id, execution.id)),
+                db.update(aiToolExecutions).set({ messageId: assistantMessage.id, toolName: context.toolNames.join(",") || "analytical_query", status: "completed", outputSummary: { evidenceSources: context.evidence.length, contentBlocks: contentBlocks.length, range: context.range.label, proposalType: proposal?.type ?? null }, completedAt }).where(eq(aiToolExecutions.id, execution.id)),
                 db.insert(aiProviderUsage).values({ orgId, siteId, userId: request.user.id, conversationId, provider: result.generation.provider, model: result.generation.model, promptTokens: result.generation.usage.promptTokens, completionTokens: result.generation.usage.completionTokens, totalTokens: result.generation.usage.totalTokens, createdAt: completedAt }),
                 db.update(aiConversations).set({ updatedAt: completedAt }).where(eq(aiConversations.id, conversationId)),
             ]);

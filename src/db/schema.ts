@@ -1233,6 +1233,7 @@ export const aiMessages = sqliteTable(
     conversationId: text("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
     role: text("role").notNull(),
     content: text("content").notNull(),
+    contentBlocks: text("content_blocks", { mode: "json" }),
     evidence: text("evidence", { mode: "json" }),
     proposal: text("proposal", { mode: "json" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),

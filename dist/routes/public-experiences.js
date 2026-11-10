@@ -469,7 +469,7 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
         if (!session || session.id !== sessionId)
             return reply.code(401).send({ error: "invalid_editor_access" });
         if (!aiProvider)
-            return reply.code(503).send({ error: "ai_disabled", message: "Movcues AI is not configured on the backend." });
+            return reply.code(503).send({ error: "ai_disabled", message: "Geo is not configured on the backend." });
         const parsed = editorAiRequestSchema.safeParse(request.body);
         if (!parsed.success)
             return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });

@@ -394,7 +394,7 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
     const session = await validateEditorAccess(request, db);
     const { sessionId } = request.params as { sessionId: string };
     if (!session || session.id !== sessionId) return reply.code(401).send({ error: "invalid_editor_access" });
-    if (!aiProvider) return reply.code(503).send({ error: "ai_disabled", message: "Movcues AI is not configured on the backend." });
+    if (!aiProvider) return reply.code(503).send({ error: "ai_disabled", message: "Geo is not configured on the backend." });
     const parsed = editorAiRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
     const [experience] = await db.select().from(experiences).where(and(eq(experiences.id, session.experienceId), eq(experiences.siteId, session.siteId))).limit(1);

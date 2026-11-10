@@ -15,7 +15,7 @@ function siteOrigin(domain) { try {
 catch {
     return null;
 } }
-export const ONSITE_WIDGET_TYPES = new Set(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "banner", "survey"]);
+export const ONSITE_WIDGET_TYPES = new Set(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"]);
 export function onsiteCompatible(kind, widgetType) { return kind === "checklist" || kind === "guide" || (kind === "widget" && !!widgetType && ONSITE_WIDGET_TYPES.has(widgetType)); }
 export class DraftWriteError extends Error {
     status;

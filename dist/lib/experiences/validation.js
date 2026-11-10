@@ -93,6 +93,7 @@ const layerSchema = z.discriminatedUnion("mode", [
 ]);
 const behaviorSchema = z.object({
     dismissible: z.boolean(),
+    showCloseButton: z.boolean().optional(),
     layer: layerSchema.optional(),
     zIndex: z.number().int().min(1).max(2147483647).optional(),
     placement: z.enum(["auto", "top", "right", "bottom", "left"]).optional(),

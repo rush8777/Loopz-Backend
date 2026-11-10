@@ -1,6 +1,6 @@
-# Movcues AI
+# Geo
 
-Movcues AI is an authenticated, site-scoped product analytics assistant. It reuses the analytics catalog, Event Explorer, session events, experience analytics, and the existing Dashboard, Segment, and Funnel validation/entitlement paths.
+Geo is an authenticated, site-scoped product analytics assistant. It reuses the analytics catalog, Event Explorer, session events, experience analytics, and the existing Dashboard, Segment, and Funnel validation/entitlement paths.
 
 ## Configuration
 

@@ -113,6 +113,7 @@ function initialDefinition(kind, widgetType, pageRules, siteTheme, builderMode =
         design: { ...themedDesign(siteTheme), size: defaultWidgetSize(widgetType) },
         behavior: {
             dismissible: true,
+            showCloseButton: true,
             layer: { mode: widgetType === "modal" ? "always_on_top" : "auto" },
             ...(widgetType === "toast" ? { toastPosition: "bottom-right", autoDismissMs: null } : {}),
             ...(widgetType === "cursor_follow" ? { cursorOffset: { x: 16, y: 16 } } : {}),
@@ -311,6 +312,16 @@ async function serializeExperience(db, row) {
         publishedVersion: published ? { ...published, definition: published.definition, createdAt: published.createdAt.toISOString(), publishedAt: published.publishedAt?.toISOString() ?? null } : null,
     };
 }
+function hasDismissAction(definition) {
+    if (!("content" in definition))
+        return false;
+    if (definition.content.primaryAction?.type === "dismiss" || definition.content.secondaryAction?.type === "dismiss")
+        return true;
+    const projectData = definition.builder?.projectData;
+    const movcues = projectData && typeof projectData === "object" ? projectData.movcues : null;
+    const bindings = movcues && typeof movcues === "object" ? movcues.actionBindings : null;
+    return Boolean(bindings && typeof bindings === "object" && Object.values(bindings).some(action => Boolean(action && typeof action === "object" && action.type === "dismiss")));
+}
 function validatePublishRequirements(kind, widgetType, definition) {
     if (kind === "guide") {
         if (!("steps" in definition) || definition.steps.some((step) => guideStepRequiresTarget(step) && !step.target))
@@ -318,6 +329,13 @@ function validatePublishRequirements(kind, widgetType, definition) {
     }
     else if ((widgetType === "anchored_card" || widgetType === "hotspot") && (!("content" in definition) || !definition.target)) {
         return "target_required";
+    }
+    else if (widgetType !== "survey" && "content" in definition && definition.behavior.backdrop) {
+        const behavior = definition.behavior;
+        const hasRuntimeExit = behavior.dismissible && (behavior.showCloseButton !== false || behavior.closeOnBackdrop === true);
+        const hasTimedExit = typeof behavior.autoDismissMs === "number" && behavior.autoDismissMs > 0;
+        if (!hasRuntimeExit && !hasTimedExit && !hasDismissAction(definition))
+            return "blocking_widget_no_exit";
     }
     return null;
 }

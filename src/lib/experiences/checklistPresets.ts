@@ -30,7 +30,7 @@ export function initialChecklistDefinition(preset: ChecklistPreset = "default", 
     title: "Getting started",
     description: "A few quick steps to help you get value from the product.",
     items: [item],
-    behavior: { position: "bottom-right" as const, order: "any" as const, dismissible: true, initialState: "expanded" as const, showRemainingCount: true },
+    behavior: { position: "bottom-right" as const, order: "any" as const, dismissible: true, initialState: "collapsed" as const, showRemainingCount: true },
     completionMessage: { title: "You're all set!", description: "You completed every onboarding task.", acknowledgeLabel: "Done" },
     targeting: { pageRules: [], audience: { type: "all" as const }, priority: 0 },
   };

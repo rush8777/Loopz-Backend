@@ -2,6 +2,7 @@ import { z } from "zod";
 import { dashboardCreateSchema } from "../../analytics/validation.js";
 import { createFunnelSchema } from "../../funnels/validation.js";
 import { createSegmentSchema } from "../../segments/validation.js";
+import { aiModelContentBlocksSchema } from "../content.js";
 
 export const aiResourceTypeSchema = z.enum(["dashboard", "segment", "funnel"]);
 export type AiResourceType = z.infer<typeof aiResourceTypeSchema>;
@@ -14,9 +15,10 @@ export const aiProposalSchema = z.discriminatedUnion("type", [
 export type AiProposal = z.infer<typeof aiProposalSchema>;
 
 export const modelEnvelopeSchema = z.object({
-  markdown: z.string().trim().min(1).max(30_000),
+  markdown: z.string().trim().min(1).max(30_000).optional(),
+  blocks: aiModelContentBlocksSchema.optional(),
   proposal: aiProposalSchema.nullable().optional(),
-});
+}).refine(value => Boolean(value.markdown || value.blocks), { message: "Either markdown or ordered blocks is required." });
 
 export const SKILL_CATALOG = [
   "Analyze dashboards and period-over-period product performance",
