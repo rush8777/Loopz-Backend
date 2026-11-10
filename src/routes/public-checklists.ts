@@ -1,8 +1,9 @@
+import { resolveDeliveryUserId } from "../lib/identity/deliveryIdentity.js";
 import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
-import { checklistStates, experienceEvents, experienceImpressions, experienceVersions, experiences, segments, sites, trackedUsers } from "../db/schema.js";
+import { checklistStates, experienceEvents, experienceImpressions, experienceVersions, experiences, segments, sites } from "../db/schema.js";
 import { checklistProgress, completeChecklistItemFromClick, currentChecklistDefinition, getOrCreateChecklistState, refreshChecklist, type ChecklistIdentity } from "../lib/experiences/checklistProgress.js";
 import { checklistDefinitionSchema, guideDefinitionSchema } from "../lib/experiences/validation.js";
 import type { ChecklistExperienceDefinition, ExperienceTargeting } from "../lib/experiences/types.js";
@@ -19,9 +20,7 @@ const refreshSchema = z.object({ ...identitySchema, versionId: z.string().min(1)
 const launchSchema = z.object({ ...identitySchema, source: z.enum(["api", "checklist"]), checklistExperienceId: z.string().min(1).max(64).optional(), itemId: z.string().min(1).max(64).optional() }).strict().superRefine((value, ctx) => { if (value.source === "checklist" && (!value.checklistExperienceId || !value.itemId)) ctx.addIssue({ code: "custom", path: ["checklistExperienceId"], message: "Checklist launch context is required" }); });
 
 async function trackedIdentity(db: Db, siteId: string, anonymousId: string, externalId?: string): Promise<ChecklistIdentity> {
-  if (!externalId) return { anonymousId, trackedUserId: null };
-  const [user] = await db.select().from(trackedUsers).where(and(eq(trackedUsers.siteId, siteId), eq(trackedUsers.externalUserId, externalId))).limit(1);
-  return { anonymousId, trackedUserId: user?.id ?? null };
+  return { anonymousId, trackedUserId: await resolveDeliveryUserId(db, siteId, externalId, anonymousId) };
 }
 
 function checkedUrl(urlValue: string, siteDomain: string | null): URL | null {
