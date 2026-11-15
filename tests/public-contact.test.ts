@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestApp } from "./helpers.js";
 import { ContactEmailNotConfiguredError } from "../src/lib/contact.js";
 
@@ -6,12 +6,13 @@ describe("public contact", () => {
   const sendContactEmail = vi.fn(async () => undefined);
   let ctx: Awaited<ReturnType<typeof createTestApp>>;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
     ctx = await createTestApp({ sendContactEmail });
   });
-  afterAll(async () => {
-    await ctx?.app.close();
-    ctx?.cleanup();
+  afterEach(async () => {
+    await ctx.app.close();
+    ctx.cleanup();
   });
 
   const valid = { name: "Taylor Guest", email: "taylor@example.com", message: "Can you help me with a product integration?", website: "" };
