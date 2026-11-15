@@ -35,10 +35,12 @@ import { registerPublicSdkVerificationRoutes, registerSdkVerificationRoutes } fr
 import { registerPublicThemeRoutes, registerThemeRoutes } from "./routes/themes.js";
 import type { VerifyGoogleCredential } from "./lib/google-auth.js";
 import { registerAiRoutes } from "./routes/ai.js";
+import { registerPublicContactRoutes } from "./routes/public-contact.js";
+import { sendContactEmail, type ContactEmailSender } from "./lib/contact.js";
 import type { AiProvider } from "./lib/ai/providers/types.js";
 import { createConfiguredAiProvider } from "./lib/ai/providers/index.js";
 
-export async function buildApp(db: Db, options: { verifyGoogleCredential?: VerifyGoogleCredential; aiProvider?: AiProvider } = {}) {
+export async function buildApp(db: Db, options: { verifyGoogleCredential?: VerifyGoogleCredential; aiProvider?: AiProvider; sendContactEmail?: ContactEmailSender } = {}) {
   const app = Fastify({ logger: false });
   const aiProvider = options.aiProvider ?? createConfiguredAiProvider();
   const dashboardOrigin = new URL(env.DASHBOARD_URL).origin;
@@ -104,6 +106,12 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
     registerPublicConfigRoutes(publicScope, db);
     registerPublicSdkVerificationRoutes(publicScope, db);
     registerPublicThemeRoutes(publicScope, db);
+  });
+
+  // Separate low-volume limit for unauthenticated marketing contact submissions.
+  await app.register(async (contactScope) => {
+    await contactScope.register(rateLimit, { global: true, max: 5, timeWindow: "15 minutes" });
+    registerPublicContactRoutes(contactScope, options.sendContactEmail ?? sendContactEmail);
   });
 
   await app.register(async (publicEventsScope) => {
