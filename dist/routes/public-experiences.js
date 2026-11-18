@@ -1,3 +1,4 @@
+import { resolveDeliveryUserId } from "../lib/identity/deliveryIdentity.js";
 import { surveyPath } from "../lib/experiences/surveyLogic.js";
 import { DraftWriteError, saveExperienceDraft } from "../lib/experiences/draftWrites.js";
 import { sendEntitlementError } from "../lib/entitlements/http.js";
@@ -7,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { and, desc, eq, gte, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { runInTransaction } from "../db/transaction.js";
-import { aiConversations, aiMessages, aiProviderUsage, aiToolExecutions, experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, siteStylePresets, siteThemes, surveyResponses, trackedUsers } from "../db/schema.js";
+import { aiConversations, aiMessages, aiProviderUsage, aiToolExecutions, experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, siteStylePresets, siteThemes, surveyResponses } from "../db/schema.js";
 import { env } from "../config.js";
 import { signEditorAccessToken, verifyEditorAccessToken } from "../lib/auth.js";
 import { createSurveyResponseSchema, definitionSchemaFor, impressionSchema, manifestQuerySchema, updateDraftSchema, updateSurveyResponseSchema } from "../lib/experiences/validation.js";
@@ -61,12 +62,6 @@ function grapesLiveEditorChangeAllowed(previous, next) {
         return sameJson(previousCopy, nextCopy);
     }
     return false;
-}
-async function resolveTrackedUserId(db, siteId, externalId) {
-    if (!externalId)
-        return null;
-    const [user] = await db.select().from(trackedUsers).where(and(eq(trackedUsers.siteId, siteId), eq(trackedUsers.externalUserId, externalId))).limit(1);
-    return user?.id ?? null;
 }
 async function matchesAudience(db, siteId, identityKey, audience) {
     if (audience.type === "all")
@@ -181,7 +176,7 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
         catch {
             return reply.code(400).send({ error: "invalid_url" });
         }
-        const trackedUserId = await resolveTrackedUserId(db, site.id, query.data.trackedUserId);
+        const trackedUserId = await resolveDeliveryUserId(db, site.id, query.data.trackedUserId, query.data.anonymousId);
         const identityKey = trackedUserId ?? query.data.anonymousId;
         const rows = (await db.select().from(experiences).where(and(eq(experiences.siteId, site.id), eq(experiences.status, "published"))))
             .filter((row) => row.publishedVersionId);
@@ -250,7 +245,7 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
         }
         const eventType = experience.widgetType === "survey" && parsed.data.event === "completed" ? "survey_submitted" : experience.widgetType === "survey" && parsed.data.event === "dismissed" ? "survey_abandoned" : parsed.data.eventType ?? (parsed.data.event === "shown" ? "experience_shown" : parsed.data.event === "dismissed" ? (experience.kind === "guide" ? "guide_dismissed" : experience.widgetType === "survey" ? "survey_abandoned" : "widget_dismissed") : parsed.data.event === "completed" ? (experience.kind === "guide" ? "guide_completed" : experience.widgetType === "survey" ? "survey_submitted" : "widget_interacted") : "widget_interacted");
         if (parsed.data.event === "shown" && experience.widgetType === "survey" && parsed.data.anonymousId && parsed.data.sessionId) {
-            const trackedUserId = await resolveTrackedUserId(db, site.id, parsed.data.trackedUserId);
+            const trackedUserId = await resolveDeliveryUserId(db, site.id, parsed.data.trackedUserId, parsed.data.anonymousId);
             const result = await runInTransaction(db, async (tx) => {
                 const [existing] = await tx.select().from(experienceImpressions).where(and(eq(experienceImpressions.siteId, site.id), eq(experienceImpressions.experienceId, experience.id), eq(experienceImpressions.versionId, version.id), eq(experienceImpressions.anonymousId, parsed.data.anonymousId), eq(experienceImpressions.sessionId, parsed.data.sessionId), isNull(experienceImpressions.completedAt), isNull(experienceImpressions.dismissedAt))).limit(1);
                 const impression = existing ?? (await tx.insert(experienceImpressions).values({ siteId: site.id, experienceId: experience.id, versionId: version.id, anonymousId: parsed.data.anonymousId, trackedUserId, sessionId: parsed.data.sessionId, pageViewId: parsed.data.pageViewId ?? null, shownAt: new Date() }).returning())[0];
@@ -260,7 +255,7 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
             return reply.code(result.created ? 201 : 200).send({ impressionId: result.impressionId });
         }
         if (parsed.data.event === "shown") {
-            const trackedUserId = await resolveTrackedUserId(db, site.id, parsed.data.trackedUserId);
+            const trackedUserId = await resolveDeliveryUserId(db, site.id, parsed.data.trackedUserId, parsed.data.anonymousId);
             const [impression] = await db.insert(experienceImpressions).values({
                 siteId: site.id, experienceId: experience.id, versionId: version.id,
                 anonymousId: parsed.data.anonymousId ?? null, trackedUserId, sessionId: parsed.data.sessionId ?? null,
@@ -320,7 +315,7 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
         const [experience] = await db.select().from(experiences).where(eq(experiences.id, parsed.data.experienceId)).limit(1);
         const [version] = await db.select().from(experienceVersions).where(eq(experienceVersions.id, parsed.data.versionId)).limit(1);
         const [impression] = await db.select().from(experienceImpressions).where(eq(experienceImpressions.id, parsed.data.impressionId)).limit(1);
-        const trackedUserId = await resolveTrackedUserId(db, site.id, parsed.data.trackedUserId);
+        const trackedUserId = await resolveDeliveryUserId(db, site.id, parsed.data.trackedUserId, parsed.data.anonymousId);
         if (!experience || experience.siteId !== site.id || experience.widgetType !== "survey" || experience.publishedVersionId !== version?.id || version.experienceId !== experience.id || version.state !== "published")
             return reply.code(404).send({ error: "survey_not_found" });
         if (!impression || impression.siteId !== site.id || impression.experienceId !== experience.id || impression.versionId !== version.id || impression.anonymousId !== parsed.data.anonymousId || impression.sessionId !== parsed.data.sessionId || impression.trackedUserId !== trackedUserId)
@@ -347,7 +342,7 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
         if (!site)
             return reply.code(404).send({ error: "site_not_found" });
         const [response] = await db.select().from(surveyResponses).where(eq(surveyResponses.id, responseId)).limit(1);
-        const trackedUserId = await resolveTrackedUserId(db, site.id, parsed.data.trackedUserId);
+        const trackedUserId = await resolveDeliveryUserId(db, site.id, parsed.data.trackedUserId, parsed.data.anonymousId);
         if (!response || response.siteId !== site.id || response.experienceId !== parsed.data.experienceId || response.versionId !== parsed.data.versionId || response.impressionId !== parsed.data.impressionId || response.anonymousId !== parsed.data.anonymousId || response.sessionId !== parsed.data.sessionId || response.trackedUserId !== trackedUserId)
             return reply.code(404).send({ error: "survey_response_not_found" });
         const [experience] = await db.select().from(experiences).where(eq(experiences.id, response.experienceId)).limit(1);

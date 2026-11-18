@@ -21,7 +21,7 @@ export function initialChecklistDefinition(preset = "default", theme) {
         title: "Getting started",
         description: "A few quick steps to help you get value from the product.",
         items: [item],
-        behavior: { position: "bottom-right", order: "any", dismissible: true, initialState: "expanded", showRemainingCount: true },
+        behavior: { position: "bottom-right", order: "any", dismissible: true, initialState: "collapsed", showRemainingCount: true },
         completionMessage: { title: "You're all set!", description: "You completed every onboarding task.", acknowledgeLabel: "Done" },
         targeting: { pageRules: [], audience: { type: "all" }, priority: 0 },
     };

@@ -1,5 +1,5 @@
 import { eq, and, inArray, isNull } from "drizzle-orm";
-import { trackedUsers, trackedUserAliases, trackedUserProperties, sessionEvents } from "../../db/schema.js";
+import { trackedUsers, trackedUserAliases, trackedUserProperties, sessionEvents, experienceImpressions, experienceEvents, surveyResponses } from "../../db/schema.js";
 import { claimChecklistProgress } from "../experiences/checklistProgress.js";
 /**
  * Resolves one identify() call into the tracked-user identity layer:
@@ -92,6 +92,13 @@ export async function resolveIdentity(db, input) {
                 .update(sessionEvents)
                 .set({ trackedUserId })
                 .where(and(eq(sessionEvents.siteId, siteId), eq(sessionEvents.anonymousId, anonymousId), isNull(sessionEvents.trackedUserId)));
+            // A same-visitor promotion must preserve in-progress surveys and once
+            // frequency. Only unresolved rows are claimed; another account's history
+            // is never reassigned when an alias changes owners.
+            for (const table of [experienceImpressions, experienceEvents, surveyResponses]) {
+                await db.update(table).set({ trackedUserId })
+                    .where(and(eq(table.siteId, siteId), eq(table.anonymousId, anonymousId), isNull(table.trackedUserId)));
+            }
             await claimChecklistProgress(db, siteId, anonymousId, trackedUserId);
         }
     }

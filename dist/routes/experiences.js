@@ -405,7 +405,8 @@ export function registerExperienceRoutes(app, db) {
         if (!query.success || (query.data.kind === "widget") !== Boolean(query.data.widgetType))
             return reply.code(400).send({ error: "invalid_query" });
         const [theme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
-        return reply.send({ templates: templatesFor(query.data.kind, query.data.widgetType), presets: ["minimal", "modern", "soft", "dark"], hasSiteTheme: Boolean(theme?.activeTokens) });
+        const siteTheme = theme?.activeTokens;
+        return reply.send({ templates: templatesFor(query.data.kind, query.data.widgetType), presets: ["minimal", "modern", "soft", "dark"], hasSiteTheme: Boolean(siteTheme), ...(siteTheme ? { siteThemeColors: [siteTheme.colors.surface, siteTheme.colors.text, siteTheme.colors.primary] } : {}) });
     });
     app.post("/orgs/:orgId/sites/:siteId/experiences", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
         const { siteId } = request.params;
