@@ -30,7 +30,7 @@ describe("visual experiences", () => {
     const session = (await ctx.app.inject({ method: "POST", url: `${url}/${created.id}/editor-sessions`, headers })).json();
     const origin = "https://fast-editor.example.com";
     const exchange = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange",
-      headers: { origin }, payload: { token: new URL(session.launchUrl).searchParams.get("movcues_editor_token") },
+      headers: { origin }, payload: { token: new URL(session.launchUrl).searchParams.get("movcues_editor_token"), includeDraft: true },
     });
     expect(exchange.statusCode, exchange.body).toBe(200);
     expect(exchange.headers["cache-control"]).toBe("no-store");
