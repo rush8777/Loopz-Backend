@@ -19,6 +19,36 @@ describe("visual experiences", () => {
     ctx.cleanup();
   });
 
+  it("includes the authorized draft in exchange and checks session liveness without a draft reload", async () => {
+    const { owner, site } = await setup(ctx.app, "fast-editor");
+    const headers = { authorization: `Bearer ${owner.accessToken}` };
+    const url = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
+    const created = (await ctx.app.inject({ method: "POST", url, headers, payload: {
+      kind: "widget", widgetType: "modal", builderMode: "onsite",
+      name: "Fast editor", buildUrl: "https://fast-editor.example.com", template: "blank", useBuildPageAsTarget: false,
+    } })).json();
+    const session = (await ctx.app.inject({ method: "POST", url: `${url}/${created.id}/editor-sessions`, headers })).json();
+    const origin = "https://fast-editor.example.com";
+    const exchange = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange",
+      headers: { origin }, payload: { token: new URL(session.launchUrl).searchParams.get("movcues_editor_token") },
+    });
+    expect(exchange.statusCode, exchange.body).toBe(200);
+    expect(exchange.headers["cache-control"]).toBe("no-store");
+    expect(exchange.json().draft.version.id).toBe(created.draftVersion.id);
+
+    const statusUrl = `/public/experience-editor/${session.sessionId}/status`;
+    const editorHeaders = { origin, authorization: `Bearer ${exchange.json().accessToken}` };
+    const status = await ctx.app.inject({ method: "GET", url: statusUrl, headers: editorHeaders });
+    expect(status.statusCode, status.body).toBe(200);
+    expect(status.json()).toEqual(expect.objectContaining({ valid: true, expiresAt: expect.any(String) }));
+    expect(status.headers["cache-control"]).toBe("no-store");
+    expect((await ctx.app.inject({ method: "GET", url: statusUrl, headers: { origin } })).statusCode).toBe(401);
+    expect((await ctx.app.inject({ method: "GET", url: statusUrl, headers: { ...editorHeaders, origin: "https://wrong.example.com" } })).statusCode).toBe(401);
+
+    await ctx.app.inject({ method: "POST", url: `${url}/${created.id}/editor-sessions/${session.sessionId}/revoke`, headers });
+    expect((await ctx.app.inject({ method: "GET", url: statusUrl, headers: editorHeaders })).statusCode).toBe(401);
+  });
+
   it("rejects missing or stale reviewed revisions and leaves published content immutable", async () => {
     const { owner, site } = await setup(ctx.app, "review-lock"); const headers = { authorization: `Bearer ${owner.accessToken}` };
     const url = `/orgs/${owner.org.id}/sites/${site.id}/experiences`;
