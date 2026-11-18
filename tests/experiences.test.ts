@@ -36,6 +36,14 @@ describe("visual experiences", () => {
     expect(exchange.headers["cache-control"]).toBe("no-store");
     expect(exchange.json().draft.version.id).toBe(created.draftVersion.id);
 
+    // Existing clients keep the original small exchange payload.
+    const legacySession = (await ctx.app.inject({ method: "POST", url: `${url}/${created.id}/editor-sessions`, headers })).json();
+    const legacyExchange = await ctx.app.inject({ method: "POST", url: "/public/experience-editor/exchange",
+      headers: { origin }, payload: { token: new URL(legacySession.launchUrl).searchParams.get("movcues_editor_token") },
+    });
+    expect(legacyExchange.statusCode, legacyExchange.body).toBe(200);
+    expect(legacyExchange.json().draft).toBeUndefined();
+
     const statusUrl = `/public/experience-editor/${session.sessionId}/status`;
     const editorHeaders = { origin, authorization: `Bearer ${exchange.json().accessToken}` };
     const status = await ctx.app.inject({ method: "GET", url: statusUrl, headers: editorHeaders });
