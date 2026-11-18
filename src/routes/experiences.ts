@@ -379,7 +379,8 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const query = z.object({ kind: z.enum(["guide", "widget", "checklist"]), widgetType: z.enum(SUPPORTED_WIDGET_TYPES as [WidgetType, ...WidgetType[]]).nullable().optional() }).safeParse(request.query);
     if (!query.success || (query.data.kind === "widget") !== Boolean(query.data.widgetType)) return reply.code(400).send({ error: "invalid_query" });
     const [theme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
-    return reply.send({ templates: templatesFor(query.data.kind, query.data.widgetType), presets: ["minimal", "modern", "soft", "dark"], hasSiteTheme: Boolean(theme?.activeTokens) });
+    const siteTheme = theme?.activeTokens as SiteThemeTokens | null | undefined;
+    return reply.send({ templates: templatesFor(query.data.kind, query.data.widgetType), presets: ["minimal", "modern", "soft", "dark"], hasSiteTheme: Boolean(siteTheme), ...(siteTheme ? { siteThemeColors: [siteTheme.colors.surface, siteTheme.colors.text, siteTheme.colors.primary] } : {}) });
   });
 
   app.post("/orgs/:orgId/sites/:siteId/experiences", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
