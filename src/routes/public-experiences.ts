@@ -360,11 +360,17 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
     if (!token || token.length > 200 || !origin) return reply.code(400).send({ error: "invalid_editor_session" });
     const [session] = await db.select().from(experienceEditorSessions).where(eq(experienceEditorSessions.tokenHash, rawTokenHash(token))).limit(1);
     if (!session || session.usedAt || session.revokedAt || session.expiresAt <= new Date() || session.allowedOrigin !== origin) return reply.code(401).send({ error: "invalid_or_expired_editor_session" });
-    const draft = await loadEditorDraftForSession(db, session);
-    if (!draft) return reply.code(404).send({ error: "draft_not_found" });
+    // Old SDKs do not use an embedded draft. Avoid fetching it unless the
+    // new fast-start client explicitly opts in, preserving the old fast exchange.
+    const includeDraft = (request.body as { includeDraft?: unknown } | null)?.includeDraft === true;
+    const draft = includeDraft ? await loadEditorDraftForSession(db, session) : undefined;
+    if (includeDraft && !draft) return reply.code(404).send({ error: "draft_not_found" });
     await db.update(experienceEditorSessions).set({ usedAt: new Date() }).where(eq(experienceEditorSessions.id, session.id));
     const accessToken = signEditorAccessToken({ sub: session.id, scope: "experience_editor", origin }, env.JWT_SECRET);
-    return reply.header("Cache-Control", "no-store").send({ sessionId: session.id, accessToken, expiresAt: session.expiresAt.toISOString(), draft });
+    return reply.header("Cache-Control", "no-store").send({
+      sessionId: session.id, accessToken, expiresAt: session.expiresAt.toISOString(),
+      ...(draft ? { draft } : {}),
+    });
   });
 
   app.get("/public/experience-editor/:sessionId/status", async (request, reply) => {
