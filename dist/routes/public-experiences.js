@@ -147,6 +147,29 @@ async function validateEditorAccess(request, db) {
         return null;
     }
 }
+/** Share one authorized snapshot between launch exchange and page reloads. */
+async function loadEditorDraftForSession(db, session) {
+    const [experience] = await db.select().from(experiences).where(eq(experiences.id, session.experienceId)).limit(1);
+    if (!experience)
+        return null;
+    const [versions, themes, stylePresets] = await Promise.all([
+        db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, session.experienceId)),
+        db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, session.siteId)).limit(1),
+        db.select({ id: siteStylePresets.id, name: siteStylePresets.name, tokens: siteStylePresets.tokens }).from(siteStylePresets).where(eq(siteStylePresets.siteId, session.siteId)).orderBy(desc(siteStylePresets.updatedAt)).limit(20),
+    ]);
+    const draft = versions.find(item => item.state === "draft");
+    if (!draft)
+        return null;
+    const [guides, segmentReferences] = experience.kind === "checklist" ? await Promise.all([
+        db.select({ id: experiences.id, name: experiences.name, status: experiences.status }).from(experiences).where(and(eq(experiences.siteId, session.siteId), eq(experiences.kind, "guide"))).limit(200),
+        db.select({ id: segments.id, name: segments.name }).from(segments).where(eq(segments.siteId, session.siteId)).limit(200),
+    ]) : [[], []];
+    return {
+        references: { guides, segments: segmentReferences, stylePresets, siteTheme: themes[0]?.activeTokens ?? null },
+        experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType, builderMode: experience.builderMode },
+        version: { id: draft.id, versionNumber: draft.versionNumber, revision: draft.revision, definition: draft.definition },
+    };
+}
 export function registerPublicExperienceRoutes(app, db, providerOverride) {
     const aiProvider = providerOverride === undefined ? createConfiguredAiProvider() : providerOverride;
     app.get("/public/sites/:siteId/experiences", async (request, reply) => {
@@ -397,29 +420,35 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
         const [session] = await db.select().from(experienceEditorSessions).where(eq(experienceEditorSessions.tokenHash, rawTokenHash(token))).limit(1);
         if (!session || session.usedAt || session.revokedAt || session.expiresAt <= new Date() || session.allowedOrigin !== origin)
             return reply.code(401).send({ error: "invalid_or_expired_editor_session" });
+        // Old SDKs do not use an embedded draft. Avoid fetching it unless the
+        // new fast-start client explicitly opts in, preserving the old fast exchange.
+        const includeDraft = request.body?.includeDraft === true;
+        const draft = includeDraft ? await loadEditorDraftForSession(db, session) : undefined;
+        if (includeDraft && !draft)
+            return reply.code(404).send({ error: "draft_not_found" });
         await db.update(experienceEditorSessions).set({ usedAt: new Date() }).where(eq(experienceEditorSessions.id, session.id));
         const accessToken = signEditorAccessToken({ sub: session.id, scope: "experience_editor", origin }, env.JWT_SECRET);
-        return reply.send({ sessionId: session.id, accessToken, expiresAt: session.expiresAt.toISOString() });
+        return reply.header("Cache-Control", "no-store").send({
+            sessionId: session.id, accessToken, expiresAt: session.expiresAt.toISOString(),
+            ...(draft ? { draft } : {}),
+        });
+    });
+    app.get("/public/experience-editor/:sessionId/status", async (request, reply) => {
+        const session = await validateEditorAccess(request, db);
+        const { sessionId } = request.params;
+        if (!session || session.id !== sessionId)
+            return reply.code(401).send({ error: "invalid_editor_access" });
+        return reply.header("Cache-Control", "no-store").send({ valid: true, expiresAt: session.expiresAt.toISOString() });
     });
     app.get("/public/experience-editor/:sessionId/draft", async (request, reply) => {
         const session = await validateEditorAccess(request, db);
         const { sessionId } = request.params;
         if (!session || session.id !== sessionId)
             return reply.code(401).send({ error: "invalid_editor_access" });
-        const [experience] = await db.select().from(experiences).where(eq(experiences.id, session.experienceId)).limit(1);
-        const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, session.experienceId));
-        const draft = versions.find((item) => item.state === "draft");
-        if (!experience || !draft)
+        const draft = await loadEditorDraftForSession(db, session);
+        if (!draft)
             return reply.code(404).send({ error: "draft_not_found" });
-        const [theme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, session.siteId)).limit(1);
-        const stylePresets = await db.select({ id: siteStylePresets.id, name: siteStylePresets.name, tokens: siteStylePresets.tokens }).from(siteStylePresets).where(eq(siteStylePresets.siteId, session.siteId)).orderBy(desc(siteStylePresets.updatedAt)).limit(20);
-        const references = {
-            guides: experience.kind === "checklist" ? await db.select({ id: experiences.id, name: experiences.name, status: experiences.status }).from(experiences).where(and(eq(experiences.siteId, session.siteId), eq(experiences.kind, "guide"))).limit(200) : [],
-            segments: experience.kind === "checklist" ? await db.select({ id: segments.id, name: segments.name }).from(segments).where(eq(segments.siteId, session.siteId)).limit(200) : [],
-            stylePresets,
-            siteTheme: theme?.activeTokens ?? null,
-        };
-        return reply.send({ references, experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType, builderMode: experience.builderMode }, version: { id: draft.id, versionNumber: draft.versionNumber, revision: draft.revision, definition: draft.definition } });
+        return reply.header("Cache-Control", "no-store").send(draft);
     });
     app.patch("/public/experience-editor/:sessionId/draft", async (request, reply) => {
         const session = await validateEditorAccess(request, db);
