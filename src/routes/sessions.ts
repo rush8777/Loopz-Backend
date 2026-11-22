@@ -5,7 +5,6 @@ import type { Db } from "../db/client.js";
 import {
   sites,
   sessionEvents,
-  sessionReplayEvents,
   sessionContexts,
   trackedUserAliases,
   trackedUsers,
@@ -42,9 +41,7 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
    * Session list for the Observe > Sessions page. Aggregated directly
    * off session_events (there's no separate "sessions" table - a
    * session is just the set of events sharing a sessionId), sorted by
-   * most recent activity. FullSnapshot availability is included per row
-   * so the dashboard can show a "replay available" indicator without a
-   * second round trip per session.
+   * most recent activity.
    */
   app.get(
     "/orgs/:orgId/sites/:siteId/sessions",
@@ -77,13 +74,7 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
       const rows = [...grouped.values()];
       const sessionIds = rows.map((row) => row.sessionId);
       const anonymousIds = [...new Set(rows.flatMap((row) => [...row.anonymousIds]))];
-      const [replayRows, contextRows, identityRows] = await Promise.all([
-        sessionIds.length
-          ? db
-              .selectDistinct({ sessionId: sessionReplayEvents.sessionId })
-              .from(sessionReplayEvents)
-              .where(and(eq(sessionReplayEvents.siteId, site.id), inArray(sessionReplayEvents.sessionId, sessionIds)))
-          : [],
+      const [contextRows, identityRows] = await Promise.all([
         sessionIds.length
           ? db
               .select()
@@ -102,7 +93,6 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
               .where(and(eq(trackedUserAliases.siteId, site.id), inArray(trackedUserAliases.anonymousId, anonymousIds)))
           : [],
       ]);
-      const replaySessionIds = new Set(replayRows.map((row) => row.sessionId));
       const contextsBySession = new Map(contextRows.map((row) => [row.sessionId, row]));
       const identitiesByAnonymousId = new Map(identityRows.map((row) => [row.anonymousId, row]));
 
@@ -133,7 +123,7 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
           && (!visitorType || (visitorType === "identified" ? Boolean(identity) : !identity))
           && (!pagePaths || [...row.paths].some((path) => pagePaths!.includes(path)))
           && (!eventName || row.eventNames.has(eventName))
-          && (!hasReplay || replaySessionIds.has(row.sessionId) === (hasReplay === "true"))
+          && hasReplay !== "true"
           && (!deviceType || contextsBySession.get(row.sessionId)?.deviceType === deviceType)
           && (minDurationMs === undefined || duration >= minDurationMs)
           && (maxDurationMs === undefined || duration <= maxDurationMs);
@@ -164,7 +154,7 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
             deviceType: context?.deviceType ?? null,
             browserName: context?.browserName ?? null,
             osName: context?.osName ?? null,
-            hasReplay: replaySessionIds.has(r.sessionId),
+            hasReplay: false,
           };
         }),
         limit,
@@ -197,7 +187,7 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
       };
       const groups = buildSessionActivityGroups(rows, resolvePageName);
       const anonymousIds = [...new Set(rows.map((row) => row.anonymousId).filter((id): id is string => Boolean(id)))];
-      const [contextRows, identityRows, replayRows] = await Promise.all([
+      const [contextRows, identityRows] = await Promise.all([
         db
           .select()
           .from(sessionContexts)
@@ -215,11 +205,6 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
               .where(and(eq(trackedUserAliases.siteId, site.id), inArray(trackedUserAliases.anonymousId, anonymousIds)))
               .limit(1)
           : [],
-        db
-          .select({ id: sessionReplayEvents.id })
-          .from(sessionReplayEvents)
-          .where(and(eq(sessionReplayEvents.siteId, site.id), eq(sessionReplayEvents.sessionId, sessionId)))
-          .limit(1),
       ]);
       const first = rows[0].timestamp;
       const last = rows[rows.length - 1].timestamp;
@@ -229,7 +214,7 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
 
       return reply.send({
         sessionId,
-        hasReplay: replayRows.length > 0,
+        hasReplay: false,
         visitor: identity
           ? { type: "identified", id: identity.trackedUserId, label: identity.externalUserId }
           : anonymousId
@@ -291,15 +276,9 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
         return reply.code(404).send({ error: "session_not_found" });
       }
 
-      const [hasReplayRow] = await db
-        .select({ id: sessionReplayEvents.id })
-        .from(sessionReplayEvents)
-        .where(and(eq(sessionReplayEvents.siteId, site.id), eq(sessionReplayEvents.sessionId, sessionId)))
-        .limit(1);
-
       return reply.send({
         sessionId,
-        hasReplay: Boolean(hasReplayRow),
+        hasReplay: false,
         events: rows.map((r) => ({
           id: r.id,
           type: r.type,
@@ -323,66 +302,6 @@ export function registerSessionRoutes(app: FastifyInstance, db: Db) {
           name: r.eventName,
           properties: r.eventProperties,
         })),
-      });
-    }
-  );
-
-  /**
-   * The first FullSnapshot (rrweb event type 2) for a session - exactly
-   * what the Heatmaps page needs to render a static screenshot via
-   * rrweb-snapshot's rebuild(), without shipping the full replay stream.
-   */
-  app.get(
-    "/orgs/:orgId/sites/:siteId/sessions/:sessionId/snapshot",
-    { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] },
-    async (request, reply) => {
-      const { siteId, sessionId } = request.params as { siteId: string; sessionId: string };
-      const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
-      if (!site) return reply.code(404).send({ error: "site_not_found" });
-
-      const [snapshot] = await db
-        .select()
-        .from(sessionReplayEvents)
-        .where(
-          and(
-            eq(sessionReplayEvents.siteId, site.id),
-            eq(sessionReplayEvents.sessionId, sessionId),
-            eq(sessionReplayEvents.rrwebType, 2)
-          )
-        )
-        .orderBy(asc(sessionReplayEvents.seq))
-        .limit(1);
-
-      if (!snapshot) {
-        return reply.code(404).send({ error: "snapshot_not_found" });
-      }
-
-      return reply.send({ sessionId, timestamp: snapshot.timestamp.toISOString(), data: snapshot.data });
-    }
-  );
-
-  /** Full ordered rrweb event stream for a session - for playback (rrweb-player), not just the initial snapshot. */
-  app.get(
-    "/orgs/:orgId/sites/:siteId/sessions/:sessionId/replay",
-    { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] },
-    async (request, reply) => {
-      const { siteId, sessionId } = request.params as { siteId: string; sessionId: string };
-      const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
-      if (!site) return reply.code(404).send({ error: "site_not_found" });
-
-      const rows = await db
-        .select()
-        .from(sessionReplayEvents)
-        .where(and(eq(sessionReplayEvents.siteId, site.id), eq(sessionReplayEvents.sessionId, sessionId)))
-        .orderBy(asc(sessionReplayEvents.seq));
-
-      if (rows.length === 0) {
-        return reply.code(404).send({ error: "replay_not_found" });
-      }
-
-      return reply.send({
-        sessionId,
-        events: rows.map((r) => ({ type: r.rrwebType, timestamp: r.timestamp.getTime(), data: r.data })),
       });
     }
   );

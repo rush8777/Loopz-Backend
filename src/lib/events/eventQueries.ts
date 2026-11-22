@@ -628,19 +628,3 @@ export async function getEventPages(db: Db, siteId: string, eventName: string, r
 
   return rows.map((r) => ({ pagePath: r.pagePath, occurrences: r.occurrences }));
 }
-
-// ---------------------------------------------------------------------------
-// "Used in" - existing references only, never fabricated (task constraint)
-
-export interface UsedInPattern {
-  id: string;
-  name: string;
-}
-
-/** Legacy Patterns are retired, so Event Explorer no longer advertises stale references. */
-export async function getEventPatternReferences(db: Db, siteId: string, eventName: string): Promise<UsedInPattern[]> {
-  void db;
-  void siteId;
-  void eventName;
-  return [];
-}

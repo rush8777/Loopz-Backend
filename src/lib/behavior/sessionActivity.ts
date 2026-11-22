@@ -2,7 +2,7 @@ import type { sessionEvents } from "../../db/schema.js";
 import type { BehavioralEvent, BehavioralEventEvidence } from "./behavioralEvent.js";
 import { compileBehavioralEvents, type CompilableRawEvent } from "./behaviorCompiler.js";
 import { segmentIntoEpisodes, type EpisodeBoundaryReason } from "./episodeSegmentation.js";
-import type { IncomingEvent } from "../patterns/event.js";
+import type { IncomingEvent } from "../telemetry/event.js";
 
 type StoredSessionEvent = typeof sessionEvents.$inferSelect;
 

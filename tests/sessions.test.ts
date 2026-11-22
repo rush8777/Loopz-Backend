@@ -165,14 +165,14 @@ describe("session list/detail endpoints", () => {
   });
 });
 
-describe("rrweb replay ingestion + retrieval", () => {
+describe("retired replay compatibility", () => {
   let ctx: Awaited<ReturnType<typeof createTestApp>>;
   beforeEach(async () => {
     ctx = await createTestApp();
   });
   afterEach(() => ctx.cleanup());
 
-  it("continues serving historical rrweb data without accepting new ingestion", async () => {
+  it("does not serve historical replay or snapshots and preserves their stored rows", async () => {
     const { owner, site } = await setupSite(ctx.app);
     await ctx.db.insert(sessionReplayEvents).values([
       { siteId: site.id, sessionId: "sess_replay_1", seq: 0, rrwebType: 4, timestamp: new Date(0), data: { href: "https://example.com" } },
@@ -185,19 +185,18 @@ describe("rrweb replay ingestion + retrieval", () => {
       url: `/orgs/${owner.org.id}/sites/${site.id}/sessions/sess_replay_1/snapshot`,
       headers: { authorization: `Bearer ${owner.accessToken}` },
     });
-    expect(snapshot.statusCode).toBe(200);
-    expect(snapshot.json().data).toEqual({ node: { tagName: "html" } });
+    expect(snapshot.statusCode).toBe(404);
 
     const replay = await ctx.app.inject({
       method: "GET",
       url: `/orgs/${owner.org.id}/sites/${site.id}/sessions/sess_replay_1/replay`,
       headers: { authorization: `Bearer ${owner.accessToken}` },
     });
-    expect(replay.json().events).toHaveLength(3);
-    expect(replay.json().events.map((e: { type: number }) => e.type)).toEqual([4, 2, 3]);
+    expect(replay.statusCode).toBe(404);
+    expect(await ctx.db.select().from(sessionReplayEvents)).toHaveLength(3);
   });
 
-  it("session list does not claim replay when MVP1 ingestion drops it", async () => {
+  it("session list does not claim replay when ingestion drops it", async () => {
     const { owner, site } = await setupSite(ctx.app);
     await ctx.app.inject({
       method: "POST",
@@ -216,17 +215,6 @@ describe("rrweb replay ingestion + retrieval", () => {
       headers: { authorization: `Bearer ${owner.accessToken}` },
     });
     expect(list.json().sessions[0].hasReplay).toBe(false);
-  });
-
-  it("404s for a snapshot request when no replay data was ever sent", async () => {
-    const { owner, site } = await setupSite(ctx.app);
-    const res = await ctx.app.inject({
-      method: "GET",
-      url: `/orgs/${owner.org.id}/sites/${site.id}/sessions/no_replay_session/snapshot`,
-      headers: { authorization: `Bearer ${owner.accessToken}` },
-    });
-    expect(res.statusCode).toBe(404);
-    expect(res.json()).toEqual({ error: "snapshot_not_found" });
   });
 
   it("rejects replay ingestion for an unknown siteId", async () => {

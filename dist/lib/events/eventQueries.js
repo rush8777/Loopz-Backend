@@ -356,11 +356,4 @@ export async function getEventPages(db, siteId, eventName, range) {
         .limit(MAX_PAGES_BREAKDOWN);
     return rows.map((r) => ({ pagePath: r.pagePath, occurrences: r.occurrences }));
 }
-/** Legacy Patterns are retired, so Event Explorer no longer advertises stale references. */
-export async function getEventPatternReferences(db, siteId, eventName) {
-    void db;
-    void siteId;
-    void eventName;
-    return [];
-}
 //# sourceMappingURL=eventQueries.js.map

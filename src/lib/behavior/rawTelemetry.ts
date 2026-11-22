@@ -1,4 +1,4 @@
-import type { IncomingEvent } from "../patterns/event.js";
+import type { IncomingEvent } from "../telemetry/event.js";
 
 /**
  * Raw incoming event types that count as "telemetry" rather than

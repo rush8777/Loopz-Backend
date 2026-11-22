@@ -1,30 +1,9 @@
 /**
  * Normalized element identity.
  *
- * The current SDK only ever gives us a CSS selector (see
- * `IncomingEvent.element.selector` in `../patterns/event.js`), and
- * `PatternStepTarget` in `../patterns/types.js` already flags exact
- * selector matching as a stand-in for something better: selectors work
- * fine until a site redesign or A/B test changes the DOM shape
- * underneath them, and the same real-world element then looks like two
- * unrelated targets to anything matching on selector alone.
- *
- * `ElementIdentity` is intentionally wider than what the SDK sends
- * today. Every field except `source` is optional. As of the SDK's
- * ElementLabeler work, `label`/`role` ARE now sent (see
- * `elementIdentityFromRaw` below) - `region` and `fingerprint` remain
- * reserved for later SDK versions / a later server-side pass. Nothing
- * downstream should assume any field other than `source` is present.
- *
- * IDENTITY VS. DISPLAY: `selector` (and eventually `fingerprint`)
- * remain the only fields used for identity/matching/grouping
- * throughout the behavioral pipeline (see `describeElementIdentity`,
- * used by `behavioralSequence.ts`'s tokenization) - `label`/`role` are
- * carried through purely for display. This matters because a label
- * computed from visible text can legitimately vary in ways a selector
- * shouldn't (e.g. a badge whose text is a live count); if label ever
- * became part of grouping identity, that variance would fragment
- * patterns that selector-based identity already handles correctly.
+ * CSS selectors give Session Activity a target identity. The SDK also
+ * sends optional label and role metadata for display. Changes in the
+ * DOM can change a selector, and visible text may vary between events.
  */
 /** Explicit "we know an element was involved but have no identifying evidence for it" value - never throw, use this instead. */
 export const UNKNOWN_ELEMENT_IDENTITY = { source: "unknown" };

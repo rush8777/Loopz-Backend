@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { sites, segments } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
-import { listEventDefinitions, getEventSummary, getEventTimeseries, getEventPropertySummary, listEventOccurrences, getEventOccurrence, getEventUsers, getEventSessions, getEventPages, getEventPatternReferences, eventExistsForSite, } from "../lib/events/eventQueries.js";
+import { listEventDefinitions, getEventSummary, getEventTimeseries, getEventPropertySummary, listEventOccurrences, getEventOccurrence, getEventUsers, getEventSessions, getEventPages, eventExistsForSite, } from "../lib/events/eventQueries.js";
 import { evaluateSegment } from "../lib/segments/evaluator.js";
 import { resolveMatchedPagePaths } from "../lib/pages/resolveMatchedPagePaths.js";
 async function loadSiteInOrg(db, siteId, orgId) {
@@ -90,13 +90,8 @@ export function registerEventRoutes(app, db) {
             return reply.code(400).send({ error: "invalid_query", details: parsed.error.flatten() });
         }
         const summary = await getEventSummary(db, site.id, eventName, parsed.data);
-        // "Used in" never fakes a reference (task constraint) - patterns
-        // is the only existing system that can reference a custom event
-        // today (see matcher.ts's "custom" verb); funnels/experiences
-        // don't exist yet, so they're simply omitted rather than shown
-        // empty or invented - see the frontend's rendering of this field.
-        const patternReferences = await getEventPatternReferences(db, site.id, eventName);
-        return reply.send({ ...summary, usedIn: { patterns: patternReferences } });
+        // Keep the empty field for older Event Explorer builds.
+        return reply.send({ ...summary, usedIn: { patterns: [] } });
     });
     /** Daily occurrence counts across a range, zero-filled (task brief section 6's "Occurrences over time" chart). */
     app.get("/orgs/:orgId/sites/:siteId/events/:eventName/timeseries", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {

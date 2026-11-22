@@ -33,7 +33,7 @@ import {
 } from "../src/lib/behavior/elementIdentity.js";
 import { isRawTelemetryEvent } from "../src/lib/behavior/rawTelemetry.js";
 import { compileToBehavioralEvent, compileBatch } from "../src/lib/behavior/compileEvent.js";
-import type { IncomingEvent } from "../src/lib/patterns/event.js";
+import type { IncomingEvent } from "../src/lib/telemetry/event.js";
 
 describe("behavioral event types are valid", () => {
   it("every declared kind maps to exactly one of the four BehavioralEvent categories", () => {

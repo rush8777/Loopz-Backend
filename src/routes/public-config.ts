@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { sites, pageDefinitions, pageHeatmapStates, sdkVerificationChallenges, themeCaptureRequests } from "../db/schema.js";
+import { sites, sdkVerificationChallenges, themeCaptureRequests } from "../db/schema.js";
 
 /**
  * The one endpoint in this service with NO authentication at all -
@@ -53,15 +53,10 @@ export function registerPublicConfigRoutes(app: FastifyInstance, db: Db) {
       .where(and(eq(themeCaptureRequests.siteId, site.id), isNull(themeCaptureRequests.completedAt), gt(themeCaptureRequests.expiresAt, now)))
       .orderBy(desc(themeCaptureRequests.createdAt))
       .limit(1);
-    const heatmapStates = await db
-      .select({ id: pageHeatmapStates.id, selector: pageHeatmapStates.selector })
-      .from(pageHeatmapStates)
-      .innerJoin(pageDefinitions, eq(pageHeatmapStates.pageDefinitionId, pageDefinitions.id))
-      .where(and(eq(pageHeatmapStates.siteId, site.id), eq(pageDefinitions.heatmapEnabled, true)));
     return reply.send({
       siteId: site.publicId,
       config: site.publicConfig,
-      heatmapStates,
+      heatmapStates: [],
       ...(sdkVerification ? { sdkVerification } : {}),
       ...(themeCapture ? { themeCapture } : {}),
     });

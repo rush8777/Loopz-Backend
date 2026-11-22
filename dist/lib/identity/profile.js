@@ -1,5 +1,5 @@
 import { eq, and, inArray, isNull, or, sql, desc, asc } from "drizzle-orm";
-import { sessionContexts, trackedUserAliases, sessionEvents, sessionReplayEvents } from "../../db/schema.js";
+import { sessionContexts, trackedUserAliases, sessionEvents } from "../../db/schema.js";
 /**
  * The read/aggregation core of the User Profile layer (task brief
  * section 17): every function here computes its answer at query time
@@ -188,13 +188,6 @@ export async function listSessionsForTrackedUser(db, siteId, anonymousIds, opts,
     const rows = [...merged.values()]
         .sort((a, b) => b.lastSeen - a.lastSeen)
         .slice(opts.offset, opts.offset + opts.limit);
-    const sessionIds = rows.map((r) => r.sessionId);
-    const replaySessionIds = new Set(sessionIds.length === 0
-        ? []
-        : (await db
-            .selectDistinct({ sessionId: sessionReplayEvents.sessionId })
-            .from(sessionReplayEvents)
-            .where(and(eq(sessionReplayEvents.siteId, siteId), inArray(sessionReplayEvents.sessionId, sessionIds)))).map((r) => r.sessionId));
     return {
         sessions: rows.map((r) => ({
             sessionId: r.sessionId,
@@ -202,7 +195,7 @@ export async function listSessionsForTrackedUser(db, siteId, anonymousIds, opts,
             firstSeen: new Date(r.firstSeen).toISOString(),
             lastSeen: new Date(r.lastSeen).toISOString(),
             durationMs: r.lastSeen - r.firstSeen,
-            hasReplay: replaySessionIds.has(r.sessionId),
+            hasReplay: false,
         })),
         total: merged.size,
     };

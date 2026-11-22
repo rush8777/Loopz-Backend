@@ -13,7 +13,7 @@ import {
   isRepeatedAttentionEvent,
   isReversalEvent,
 } from "../src/lib/behavior/behavioralEvent.js";
-import type { IncomingEvent } from "../src/lib/patterns/event.js";
+import type { IncomingEvent } from "../src/lib/telemetry/event.js";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers

@@ -4,7 +4,7 @@ import type { ElementIdentity } from "./elementIdentity.js";
  * The normalized behavioral event layer.
  *
  * RAW SESSION EVENTS (page_view | click | hover | scroll | cursor,
- * `../patterns/event.js`) are what the SDK sends and what
+ * `../telemetry/event.js`) are what the SDK sends and what
  * `session_events` stores. They are a faithful telemetry log, not a
  * behavioral vocabulary - in particular, `cursor` alone can produce
  * thousands of rows in a single session, which is unusable as

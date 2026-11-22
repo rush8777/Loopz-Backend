@@ -1,9 +1,8 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { sites, sessionEvents, trackedUserAliases } from "../db/schema.js";
-import { trackEventsBodySchema } from "../lib/patterns/validation.js";
+import { trackEventsBodySchema } from "../lib/telemetry/validation.js";
 import { resolveIdentity } from "../lib/identity/resolveIdentity.js";
 import { recordSessionStart } from "../lib/identity/environmentContext.js";
-import { shouldPersistSessionEvent } from "../lib/mvpPolicy.js";
 /** The browser supplies Origin for cross-origin SDK POSTs. Invalid or absent
  * values remain unclassified rather than being guessed into billable traffic. */
 function requestOrigin(request) {
@@ -21,12 +20,10 @@ function requestOrigin(request) {
  * Public, unauthenticated (same trust model as /public/config - see the
  * comment there) endpoint the SDK calls as event batches are ready to
  * send. It durably stores interaction telemetry for Sessions, Events,
- * Funnels, Heatmaps, and behavioral episode compilation. The retired
- * authored Pattern matcher no longer runs here.
+ * Funnels, and Session Activity.
  *
  * `custom` events (analytics.event(name, properties?) on the SDK) are a
- * first-class event type here, alongside page_view/click/hover/scroll/
- * cursor - not a parallel pipeline. They flow through the exact same
+ * first-class event type here, alongside page views, clicks and scroll milestones. They flow through the exact same
  * validation -> session_events persistence path as
  * every other behavioral event; the only difference is which columns
  * get populated (eventName/eventProperties instead of
@@ -63,10 +60,6 @@ export function registerPublicEventsRoutes(app, db) {
         // unchanged, now just carrying anonymousId + page path along with
         // it so the identity layer and profile activity feed have
         // something to resolve/display.
-        // Durable log first - this is what feeds clustering/feature-extraction
-        // later. Independent of whether any pattern is active on the site;
-        // analysis shouldn't depend on the site owner having authored a
-        // pattern first.
         //
         // onConflictDoNothing targets session_events_site_event_unique
         // (siteId, eventId) - this is what makes ingestion idempotent: the
@@ -130,8 +123,8 @@ export function registerPublicEventsRoutes(app, db) {
                 continue;
             }
             // Keep legacy cursor/hover values in validation so a mixed batch stays
-            // valid, then discard only the high-volume rows under the MVP1 policy.
-            if (!shouldPersistSessionEvent(event.type))
+            // valid, and discard the retired telemetry without dropping supported events.
+            if (event.type === "cursor" || event.type === "hover")
                 continue;
             const e = event;
             pendingRows.push({
@@ -158,8 +151,6 @@ export function registerPublicEventsRoutes(app, db) {
                 documentY: e.documentY ?? null,
                 documentWidth: e.documentWidth ?? null,
                 documentHeight: e.documentHeight ?? null,
-                deviceClass: e.deviceClass ?? null,
-                heatmapStateId: e.heatmapStateId ?? null,
                 rageClickCount: e.rageClickCount ?? null,
                 // custom events only (validation.ts guarantees `name` is
                 // present whenever type === "custom"). `properties` stays

@@ -1,4 +1,4 @@
-import type { IncomingEvent } from "../patterns/event.js";
+import type { IncomingEvent } from "../telemetry/event.js";
 import { aggregateBehavioralEvents, type CursorAggregationConfig } from "./cursorAggregator.js";
 import type { BehavioralEvent } from "./behavioralEvent.js";
 

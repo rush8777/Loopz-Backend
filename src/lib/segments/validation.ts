@@ -83,7 +83,7 @@ const conditionSchema = z.discriminatedUnion("type", [eventConditionSchema, user
  * Recursive group schema - `z.lazy` because a group's `conditions`
  * array can contain either a leaf condition or another group (task
  * brief section 2's nested-group requirement). Same recursive-schema
- * pattern as `jsonValueSchema` in lib/patterns/validation.ts.
+ * pattern as `jsonValueSchema` in lib/telemetry/validation.ts.
  */
 const MAX_GROUP_DEPTH = 6; // defensive cap - nothing in the UI needs deeper nesting, and unbounded recursion is an easy DoS vector for arbitrary client JSON
 const MAX_CONDITIONS_PER_GROUP = 20;

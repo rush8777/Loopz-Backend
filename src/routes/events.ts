@@ -15,7 +15,6 @@ import {
   getEventUsers,
   getEventSessions,
   getEventPages,
-  getEventPatternReferences,
   eventExistsForSite,
 } from "../lib/events/eventQueries.js";
 import { evaluateSegment } from "../lib/segments/evaluator.js";
@@ -117,14 +116,8 @@ export function registerEventRoutes(app: FastifyInstance, db: Db) {
       }
 
       const summary = await getEventSummary(db, site.id, eventName, parsed.data);
-      // "Used in" never fakes a reference (task constraint) - patterns
-      // is the only existing system that can reference a custom event
-      // today (see matcher.ts's "custom" verb); funnels/experiences
-      // don't exist yet, so they're simply omitted rather than shown
-      // empty or invented - see the frontend's rendering of this field.
-      const patternReferences = await getEventPatternReferences(db, site.id, eventName);
-
-      return reply.send({ ...summary, usedIn: { patterns: patternReferences } });
+      // Keep the empty field for older Event Explorer builds.
+      return reply.send({ ...summary, usedIn: { patterns: [] } });
     }
   );
 

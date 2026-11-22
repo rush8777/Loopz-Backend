@@ -7,11 +7,6 @@ import { env } from "./config.js";
 import type { Db } from "./db/client.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerOrgRoutes } from "./routes/orgs.js";
-// Legacy Behavioral Intelligence routes are intentionally dormant.
-// import { registerPatternRoutes } from "./routes/patterns.js";
-// import { registerAnalysisRoutes } from "./routes/analysis.js";
-// import { registerPatternObserverRoutes } from "./routes/pattern-observer.js";
-import { registerElementRoutes } from "./routes/elements.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerPageRoutes } from "./routes/pages.js";
 import { registerEventRoutes } from "./routes/events.js";
@@ -21,9 +16,7 @@ import { registerFunnelRoutes } from "./routes/funnels.js";
 import { registerAnonymousUserRoutes } from "./routes/anonymous-users.js";
 import { registerPublicConfigRoutes } from "./routes/public-config.js";
 import { registerPublicEventsRoutes } from "./routes/public-events.js";
-import { registerPublicReplayRoutes } from "./routes/public-replay.js";
-import { registerPublicElementsRoutes } from "./routes/public-elements.js";
-import { registerHeatmapRoutes } from "./routes/heatmaps.js";
+import { registerRetiredCaptureRoutes } from "./routes/retired-capture.js";
 import { registerExperienceRoutes } from "./routes/experiences.js";
 import { registerPublicExperienceRoutes } from "./routes/public-experiences.js";
 import { registerPublicChecklistRoutes } from "./routes/public-checklists.js";
@@ -82,10 +75,6 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
   registerOrgRoutes(app, db);
   registerInvitationRoutes(app, db);
   registerBillingRoutes(app, db);
-  // registerPatternRoutes(app, db);
-  // registerAnalysisRoutes(app, db);
-  // registerPatternObserverRoutes(app, db);
-  registerElementRoutes(app, db);
   registerSessionRoutes(app, db);
   registerPageRoutes(app, db);
   registerEventRoutes(app, db);
@@ -93,7 +82,6 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
   registerAnonymousUserRoutes(app, db);
   registerSegmentRoutes(app, db);
   registerFunnelRoutes(app, db);
-  registerHeatmapRoutes(app, db);
   registerExperienceRoutes(app, db);
   registerDashboardRoutes(app, db);
   registerAnalyticsRoutes(app, db);
@@ -122,22 +110,7 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
     registerPublicEventsRoutes(publicEventsScope, db);
   });
 
-  await app.register(async (publicReplayScope) => {
-    // rrweb payloads are large (FullSnapshot especially) - a lower
-    // request ceiling than the events endpoint, but generous enough for
-    // a session's incremental-snapshot cadence.
-    await publicReplayScope.register(rateLimit, { global: true, max: 120, timeWindow: "1 minute" });
-    registerPublicReplayRoutes(publicReplayScope, db);
-  });
-
-  await app.register(async (publicElementsScope) => {
-    // Crawls fire on page load + SPA route change (ElementCrawler.ts) -
-    // far less frequent than the events batch cadence, but an app with
-    // heavy client-side navigation could still exceed /public/config's
-    // once-per-load ceiling, so this gets its own, slightly higher limit.
-    await publicElementsScope.register(rateLimit, { global: true, max: 120, timeWindow: "1 minute" });
-    registerPublicElementsRoutes(publicElementsScope, db);
-  });
+  registerRetiredCaptureRoutes(app, db);
 
   await app.register(async (publicExperienceScope) => {
     await publicExperienceScope.register(rateLimit, { global: true, max: 180, timeWindow: "1 minute" });

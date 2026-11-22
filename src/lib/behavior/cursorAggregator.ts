@@ -1,4 +1,4 @@
-import type { IncomingEvent } from "../patterns/event.js";
+import type { IncomingEvent } from "../telemetry/event.js";
 import { elementIdentityFromRaw } from "./elementIdentity.js";
 import {
   createClickEvent,
@@ -43,7 +43,7 @@ import {
  * HOW ELEMENT POSITION IS KNOWN: today's SDK doesn't send element
  * bounding boxes, but `click`/`hover` events do carry page-relative
  * `x`/`y` alongside `element.selector` (see `IncomingEvent` in
- * `../patterns/event.js`). That coordinate, captured at the moment of
+ * `../telemetry/event.js`). That coordinate, captured at the moment of
  * a real interaction, is used as a proxy for "roughly where this
  * element is" - good enough for radius-based proximity checks without
  * needing real layout data. Cursor runs are then evaluated for
