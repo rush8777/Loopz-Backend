@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import type { Db } from "../../db/client.js";
-import { experiences, experienceVersions, segments, sites } from "../../db/schema.js";
+import { experiences, experienceVersions, guideCaptureCheckpoints, segments, sites } from "../../db/schema.js";
 import type { ExperienceDefinition, ExperienceKind, WidgetType } from "./types.js";
 import { isChecklistDefinition } from "./types.js";
 import { onsiteProjectionIsConsistent } from "./builderContentContract.js";
@@ -47,7 +47,7 @@ export async function assertNewDefinitionFeatures(db: Parameters<typeof createEn
 
 
 /** One write policy for dashboard and authenticated SDK sessions. */
-export async function saveExperienceDraft(db: Db, site: typeof sites.$inferSelect, experience: typeof experiences.$inferSelect, draft: typeof experienceVersions.$inferSelect, candidate: unknown, revision: number | undefined) {
+export async function saveExperienceDraft(db: Db, site: typeof sites.$inferSelect, experience: typeof experiences.$inferSelect, draft: typeof experienceVersions.$inferSelect, candidate: unknown, revision: number | undefined, capture?: { sessionId: string; checkpointRevision: number }) {
   if (experience.siteId !== site.id) throw new DraftWriteError(403, "site_mismatch");
   if (draft.revision !== revision) throw new DraftWriteError(409, "draft_conflict");
   if (experience.builderMode === "onsite" && !onsiteCompatible(experience.kind as ExperienceKind, experience.widgetType as WidgetType | null)) throw new DraftWriteError(400, "onsite_builder_unsupported");
@@ -74,6 +74,14 @@ export async function saveExperienceDraft(db: Db, site: typeof sites.$inferSelec
     const [saved] = await tx.update(experienceVersions).set({ definition, revision: draft.revision + 1 })
       .where(and(eq(experienceVersions.id, draft.id), eq(experienceVersions.state, "draft"), eq(experienceVersions.revision, draft.revision))).returning();
     if (!saved) throw new DraftWriteError(409, "draft_conflict");
+    if (capture) {
+      const [removed] = await tx.delete(guideCaptureCheckpoints).where(and(
+        eq(guideCaptureCheckpoints.experienceId, experience.id),
+        eq(guideCaptureCheckpoints.editorSessionId, capture.sessionId),
+        eq(guideCaptureCheckpoints.revision, capture.checkpointRevision),
+      )).returning({ experienceId: guideCaptureCheckpoints.experienceId });
+      if (!removed) throw new DraftWriteError(409, "capture_conflict");
+    }
     await tx.update(experiences).set({ updatedAt: new Date() }).where(eq(experiences.id, experience.id));
     return saved;
   });

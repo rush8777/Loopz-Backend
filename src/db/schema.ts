@@ -1313,6 +1313,13 @@ export const experienceEditorSessions = sqliteTable(
   (table) => [index("experience_editor_sessions_experience_idx").on(table.experienceId)]
 );
 
+export const guideCaptureCheckpoints = sqliteTable("guide_capture_checkpoints", {
+  experienceId: text("experience_id").primaryKey().references(() => experiences.id, { onDelete: "cascade" }),
+  editorSessionId: text("editor_session_id").references(() => experienceEditorSessions.id, { onDelete: "set null" }),
+  revision: integer("revision").notNull().default(0),
+  checkpoint: text("checkpoint", { mode: "json" }).notNull(),
+});
+
 /**
  * Minimal audit trail - who did what, scoped to an org.
  */

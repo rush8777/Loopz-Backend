@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { env } from '../../src/config.js';
 import { buildApp } from '../../src/app.js';
+import type { AiProvider } from '../../src/lib/ai/providers/types.js';
 import { createDb, closeDb } from '../../src/db/client.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { checklistStates, checklistItemCompletions, surveyResponses, experienceEvents, experienceImpressions, experienceEditorSessions } from '../../src/db/schema.js';
@@ -12,7 +13,28 @@ if (env.NODE_ENV !== 'test') throw new Error('The isolated builder fixture requi
 const directory = mkdtempSync(join(tmpdir(), 'movcues-builder-integration-'));
 const db = createDb(`file:${join(directory, 'test.db')}`);
 await runMigrations(db);
-const app = await buildApp(db);
+const guideCaptureProvider: AiProvider = {
+  name: "mock", model: "guide-capture-integration",
+  async generate({ prompt }) {
+    const { captured } = JSON.parse(prompt) as { captured: Array<{ id: string }> };
+    if (captured.length !== 4) throw new Error("The integration journey expects four targets");
+    const [navigation, heading, create, finish] = captured;
+    const modal = { pattern: "modal", targetId: null, purpose: "Explain the journey", body: "Follow these steps to create a project.", delayMs: 0, missingTarget: null, advance: { type: "button" } };
+    const tooltip = { ...modal, pattern: "anchored_card", purpose: "Show the captured control", missingTarget: { action: "wait", timeoutMs: 5000 } };
+    return {
+      text: JSON.stringify({ steps: [
+        { ...modal, heading: "Welcome to your project tour" },
+        { ...tooltip, heading: "Open Features", targetId: navigation.id, advance: { type: "route", targetId: heading.id } },
+        { ...tooltip, heading: "Project details", targetId: heading.id },
+        { ...tooltip, heading: "Create a project", targetId: create.id, advance: { type: "route", targetId: finish.id } },
+        { ...tooltip, heading: "Finish the website task", targetId: finish.id, advance: { type: "unconfigured", reason: "Confirm an application event for project creation." } },
+        { ...modal, heading: "Your project is ready" },
+      ] }),
+      provider: "mock", model: this.model, usage: { promptTokens: 50, completionTokens: 100, totalTokens: 150 },
+    };
+  },
+};
+const app = await buildApp(db, env.GUIDE_CAPTURE_ENABLED ? { aiProvider: guideCaptureProvider } : {});
 app.get('/__test__/ready', async () => ({ isolated: true }));
 app.get('/__test__/analytics/:experienceId', async request => {
   const { experienceId } = request.params as { experienceId: string };

@@ -17,6 +17,7 @@ const envSchema = z.object({
     PADDLE_STARTER_PRICE_ID: z.string().trim().min(1).optional(),
     PADDLE_GROWTH_PRICE_ID: z.string().trim().min(1).optional(),
     PADDLE_SCALE_PRICE_ID: z.string().trim().min(1).optional(),
+    GUIDE_CAPTURE_ENABLED: z.string().trim().toLowerCase().default("false").transform(value => value === "true"),
     AI_ENABLED: z.string().trim().toLowerCase().default("false").transform((value) => value === "true"),
     AI_PROVIDER: z.enum(["vertex", "gemini", "openai"]).default("vertex"),
     AI_DAILY_TOKEN_LIMIT: z.coerce.number().int().positive().default(250_000),

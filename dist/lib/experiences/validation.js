@@ -1,3 +1,4 @@
+import { isPendingGuideCapture } from "./guideCaptureContract.js";
 import { surveyBranchErrors } from "./surveyLogic.js";
 import { z } from "zod";
 import { builderCssIsSafe, builderHtmlIsSafe } from "./builderContentContract.js";
@@ -33,7 +34,7 @@ export const targetSchema = z.object({
     role: z.string().max(80).optional(),
     tagName: z.string().max(40).optional(),
     reliability: z.enum(["reliable", "moderate", "fragile"]),
-    targetContext: z.object({ pagePath: z.string().min(1).max(2048) }).strict().optional(),
+    targetContext: z.object({ pagePath: z.string().min(1).max(2048), match: z.literal("path").optional() }).strict().optional(),
 });
 const sizeSchema = z.object({
     width: z.discriminatedUnion("mode", [z.object({ mode: z.literal("auto") }).strict(), z.object({ mode: z.literal("fixed"), value: z.number().int().min(1).max(4000) }).strict(), z.object({ mode: z.literal("full") }).strict()]),
@@ -257,6 +258,8 @@ export const guideDefinitionSchema = z.object({
     ctx.addIssue({ code: "custom", path: ["steps", index, "id"], message: "Guide step IDs must be unique" }); ids.add(step.id); }); });
 export function guidePublishIssues(guide) {
     const issues = [];
+    if (isPendingGuideCapture(guide))
+        issues.push({ path: ["steps"], message: "Finish Guided Capture before publishing this guide." });
     guide.steps.forEach((step, index) => {
         const label = `Step ${index + 1}${step.label ? ` (${step.label})` : ""}`;
         if (step.pattern !== "modal" && !step.target)
@@ -317,6 +320,7 @@ export const createExperienceSchema = z.object({
     widgetType: z.enum(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"]).nullable().optional(),
     builderMode: z.enum(["grapesjs", "onsite"]).default("grapesjs"),
     guidePattern: z.enum(["anchored_card", "modal"]).optional(),
+    guideCreation: z.literal("guided_capture").optional(),
     name: z.string().trim().min(1).max(200),
     buildPageId: z.string().min(1).max(64).nullable().optional(),
     buildUrl: z.url().max(2000).nullable().optional(),
@@ -324,6 +328,8 @@ export const createExperienceSchema = z.object({
     theme: z.object({ source: z.enum(["template", "site", "preset"]), preset: z.enum(["minimal", "modern", "soft", "dark"]).optional() }).strict().optional(),
     useBuildPageAsTarget: z.boolean().default(false),
 }).strict().superRefine((value, ctx) => {
+    if (value.guideCreation && (value.kind !== "guide" || value.builderMode !== "onsite" || value.template !== "blank"))
+        ctx.addIssue({ code: "custom", path: ["guideCreation"], message: "Guided Capture requires a blank on-site guide" });
     if (value.kind === "widget" && !value.widgetType)
         ctx.addIssue({ code: "custom", path: ["widgetType"], message: "widgetType is required" });
     if (value.kind !== "widget" && value.widgetType)

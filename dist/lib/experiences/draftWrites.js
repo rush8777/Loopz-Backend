@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
-import { experiences, experienceVersions, segments, sites } from "../../db/schema.js";
+import { experiences, experienceVersions, guideCaptureCheckpoints, segments, sites } from "../../db/schema.js";
 import { isChecklistDefinition } from "./types.js";
 import { onsiteProjectionIsConsistent } from "./builderContentContract.js";
 import { rawOnsiteDocument, validateCompiledOnsiteBuilder } from "./onsiteDocument.js";
@@ -68,7 +68,7 @@ export async function assertNewDefinitionFeatures(db, orgId, previous, next) {
             await service.assertFeature({ orgId }, feature);
 }
 /** One write policy for dashboard and authenticated SDK sessions. */
-export async function saveExperienceDraft(db, site, experience, draft, candidate, revision) {
+export async function saveExperienceDraft(db, site, experience, draft, candidate, revision, capture) {
     if (experience.siteId !== site.id)
         throw new DraftWriteError(403, "site_mismatch");
     if (draft.revision !== revision)
@@ -105,6 +105,11 @@ export async function saveExperienceDraft(db, site, experience, draft, candidate
             .where(and(eq(experienceVersions.id, draft.id), eq(experienceVersions.state, "draft"), eq(experienceVersions.revision, draft.revision))).returning();
         if (!saved)
             throw new DraftWriteError(409, "draft_conflict");
+        if (capture) {
+            const [removed] = await tx.delete(guideCaptureCheckpoints).where(and(eq(guideCaptureCheckpoints.experienceId, experience.id), eq(guideCaptureCheckpoints.editorSessionId, capture.sessionId), eq(guideCaptureCheckpoints.revision, capture.checkpointRevision))).returning({ experienceId: guideCaptureCheckpoints.experienceId });
+            if (!removed)
+                throw new DraftWriteError(409, "capture_conflict");
+        }
         await tx.update(experiences).set({ updatedAt: new Date() }).where(eq(experiences.id, experience.id));
         return saved;
     });

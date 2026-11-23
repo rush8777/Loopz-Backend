@@ -1,10 +1,13 @@
+import { captureBuildPageRules } from "../lib/experiences/guideCapture.js";
+import { GUIDE_CAPTURE_PLACEHOLDER, isPendingGuideCapture } from "../lib/experiences/guideCaptureContract.js";
+import { env } from "../config.js";
 import { DraftWriteError, onsiteCompatible, saveExperienceDraft, validateReferences, assertNewDefinitionFeatures } from "../lib/experiences/draftWrites.js";
 import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
-import { experienceEditorSessions, experiences, experienceVersions, pageDefinitions, segments, sites, siteThemes } from "../db/schema.js";
+import { experienceEditorSessions, guideCaptureCheckpoints, experiences, experienceVersions, pageDefinitions, segments, sites, siteThemes } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, guidePublishIssues, updateDraftSchema } from "../lib/experiences/validation.js";
@@ -300,6 +303,7 @@ async function serializeExperience(db: Db, row: typeof experiences.$inferSelect)
   const published = versions.find((version) => version.id === row.publishedVersionId) ?? null;
   return {
     ...row,
+    ...(isPendingGuideCapture(draft?.definition) ? { guidedCapturePending: true } : {}),
     launchSetupCompletedAt: row.launchSetupCompletedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -380,7 +384,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!query.success || (query.data.kind === "widget") !== Boolean(query.data.widgetType)) return reply.code(400).send({ error: "invalid_query" });
     const [theme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
     const siteTheme = theme?.activeTokens as SiteThemeTokens | null | undefined;
-    return reply.send({ templates: templatesFor(query.data.kind, query.data.widgetType), presets: ["minimal", "modern", "soft", "dark"], hasSiteTheme: Boolean(siteTheme), ...(siteTheme ? { siteThemeColors: [siteTheme.colors.surface, siteTheme.colors.text, siteTheme.colors.primary] } : {}) });
+    return reply.send({ templates: templatesFor(query.data.kind, query.data.widgetType), presets: ["minimal", "modern", "soft", "dark"], hasSiteTheme: Boolean(siteTheme), ...(query.data.kind === "guide" && env.GUIDE_CAPTURE_ENABLED ? { guidedCaptureEnabled: true } : {}), ...(siteTheme ? { siteThemeColors: [siteTheme.colors.surface, siteTheme.colors.text, siteTheme.colors.primary] } : {}) });
   });
 
   app.post("/orgs/:orgId/sites/:siteId/experiences", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
@@ -389,6 +393,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!site) return reply.code(404).send({ error: "site_not_found" });
     const parsed = createExperienceSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+    if (parsed.data.guideCreation && !env.GUIDE_CAPTURE_ENABLED) return reply.code(409).send({ error: "guide_capture_disabled" });
     if (await experienceNameExists(db, site.id, parsed.data.name)) return reply.code(409).send({ error: "experience_name_exists", message: "An experience with this name already exists." });
 
     let page: typeof pageDefinitions.$inferSelect | null = null;
@@ -401,14 +406,15 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const initialPageRules = parsed.data.useBuildPageAsTarget
       ? page
         ? (page.rules as PageRule[])
-        : [{ id: "build_page", kind: "include" as const, operator: "equals" as const, value: new URL(buildUrl!).pathname }]
+        : parsed.data.guideCreation ? captureBuildPageRules(new URL(buildUrl!))
+          : [{ id: "build_page", kind: "include" as const, operator: "equals" as const, value: new URL(buildUrl!).pathname }]
       : [];
     const [storedTheme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
     const activeTheme = (storedTheme?.activeTokens ?? undefined) as SiteThemeTokens | undefined;
     if (parsed.data.builderMode === "onsite" && !onsiteCompatible(parsed.data.kind, parsed.data.widgetType ?? null)) return reply.code(400).send({ error: "onsite_builder_unsupported" });
     const isLegacyChecklistPreset = parsed.data.kind === "checklist" && ["default","minimal","soft","compact"].includes(parsed.data.template);
     const legacyPreset = isLegacyChecklistPreset ? parsed.data.template as ChecklistPreset : "default";
-    let definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(legacyPreset, activeTheme) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules, activeTheme, parsed.data.builderMode, parsed.data.guidePattern);
+    let definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(legacyPreset, activeTheme) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules, activeTheme, parsed.data.builderMode, parsed.data.guideCreation ? "modal" : parsed.data.guidePattern);
     const selectedTemplate = resolveTemplate(parsed.data.template, parsed.data.kind, parsed.data.widgetType ?? null);
     const selectedTheme = visualTheme(selectedTemplate, parsed.data.theme, activeTheme);
     if (parsed.data.builderMode === "onsite") {
@@ -418,12 +424,15 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
       if (parsed.data.kind === "checklist" && isChecklistDefinition(definition) && (parsed.data.template === "blank" || isLegacyChecklistPreset)) applyOnsiteDocument(definition.builder,createOnsiteChecklistDocument(definition),"checklist",undefined,definition);
     }
 
+    if (parsed.data.guideCreation && "steps" in definition) definition.steps[0].id = GUIDE_CAPTURE_PLACEHOLDER;
+
     let experience: typeof experiences.$inferSelect;
     try {
       experience = await runEntitlementTransaction(db, async tx => {
         await assertSubscriptionActive(tx, site.orgId);
         const [created] = await tx.insert(experiences).values({ siteId: site.id, kind: parsed.data.kind, widgetType: parsed.data.kind === "widget" ? parsed.data.widgetType! : null, builderMode: parsed.data.builderMode, name: parsed.data.name, buildPageId: page?.id ?? null, buildUrl: buildUrl ?? null, createdBy: request.user!.id }).returning();
         await tx.insert(experienceVersions).values({ experienceId: created.id, versionNumber: 1, state: "draft", definition, createdBy: request.user!.id });
+        if (parsed.data.guideCreation) await tx.insert(guideCaptureCheckpoints).values({ experienceId: created.id, checkpoint: { targets: [], mode: "select" } });
         return created;
       });
     } catch (error) { return sendEntitlementError(reply, error); }
@@ -555,7 +564,16 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const rawToken = crypto.randomBytes(32).toString("base64url");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-    const [session] = await db.insert(experienceEditorSessions).values({ experienceId: row.id, siteId: site.id, dashboardUserId: request.user!.id, tokenHash, allowedOrigin: new URL(row.buildUrl).origin, expiresAt }).returning();
+    const [capture] = env.GUIDE_CAPTURE_ENABLED && row.kind === "guide" && row.builderMode === "onsite"
+      ? await db.select().from(guideCaptureCheckpoints).where(eq(guideCaptureCheckpoints.experienceId, row.id)).limit(1)
+      : [];
+    if (capture && row.createdBy !== request.user!.id) return reply.code(403).send({ error: "guide_capture_unavailable" });
+    const sessionValues = { experienceId: row.id, siteId: site.id, dashboardUserId: request.user!.id, tokenHash, allowedOrigin: new URL(row.buildUrl).origin, expiresAt };
+    const session = capture ? await runEntitlementTransaction(db, async tx => {
+      const [created] = await tx.insert(experienceEditorSessions).values(sessionValues).returning();
+      await tx.update(guideCaptureCheckpoints).set({ editorSessionId: created.id }).where(eq(guideCaptureCheckpoints.experienceId, row.id));
+      return created;
+    }) : (await db.insert(experienceEditorSessions).values(sessionValues).returning())[0];
     const launch = new URL(row.buildUrl);
     launch.searchParams.set("movcues_editor_token", rawToken);
     return reply.code(201).send({ sessionId: session.id, launchUrl: launch.toString(), expiresAt: expiresAt.toISOString() });

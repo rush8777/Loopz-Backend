@@ -1,3 +1,5 @@
+import { registerGuideCaptureRoutes } from "./guide-capture.js";
+import { isPendingGuideCapture } from "../lib/experiences/guideCaptureContract.js";
 import { resolveDeliveryUserId } from "../lib/identity/deliveryIdentity.js";
 import { surveyPath } from "../lib/experiences/surveyLogic.js";
 import { DraftWriteError, saveExperienceDraft } from "../lib/experiences/draftWrites.js";
@@ -165,6 +167,7 @@ async function loadEditorDraftForSession(db, session) {
         db.select({ id: segments.id, name: segments.name }).from(segments).where(eq(segments.siteId, session.siteId)).limit(200),
     ]) : [[], []];
     return {
+        ...(isPendingGuideCapture(draft.definition) ? { guidedCapture: true } : {}),
         references: { guides, segments: segmentReferences, stylePresets, siteTheme: themes[0]?.activeTokens ?? null },
         experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType, builderMode: experience.builderMode },
         version: { id: draft.id, versionNumber: draft.versionNumber, revision: draft.revision, definition: draft.definition },
@@ -172,6 +175,7 @@ async function loadEditorDraftForSession(db, session) {
 }
 export function registerPublicExperienceRoutes(app, db, providerOverride) {
     const aiProvider = providerOverride === undefined ? createConfiguredAiProvider() : providerOverride;
+    registerGuideCaptureRoutes(app, db, aiProvider, request => validateEditorAccess(request, db));
     app.get("/public/sites/:siteId/experiences", async (request, reply) => {
         const { siteId } = request.params;
         const query = manifestQuerySchema.safeParse(request.query);
@@ -470,6 +474,8 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
         const draft = versions.find((item) => item.state === "draft");
         if (!draft)
             return reply.code(404).send({ error: "draft_not_found" });
+        if (isPendingGuideCapture(draft.definition))
+            return reply.code(409).send({ error: "guide_capture_pending" });
         if (draft.revision !== parsed.data.revision)
             return reply.code(409).send({ error: "draft_conflict", currentRevision: draft.revision });
         if (experience.builderMode === "grapesjs" && !grapesLiveEditorChangeAllowed(draft.definition, definition.data))
