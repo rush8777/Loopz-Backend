@@ -86,8 +86,12 @@ describe("guide capture editor API", () => {
     const initial = await all.app.inject({ method: "PUT", url: `${first.editor}/guide-capture`, headers: first.editorHeaders, payload: { checkpointRevision: 0, mode: "navigate", targets, observations, workflow } });
     expect(initial.statusCode, initial.body).toBe(200);
     expect(initial.json().checkpointRevision).toBe(1);
-    await all.db.update(experienceEditorSessions).set({ expiresAt: new Date(0) }).where(eq(experienceEditorSessions.id, first.sessionId));
-    const denied = await all.app.inject({ method: "GET", url: `${first.editor}/guide-capture`, headers: first.editorHeaders });
+    const nextTab = await all.open(id);
+    const competingWrite = await all.app.inject({ method: "PUT", url: `${first.editor}/guide-capture`, headers: first.editorHeaders, payload: { checkpointRevision: 1, mode: "select", targets: [] } });
+    expect(competingWrite.statusCode).toBe(403);
+    expect((await all.app.inject({ method: "GET", url: `${nextTab.editor}/guide-capture`, headers: nextTab.editorHeaders })).json()).toMatchObject({ checkpointRevision: 1, targets, workflow });
+    await all.db.update(experienceEditorSessions).set({ expiresAt: new Date(0) }).where(eq(experienceEditorSessions.id, nextTab.sessionId));
+    const denied = await all.app.inject({ method: "GET", url: `${nextTab.editor}/guide-capture`, headers: nextTab.editorHeaders });
     expect(denied.statusCode).toBe(401);
 
     env.GUIDE_CAPTURE_ENABLED = false;
