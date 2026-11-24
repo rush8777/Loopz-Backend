@@ -12,10 +12,6 @@ const base = "/public/experience-editor/:sessionId/guide-capture";
 export function registerGuideCaptureRoutes(app, db, provider, validateAccess) {
     const access = async (request, reply) => {
         reply.header("Cache-Control", "no-store");
-        if (!env.GUIDE_CAPTURE_ENABLED) {
-            reply.code(403).send({ error: "guide_capture_disabled", message: "Guided Capture is currently disabled." });
-            return null;
-        }
         const session = await validateAccess(request);
         if (!session || session.id !== request.params.sessionId) {
             reply.code(401).send({ error: "invalid_editor_access" });
@@ -82,7 +78,7 @@ export function registerGuideCaptureRoutes(app, db, provider, validateAccess) {
         if (input.data.revision !== context.draft.revision || input.data.checkpointRevision !== context.checkpoint.revision) {
             return reply.code(409).send({ error: "capture_conflict", message: "The guide or capture changed. Refresh the checkpoint and generate a new plan." });
         }
-        const { targets } = captureCheckpointSchema.parse(context.checkpoint.checkpoint);
+        const { targets, observations } = captureCheckpointSchema.parse(context.checkpoint.checkpoint);
         if (!targets.length)
             return reply.code(400).send({ error: "capture_empty" });
         const dayStart = new Date();
@@ -97,13 +93,13 @@ export function registerGuideCaptureRoutes(app, db, provider, validateAccess) {
         reply.raw.once("close", abort);
         const deadline = AbortSignal.timeout(env.EDITOR_AI_DEADLINE_MS);
         try {
-            const result = await requestCapturePlan(provider, input.data.prompt, targets, AbortSignal.any([disconnected.signal, deadline]));
+            const result = await requestCapturePlan(provider, input.data.prompt, targets, AbortSignal.any([disconnected.signal, deadline]), observations);
             await db.insert(aiProviderUsage).values({
                 orgId: context.site.orgId, siteId: context.site.id, userId: context.session.dashboardUserId,
                 provider: result.provider, model: result.model, ...result.usage,
             });
             try {
-                return { plan: parseCapturePlan(result.text, targets) };
+                return { plan: parseCapturePlan(result.text, targets, observations) };
             }
             catch {
                 return reply.code(502).send({ error: "invalid_plan", message: "Geo returned an invalid guide plan. Your capture is saved. Try planning again." });

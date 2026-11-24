@@ -637,7 +637,7 @@ export function registerExperienceRoutes(app, db) {
         const rawToken = crypto.randomBytes(32).toString("base64url");
         const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-        const [capture] = env.GUIDE_CAPTURE_ENABLED && row.kind === "guide" && row.builderMode === "onsite"
+        const [capture] = row.kind === "guide" && row.builderMode === "onsite"
             ? await db.select().from(guideCaptureCheckpoints).where(eq(guideCaptureCheckpoints.experienceId, row.id)).limit(1)
             : [];
         if (capture && row.createdBy !== request.user.id)

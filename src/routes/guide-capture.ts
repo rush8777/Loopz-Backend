@@ -95,7 +95,7 @@ export function registerGuideCaptureRoutes(app: FastifyInstance, db: Db, provide
         orgId: context.site.orgId, siteId: context.site.id, userId: context.session.dashboardUserId,
         provider: result.provider, model: result.model, ...result.usage,
       });
-      try { return { plan: parseCapturePlan(result.text, targets) }; }
+      try { return { plan: parseCapturePlan(result.text, targets, observations) }; }
       catch {
         return reply.code(502).send({ error: "invalid_plan", message: "Geo returned an invalid guide plan. Your capture is saved. Try planning again." });
       }

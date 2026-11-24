@@ -120,6 +120,9 @@ describe("guide capture editor API", () => {
     expect(preview.statusCode, preview.body).toBe(200);
     const { definition, previewTicket } = preview.json();
     expect(definition.design.theme).toMatchObject(draftVersion.definition.design.theme);
+    expect(definition.steps[0].builder.html).toContain('aria-label="sparkles"');
+    expect(definition.steps[1].builder.html).not.toContain("data-movcues-action-id");
+    expect(definition.steps[3].builder.html).toContain('aria-label="check"');
     expect(definition.steps[1].advance.pageRules).toEqual(expect.arrayContaining([expect.objectContaining({ operator: "equals", value: "/invoices/new" })]));
     expect(definition.steps[2].advance).toEqual({ type: "custom_event", eventName: "invoice_created" });
     expect(definition.steps[1].target.targetContext).toEqual({ pagePath: "/invoices", match: "path" });
@@ -143,6 +146,10 @@ describe("guide capture editor API", () => {
     expect(() => parseCapturePlan(attempt({ type: "button" }, "invented"), valid)).toThrow("from this capture");
     expect(() => parseCapturePlan(attempt({ type: "custom_event", eventName: "invented" }), valid)).toThrow("author must confirm");
     expect(parseCapturePlan(attempt({ type: "button" }), valid).steps[0].advance.type).toBe("unconfigured");
+    const unobserved = parseCapturePlan(JSON.stringify(plan), valid, [
+      { type: "route", sequence: 1, from: "/invoices", to: "/settings" },
+    ]);
+    expect(unobserved.steps[1].advance).toMatchObject({ type: "unconfigured", reason: expect.stringContaining("not observed") });
     expect(capturePlanSchema.safeParse({ steps: [{ ...step, heading: "<img src=x>" }] }).success).toBe(false);
   });
 });
