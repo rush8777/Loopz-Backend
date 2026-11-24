@@ -18,10 +18,6 @@ const base = "/public/experience-editor/:sessionId/guide-capture";
 export function registerGuideCaptureRoutes(app: FastifyInstance, db: Db, provider: AiProvider | null, validateAccess: AccessValidator) {
   const access = async (request: FastifyRequest, reply: FastifyReply) => {
     reply.header("Cache-Control", "no-store");
-    if (!env.GUIDE_CAPTURE_ENABLED) {
-      reply.code(403).send({ error: "guide_capture_disabled", message: "Guided Capture is currently disabled." });
-      return null;
-    }
     const session = await validateAccess(request);
     if (!session || session.id !== (request.params as { sessionId: string }).sessionId) {
       reply.code(401).send({ error: "invalid_editor_access" });
@@ -79,7 +75,7 @@ export function registerGuideCaptureRoutes(app: FastifyInstance, db: Db, provide
     if (input.data.revision !== context.draft.revision || input.data.checkpointRevision !== context.checkpoint.revision) {
       return reply.code(409).send({ error: "capture_conflict", message: "The guide or capture changed. Refresh the checkpoint and generate a new plan." });
     }
-    const { targets } = captureCheckpointSchema.parse(context.checkpoint.checkpoint);
+    const { targets, observations } = captureCheckpointSchema.parse(context.checkpoint.checkpoint);
     if (!targets.length) return reply.code(400).send({ error: "capture_empty" });
     const dayStart = new Date();
     dayStart.setUTCHours(0, 0, 0, 0);
@@ -94,7 +90,7 @@ export function registerGuideCaptureRoutes(app: FastifyInstance, db: Db, provide
     reply.raw.once("close", abort);
     const deadline = AbortSignal.timeout(env.EDITOR_AI_DEADLINE_MS);
     try {
-      const result = await requestCapturePlan(provider, input.data.prompt, targets, AbortSignal.any([disconnected.signal, deadline]));
+      const result = await requestCapturePlan(provider, input.data.prompt, targets, AbortSignal.any([disconnected.signal, deadline]), observations);
       await db.insert(aiProviderUsage).values({
         orgId: context.site.orgId, siteId: context.site.id, userId: context.session.dashboardUserId,
         provider: result.provider, model: result.model, ...result.usage,

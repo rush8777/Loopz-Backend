@@ -78,19 +78,26 @@ describe("guide capture editor API", () => {
     expect((await publish()).json().message).toContain("Finish Guided Capture");
     const first = await all.open(id);
     expect(first.exchange.draft.guidedCapture).toBe(true);
-    const initial = await all.app.inject({ method: "PUT", url: `${first.editor}/guide-capture`, headers: first.editorHeaders, payload: { checkpointRevision: 0, mode: "navigate", targets } });
+    const observations = [
+      { type: "click", sequence: 1, path: "/invoices", targetId: targets[0].id, control: "link" },
+      { type: "route", sequence: 2, from: "/invoices", to: "/invoices/new", afterClick: 1 },
+    ];
+    const workflow = { stage: "preview", prompt: "Create a first invoice", plan, draftRevision: 1, previewStepId: "capture_step_2" };
+    const initial = await all.app.inject({ method: "PUT", url: `${first.editor}/guide-capture`, headers: first.editorHeaders, payload: { checkpointRevision: 0, mode: "navigate", targets, observations, workflow } });
     expect(initial.statusCode, initial.body).toBe(200);
     expect(initial.json().checkpointRevision).toBe(1);
     await all.db.update(experienceEditorSessions).set({ expiresAt: new Date(0) }).where(eq(experienceEditorSessions.id, first.sessionId));
     const denied = await all.app.inject({ method: "GET", url: `${first.editor}/guide-capture`, headers: first.editorHeaders });
     expect(denied.statusCode).toBe(401);
 
+    env.GUIDE_CAPTURE_ENABLED = false;
+    expect((await all.create({ ...fixture, name: "New capture while disabled" })).statusCode).toBe(409);
     const { editor, editorHeaders, sessionId } = await all.open(id);
     const base = `${editor}/guide-capture`;
     const call = (suffix: string, payload?: unknown) => all.app.inject({
       method: payload === undefined ? "GET" : "POST", url: base + suffix, headers: editorHeaders, ...(payload === undefined ? {} : { payload: payload as object }),
     });
-    expect((await call("")).json()).toMatchObject({ checkpointRevision: 1, revision: 1, mode: "navigate", targets });
+    expect((await call("")).json()).toMatchObject({ checkpointRevision: 1, revision: 1, mode: "navigate", targets, observations, workflow });
     expect((await all.app.inject({ method: "GET", url: base, headers: { ...editorHeaders, origin: "https://other.example.test" } })).statusCode).toBe(401);
     expect((await all.app.inject({ method: "PUT", url: base, headers: editorHeaders, payload: { checkpointRevision: 0, mode: "select", targets: [] } })).statusCode).toBe(409);
     const unsafe = [{ ...targets[0], target: { ...targets[0].target, primarySelector: 'a[href="/reset?token=secret"]' } }];
@@ -101,6 +108,7 @@ describe("guide capture editor API", () => {
     expect((await call("/plan", { ...revisions, prompt: "Create a first invoice" })).json()).toMatchObject({ plan });
     const providerPayload = generate.mock.lastCall?.[0].prompt ?? "";
     expect(providerPayload).toContain("Invoice details");
+    expect(JSON.parse(providerPayload).observations).toEqual(observations);
     expect(providerPayload).not.toContain('button#create');
     expect((await call("/preview", { ...revisions, plan })).statusCode).toBe(400);
     expect((await call("/preview", { ...revisions, plan: { steps: Array(21).fill(step) } })).statusCode).toBe(400);
