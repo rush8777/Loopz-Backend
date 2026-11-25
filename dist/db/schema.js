@@ -1161,4 +1161,66 @@ export const auditLogs = sqliteTable("audit_logs", {
         .notNull()
         .default(sql `(unixepoch('now') * 1000)`),
 });
+export const knowledgeSources = sqliteTable("knowledge_sources", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("ks")),
+    orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    type: text("type", { enum: ["website", "url", "file", "manual"] }).notNull(),
+    config: text("config", { mode: "json" }).notNull(),
+    visibility: text("visibility", { enum: ["private", "public"] }).notNull().default("private"),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    generation: integer("generation").notNull().default(1),
+    activeRevision: text("active_revision"),
+    embeddingKey: text("embedding_key"),
+    syncHours: integer("sync_hours"),
+    nextSyncAt: integer("next_sync_at", { mode: "timestamp_ms" }),
+    lastSyncedAt: integer("last_synced_at", { mode: "timestamp_ms" }),
+    excludedKeys: text("excluded_keys", { mode: "json" }).$type().notNull().default(sql `'[]'`),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, table => [
+    index("knowledge_sources_scope_idx").on(table.orgId, table.siteId),
+    index("knowledge_sources_schedule_idx").on(table.enabled, table.nextSyncAt),
+]);
+export const knowledgeDocuments = sqliteTable("knowledge_documents", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("kd")),
+    sourceId: text("source_id").notNull().references(() => knowledgeSources.id, { onDelete: "cascade" }),
+    revision: text("revision").notNull(),
+    key: text("document_key").notNull(),
+    title: text("title").notNull(),
+    url: text("url"),
+    contentHash: text("content_hash").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, table => [
+    uniqueIndex("knowledge_documents_revision_key_idx").on(table.sourceId, table.revision, table.key),
+    index("knowledge_documents_revision_hash_idx").on(table.sourceId, table.revision, table.contentHash),
+]);
+export const knowledgeChunks = sqliteTable("knowledge_chunks", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("kc")),
+    documentId: text("document_id").notNull().references(() => knowledgeDocuments.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    heading: text("heading"),
+    content: text("content").notNull(),
+    embedding: text("embedding", { mode: "json" }).$type(),
+}, table => [uniqueIndex("knowledge_chunks_document_position_idx").on(table.documentId, table.position)]);
+export const knowledgeSyncJobs = sqliteTable("knowledge_sync_jobs", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("kj")),
+    sourceId: text("source_id").notNull().references(() => knowledgeSources.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["queued", "processing", "succeeded", "failed", "cancelled"] }).notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    runAt: integer("run_at", { mode: "timestamp_ms" }).notNull(),
+    leaseUntil: integer("lease_until", { mode: "timestamp_ms" }),
+    leaseOwner: text("lease_owner"),
+    completed: integer("completed").notNull().default(0),
+    total: integer("total").notNull().default(0),
+    embeddingTokens: integer("embedding_tokens").notNull().default(0),
+    errorCode: text("error_code"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, table => [
+    uniqueIndex("knowledge_sync_jobs_active_idx").on(table.sourceId).where(sql `${table.status} IN ('queued', 'processing')`),
+    index("knowledge_sync_jobs_claim_idx").on(table.status, table.runAt, table.leaseUntil),
+    index("knowledge_sync_jobs_source_created_idx").on(table.sourceId, table.createdAt),
+]);
 //# sourceMappingURL=schema.js.map

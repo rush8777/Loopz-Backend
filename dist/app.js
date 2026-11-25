@@ -1,3 +1,6 @@
+import { registerKnowledgeRoutes } from "./routes/knowledge.js";
+import { createKnowledgeEmbedder } from "./lib/knowledge/embeddings.js";
+import { startKnowledgeWorker } from "./lib/knowledge/jobs.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
@@ -79,6 +82,15 @@ export async function buildApp(db, options = {}) {
     registerSdkVerificationRoutes(app, db);
     registerThemeRoutes(app, db);
     registerAiRoutes(app, db, aiProvider);
+    let stopKnowledgeWorker;
+    const knowledgeEmbedder = options.knowledgeEmbedder === undefined ? createKnowledgeEmbedder() : options.knowledgeEmbedder;
+    registerKnowledgeRoutes(app, db, knowledgeEmbedder);
+    if (env.KNOWLEDGE_WORKER_ENABLED) {
+        app.addHook("onReady", async () => {
+            stopKnowledgeWorker = startKnowledgeWorker(db, knowledgeEmbedder);
+        });
+        app.addHook("onClose", async () => { await stopKnowledgeWorker?.(); });
+    }
     await app.register(async (publicScope) => {
         await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
         registerPublicConfigRoutes(publicScope, db);

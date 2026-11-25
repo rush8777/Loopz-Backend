@@ -1,3 +1,6 @@
+import { registerKnowledgeRoutes } from "./routes/knowledge.js";
+import { createKnowledgeEmbedder, type KnowledgeEmbedder } from "./lib/knowledge/embeddings.js";
+import { startKnowledgeWorker } from "./lib/knowledge/jobs.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
@@ -33,7 +36,7 @@ import { sendContactEmail, type ContactEmailSender } from "./lib/contact.js";
 import type { AiProvider } from "./lib/ai/providers/types.js";
 import { createConfiguredAiProvider } from "./lib/ai/providers/index.js";
 
-export async function buildApp(db: Db, options: { verifyGoogleCredential?: VerifyGoogleCredential; aiProvider?: AiProvider; sendContactEmail?: ContactEmailSender } = {}) {
+export async function buildApp(db: Db, options: { verifyGoogleCredential?: VerifyGoogleCredential; aiProvider?: AiProvider; sendContactEmail?: ContactEmailSender; knowledgeEmbedder?: KnowledgeEmbedder | null } = {}) {
   const app = Fastify({ logger: false });
   const aiProvider = options.aiProvider ?? createConfiguredAiProvider();
   const dashboardOrigin = new URL(env.DASHBOARD_URL).origin;
@@ -88,6 +91,15 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
   registerSdkVerificationRoutes(app, db);
   registerThemeRoutes(app, db);
   registerAiRoutes(app, db, aiProvider);
+  let stopKnowledgeWorker: (() => Promise<void>) | undefined;
+  const knowledgeEmbedder = options.knowledgeEmbedder === undefined ? createKnowledgeEmbedder() : options.knowledgeEmbedder;
+  registerKnowledgeRoutes(app, db, knowledgeEmbedder);
+  if (env.KNOWLEDGE_WORKER_ENABLED) {
+    app.addHook("onReady", async () => {
+      stopKnowledgeWorker = startKnowledgeWorker(db, knowledgeEmbedder);
+    });
+    app.addHook("onClose", async () => { await stopKnowledgeWorker?.(); });
+  }
 
   await app.register(async (publicScope) => {
     await publicScope.register(rateLimit, { global: true, max: 60, timeWindow: "1 minute" });
