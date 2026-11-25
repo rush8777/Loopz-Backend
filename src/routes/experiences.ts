@@ -1,3 +1,4 @@
+import { geoAgentConfig } from "../lib/geoAgent/config.js";
 import { captureBuildPageRules } from "../lib/experiences/guideCapture.js";
 import { GUIDE_CAPTURE_PLACEHOLDER, isPendingGuideCapture } from "../lib/experiences/guideCaptureContract.js";
 import { env } from "../config.js";
@@ -11,7 +12,7 @@ import { experienceEditorSessions, guideCaptureCheckpoints, experiences, experie
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, guidePublishIssues, updateDraftSchema } from "../lib/experiences/validation.js";
-import { guideStepRequiresTarget, type BuilderMode, type ChecklistExperienceDefinition, type ExperienceContent, type ExperienceDefinition, type ExperienceDesign, type ExperienceKind, type ExperienceTargeting, type GuideStep, type GuideStepPattern, type SurveyQuestion, type WidgetBuilderState, type WidgetType } from "../lib/experiences/types.js";
+import { guideStepRequiresTarget, type BuilderMode, type ChecklistExperienceDefinition, type ExperienceContent, type ExperienceDefinition, type ExperienceDesign, type ExperienceKind, type ExperienceWidgetType, type ExperienceTargeting, type GuideStep, type GuideStepPattern, type SurveyQuestion, type WidgetBuilderState, type WidgetType } from "../lib/experiences/types.js";
 import { isChecklistDefinition } from "../lib/experiences/types.js";
 import { initialChecklistDefinition, type ChecklistPreset } from "../lib/experiences/checklistPresets.js";
 import { defaultWidgetSize, widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
@@ -29,7 +30,7 @@ import { resolveTemplate, templatesFor, type VisualPresetId } from "../lib/exper
 import { presetTokens } from "../lib/themes/presets.js";
 import type { VisualThemeState } from "../lib/themes/types.js";
 
-const SUPPORTED_WIDGET_TYPES: WidgetType[] = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"];
+const SUPPORTED_WIDGET_TYPES: ExperienceWidgetType[] = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey", "geo_agent"];
 
 
 async function loadSiteInOrg(db: Db, siteId: string, orgId: string) {
@@ -198,6 +199,7 @@ function visualTheme(template: ReturnType<typeof resolveTemplate>, requested: { 
 }
 
 function applyDesign(definition: ExperienceDefinition, design: ExperienceDesign, state: VisualThemeState, templateId?: string): void {
+  if ("geoAgent" in definition) return;
   if ("items" in definition) definition.design = design; else definition.design = design;
   definition.visualTheme = state;
   if (templateId) definition.template = { id: templateId, version: 1 };
@@ -369,7 +371,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!site) return reply.code(404).send({ error: "site_not_found" });
     const { kind, widgetType } = request.query as { kind?: string; widgetType?: string };
     if (kind && kind !== "guide" && kind !== "widget" && kind !== "checklist") return reply.code(400).send({ error: "invalid_kind" });
-    if (widgetType && !SUPPORTED_WIDGET_TYPES.includes(widgetType as WidgetType)) return reply.code(400).send({ error: "invalid_widget_type" });
+    if (widgetType && !SUPPORTED_WIDGET_TYPES.includes(widgetType as ExperienceWidgetType)) return reply.code(400).send({ error: "invalid_widget_type" });
     if (widgetType && kind !== "widget") return reply.code(400).send({ error: "widget_type_requires_widget_kind" });
     const rows = await db.select().from(experiences).where(eq(experiences.siteId, site.id)).orderBy(desc(experiences.updatedAt));
     const filtered = rows.filter((row) => (!kind || row.kind === kind) && (!widgetType || row.widgetType === widgetType));
@@ -380,11 +382,11 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const { siteId } = request.params as { siteId: string };
     const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
     if (!site) return reply.code(404).send({ error: "site_not_found" });
-    const query = z.object({ kind: z.enum(["guide", "widget", "checklist"]), widgetType: z.enum(SUPPORTED_WIDGET_TYPES as [WidgetType, ...WidgetType[]]).nullable().optional() }).safeParse(request.query);
+    const query = z.object({ kind: z.enum(["guide", "widget", "checklist"]), widgetType: z.enum(SUPPORTED_WIDGET_TYPES).nullable().optional() }).safeParse(request.query);
     if (!query.success || (query.data.kind === "widget") !== Boolean(query.data.widgetType)) return reply.code(400).send({ error: "invalid_query" });
     const [theme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
     const siteTheme = theme?.activeTokens as SiteThemeTokens | null | undefined;
-    return reply.send({ templates: templatesFor(query.data.kind, query.data.widgetType), presets: ["minimal", "modern", "soft", "dark"], hasSiteTheme: Boolean(siteTheme), ...(query.data.kind === "guide" && env.GUIDE_CAPTURE_ENABLED ? { guidedCaptureEnabled: true } : {}), ...(siteTheme ? { siteThemeColors: [siteTheme.colors.surface, siteTheme.colors.text, siteTheme.colors.primary] } : {}) });
+    return reply.send({ templates: query.data.widgetType === "geo_agent" ? [] : templatesFor(query.data.kind, query.data.widgetType), presets: ["minimal", "modern", "soft", "dark"], hasSiteTheme: Boolean(siteTheme), ...(query.data.kind === "guide" && env.GUIDE_CAPTURE_ENABLED ? { guidedCaptureEnabled: true } : {}), ...(siteTheme ? { siteThemeColors: [siteTheme.colors.surface, siteTheme.colors.text, siteTheme.colors.primary] } : {}) });
   });
 
   app.post("/orgs/:orgId/sites/:siteId/experiences", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
@@ -401,8 +403,10 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
       [page] = await db.select().from(pageDefinitions).where(eq(pageDefinitions.id, parsed.data.buildPageId)).limit(1);
       if (!page || page.siteId !== site.id) return reply.code(400).send({ error: "invalid_build_page" });
     }
-    const buildUrl = parsed.data.kind === "checklist" && parsed.data.builderMode !== "onsite" ? null : parsed.data.buildUrl ?? (page ? deriveBuildUrl(site.domain, page.rules as PageRule[]) : null);
-    if ((parsed.data.kind !== "checklist" || parsed.data.builderMode === "onsite") && (!buildUrl || !urlBelongsToSite(buildUrl, site.domain))) return reply.code(400).send({ error: "build_url_outside_site_domain" });
+    const visualType = parsed.data.widgetType === "geo_agent" ? null : parsed.data.widgetType ?? null;
+    const geo = parsed.data.widgetType === "geo_agent";
+    const buildUrl = geo || parsed.data.kind === "checklist" && parsed.data.builderMode !== "onsite" ? null : parsed.data.buildUrl ?? (page ? deriveBuildUrl(site.domain, page.rules as PageRule[]) : null);
+    if (!geo && (parsed.data.kind !== "checklist" || parsed.data.builderMode === "onsite") && (!buildUrl || !urlBelongsToSite(buildUrl, site.domain))) return reply.code(400).send({ error: "build_url_outside_site_domain" });
     const initialPageRules = parsed.data.useBuildPageAsTarget
       ? page
         ? (page.rules as PageRule[])
@@ -411,15 +415,17 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
       : [];
     const [storedTheme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
     const activeTheme = (storedTheme?.activeTokens ?? undefined) as SiteThemeTokens | undefined;
-    if (parsed.data.builderMode === "onsite" && !onsiteCompatible(parsed.data.kind, parsed.data.widgetType ?? null)) return reply.code(400).send({ error: "onsite_builder_unsupported" });
+    if (parsed.data.builderMode === "onsite" && !onsiteCompatible(parsed.data.kind, visualType)) return reply.code(400).send({ error: "onsite_builder_unsupported" });
     const isLegacyChecklistPreset = parsed.data.kind === "checklist" && ["default","minimal","soft","compact"].includes(parsed.data.template);
     const legacyPreset = isLegacyChecklistPreset ? parsed.data.template as ChecklistPreset : "default";
-    let definition = parsed.data.kind === "checklist" ? initialChecklistDefinition(legacyPreset, activeTheme) : initialDefinition(parsed.data.kind, parsed.data.widgetType ?? null, initialPageRules, activeTheme, parsed.data.builderMode, parsed.data.guideCreation ? "modal" : parsed.data.guidePattern);
-    const selectedTemplate = resolveTemplate(parsed.data.template, parsed.data.kind, parsed.data.widgetType ?? null);
+    let definition: ExperienceDefinition = geo
+      ? { geoAgent: geoAgentConfig.parse({ schemaVersion: 1, appearance: {} }), targeting: { ...targeting([]), frequency: { mode: "every_time" } } }
+      : parsed.data.kind === "checklist" ? initialChecklistDefinition(legacyPreset, activeTheme) : initialDefinition(parsed.data.kind, visualType, initialPageRules, activeTheme, parsed.data.builderMode, parsed.data.guideCreation ? "modal" : parsed.data.guidePattern);
+    const selectedTemplate = resolveTemplate(parsed.data.template, parsed.data.kind, visualType);
     const selectedTheme = visualTheme(selectedTemplate, parsed.data.theme, activeTheme);
     if (parsed.data.builderMode === "onsite") {
-      definition = instantiateTemplate(definition, parsed.data.kind, parsed.data.widgetType ?? null, isLegacyChecklistPreset ? "blank" : parsed.data.template);
-      const design = { ...themedDesign(selectedTheme.tokens), ...(parsed.data.kind === "widget" ? { size: defaultWidgetSize(parsed.data.widgetType!) } : {}) };
+      definition = instantiateTemplate(definition, parsed.data.kind, visualType, isLegacyChecklistPreset ? "blank" : parsed.data.template);
+      const design = { ...themedDesign(selectedTheme.tokens), ...(parsed.data.kind === "widget" ? { size: defaultWidgetSize(visualType!) } : {}) };
       applyDesign(definition, design, selectedTheme.state, selectedTemplate?.id);
       if (parsed.data.kind === "checklist" && isChecklistDefinition(definition) && (parsed.data.template === "blank" || isLegacyChecklistPreset)) applyOnsiteDocument(definition.builder,createOnsiteChecklistDocument(definition),"checklist",undefined,definition);
     }
@@ -462,14 +468,14 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const draft = versions.find((version) => version.state === "draft");
     if (!draft) return reply.code(409).send({ error: "draft_not_found" });
     if (parsed.data.definition !== undefined || parsed.data.settings !== undefined) {
-      if (parsed.data.definition !== undefined && row.builderMode !== "grapesjs") return reply.code(409).send({ error: "builder_mode_mismatch" });
+      if (parsed.data.definition !== undefined && row.builderMode !== "grapesjs" && row.builderMode !== "geo_agent") return reply.code(409).send({ error: "builder_mode_mismatch" });
       if (draft.revision !== parsed.data.revision) return reply.code(409).send({ error: "draft_conflict", currentRevision: draft.revision });
       const candidate = parsed.data.settings
         ? { ...(draft.definition as ExperienceDefinition), targeting: parsed.data.settings.targeting }
         : parsed.data.definition;
       const definition = definitionSchemaFor(row.kind as ExperienceKind, row.widgetType).safeParse(candidate);
       if (!definition.success) return reply.code(400).send({ error: "invalid_definition", details: { ...definition.error.flatten(), issues: definition.error.issues } });
-      if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType as WidgetType, definition.data)) return reply.code(400).send({ error: "invalid_widget_size" });
+      if (row.kind === "widget" && row.widgetType && row.widgetType !== "geo_agent" && !widgetSizeIsValid(row.widgetType as WidgetType, definition.data)) return reply.code(400).send({ error: "invalid_widget_size" });
       try {
         await saveExperienceDraft(db, site, row, draft, definition.data, parsed.data.revision);
       } catch (error) { if (error instanceof DraftWriteError) return reply.code(error.status).send({ error: error.message }); return sendEntitlementError(reply, error); }
@@ -513,7 +519,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (review.data.draftVersionId !== draft.id || review.data.revision !== draft.revision) return reply.code(409).send({ error: "reviewed_draft_changed" });
     const checked = definitionSchemaFor(row.kind as ExperienceKind, row.widgetType).safeParse(draft.definition);
     if (!checked.success) return reply.code(400).send({ error: "invalid_definition", details: { ...checked.error.flatten(), issues: checked.error.issues } });
-    if (row.kind === "widget" && row.widgetType && !widgetSizeIsValid(row.widgetType as WidgetType, checked.data)) return reply.code(400).send({ error: "invalid_widget_size" });
+    if (row.kind === "widget" && row.widgetType && row.widgetType !== "geo_agent" && !widgetSizeIsValid(row.widgetType as WidgetType, checked.data)) return reply.code(400).send({ error: "invalid_widget_size" });
     if ("steps" in checked.data) {
       const issues = guidePublishIssues(checked.data);
       if (issues.length) return reply.code(400).send({ error: issues.some(issue => issue.path.at(-1) === "target") ? "target_required" : "invalid_guide_step_configuration", message: issues.map(issue => issue.message).join(" "), details: { issues } });
@@ -559,6 +565,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!site) return reply.code(404).send({ error: "site_not_found" });
     const row = await loadExperience(db, site.id, experienceId);
     if (!row) return reply.code(404).send({ error: "experience_not_found" });
+    if (row.widgetType === "geo_agent") return reply.code(400).send({ error: "geo_agent_uses_dashboard_editor" });
     if (row.kind === "checklist" && row.builderMode !== "onsite") return reply.code(400).send({ error: "checklist_live_editor_unsupported" });
     if (!row.buildUrl || !urlBelongsToSite(row.buildUrl, site.domain)) return reply.code(400).send({ error: "invalid_build_url" });
     const rawToken = crypto.randomBytes(32).toString("base64url");

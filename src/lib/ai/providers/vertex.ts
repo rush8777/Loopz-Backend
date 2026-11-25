@@ -1,3 +1,4 @@
+import { googleTextBody, googleTextChunk, readTextStream, type TextDelta } from "./textStream.js";
 import { GoogleAuth } from "google-auth-library";
 import type { AiGenerateInput, AiGenerateResult, AiProvider } from "./types.js";
 
@@ -11,6 +12,16 @@ export class VertexAiProvider implements AiProvider {
     private readonly location: string,
     private readonly fetcher: typeof fetch = fetch,
   ) {}
+
+  async streamText(input: AiGenerateInput, onDelta: TextDelta): Promise<AiGenerateResult> {
+    const client = await this.auth.getClient();
+    const token = await client.getAccessToken();
+    if (!token.token) throw new Error("vertex_missing_access_token");
+    const endpoint = `https://${this.location}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(this.project)}/locations/${encodeURIComponent(this.location)}/publishers/google/models/${encodeURIComponent(this.model)}:streamGenerateContent?alt=sse`;
+    const headers = { authorization: `Bearer ${token.token}`, "content-type": "application/json" };
+    const response = await this.fetcher(endpoint, { method: "POST", headers, body: googleTextBody(input), signal: input.signal });
+    return readTextStream(response, this.name, this.model, googleTextChunk, onDelta);
+  }
 
   async generate(input: AiGenerateInput): Promise<AiGenerateResult> {
     const client = await this.auth.getClient();

@@ -1,3 +1,4 @@
+import { geoAgentConfig } from "../geoAgent/config.js";
 import { isPendingGuideCapture } from "./guideCaptureContract.js";
 import { surveyBranchErrors } from "./surveyLogic.js";
 import { z } from "zod";
@@ -141,6 +142,15 @@ const targetingSchema = z.object({
   interruptPolicy: z.enum(["queue", "interrupt"]).optional(),
   schedule: z.object({ startsAt: z.iso.datetime().optional(), endsAt: z.iso.datetime().optional() }).optional().superRefine((value, ctx) => { if (value?.startsAt && value.endsAt && value.startsAt >= value.endsAt) ctx.addIssue({ code: "custom", message: "end must be after start" }); }),
   allowedOrigins: z.array(z.url().transform(value => new URL(value).origin)).max(20).optional(),
+});
+
+export const geoAgentDefinitionSchema = z.object({
+  geoAgent: geoAgentConfig,
+  targeting: targetingSchema,
+}).strict().superRefine(({ geoAgent, targeting }, ctx) => {
+  if (targeting.trigger.type !== "page_load" || targeting.frequency.mode !== "every_time" || targeting.frequency.maxImpressions || targeting.frequency.cooldownHours) {
+    ctx.addIssue({ code: "custom", path: ["targeting"], message: "Geo Agent is a persistent page-load widget" });
+  }
 });
 
 export const widgetDefinitionSchema = z.object({
@@ -298,8 +308,8 @@ export const checklistDefinitionSchema = z.object({
 
 export const createExperienceSchema = z.object({
   kind: z.enum(["guide", "widget", "checklist"]),
-  widgetType: z.enum(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey"]).nullable().optional(),
-  builderMode: z.enum(["grapesjs", "onsite"]).default("grapesjs"),
+  widgetType: z.enum(["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey", "geo_agent"]).nullable().optional(),
+  builderMode: z.enum(["grapesjs", "onsite", "geo_agent"]).default("grapesjs"),
   guidePattern: z.enum(["anchored_card", "modal"]).optional(),
   guideCreation: z.literal("guided_capture").optional(),
   name: z.string().trim().min(1).max(200),
@@ -313,9 +323,12 @@ export const createExperienceSchema = z.object({
   if (value.kind === "widget" && !value.widgetType) ctx.addIssue({ code: "custom", path: ["widgetType"], message: "widgetType is required" });
   if (value.kind !== "widget" && value.widgetType) ctx.addIssue({ code: "custom", path: ["widgetType"], message: `${value.kind}s do not have a widgetType` });
   if (value.kind !== "guide" && value.guidePattern) ctx.addIssue({ code: "custom", path: ["guidePattern"], message: "guidePattern is only valid for guides" });
-  if ((value.kind !== "checklist" || value.builderMode === "onsite") && !value.buildPageId && !value.buildUrl) ctx.addIssue({ code: "custom", path: ["buildUrl"], message: "a build page or URL is required" });
+  const geo = value.widgetType === "geo_agent";
+  if (geo !== (value.builderMode === "geo_agent")) ctx.addIssue({ code: "custom", path: ["builderMode"], message: "Geo Agent requires its configuration editor" });
+  if (geo && (value.buildPageId || value.buildUrl || value.useBuildPageAsTarget || value.theme)) ctx.addIssue({ code: "custom", path: ["buildUrl"], message: "Configure Geo Agent placement after creation" });
+  if (!geo && (value.kind !== "checklist" || value.builderMode === "onsite") && !value.buildPageId && !value.buildUrl) ctx.addIssue({ code: "custom", path: ["buildUrl"], message: "a build page or URL is required" });
   const legacyChecklistPreset = value.kind === "checklist" && ["default", "minimal", "soft", "compact"].includes(value.template);
-  if (value.template !== "blank" && !legacyChecklistPreset && !resolveTemplate(value.template, value.kind, value.widgetType)) ctx.addIssue({ code: "custom", path: ["template"], message: "template is not available for this experience type" });
+  if (value.template !== "blank" && !legacyChecklistPreset && !resolveTemplate(value.template, value.kind, geo ? null : value.widgetType as import("./types.js").WidgetType | null)) ctx.addIssue({ code: "custom", path: ["template"], message: "template is not available for this experience type" });
   if (value.builderMode === "grapesjs" && value.template !== "blank" && !legacyChecklistPreset) ctx.addIssue({ code: "custom", path: ["template"], message: "bundled visual templates require the on-site builder" });
   if (value.theme?.source === "preset" && !value.theme.preset) ctx.addIssue({ code: "custom", path: ["theme", "preset"], message: "preset is required" });
 });
@@ -380,6 +393,7 @@ export const updateSurveyResponseSchema = z.object({
 export function definitionSchemaFor(kind: "guide" | "widget" | "checklist", widgetType?: string | null) {
   if (kind === "guide") return guideDefinitionSchema;
   if (kind === "checklist") return checklistDefinitionSchema;
+  if (widgetType === "geo_agent") return geoAgentDefinitionSchema;
   return widgetDefinitionSchema.superRefine((definition, ctx) => {
     if (widgetType === "survey" && !definition.survey) ctx.addIssue({ code: "custom", path: ["survey"], message: "survey config is required for survey widgets" });
     if (widgetType !== "survey" && definition.survey) ctx.addIssue({ code: "custom", path: ["survey"], message: "survey config is only supported by survey widgets" });

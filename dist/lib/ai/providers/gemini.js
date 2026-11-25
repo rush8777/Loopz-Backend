@@ -1,3 +1,4 @@
+import { googleTextBody, googleTextChunk, readTextStream } from "./textStream.js";
 /** Google AI Studio / Gemini Developer API provider authenticated with an API key. */
 export class GeminiApiProvider {
     model;
@@ -8,6 +9,12 @@ export class GeminiApiProvider {
         this.model = model;
         this.apiKey = apiKey;
         this.fetcher = fetcher;
+    }
+    async streamText(input, onDelta) {
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:streamGenerateContent?alt=sse`;
+        const headers = { "content-type": "application/json", "x-goog-api-key": this.apiKey };
+        const response = await this.fetcher(endpoint, { method: "POST", headers, body: googleTextBody(input), signal: input.signal });
+        return readTextStream(response, this.name, this.model, googleTextChunk, onDelta);
     }
     async generate(input) {
         const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`;

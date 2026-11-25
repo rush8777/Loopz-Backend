@@ -1,3 +1,4 @@
+import { googleTextBody, googleTextChunk, readTextStream, type TextDelta } from "./textStream.js";
 import type { AiGenerateInput, AiGenerateResult, AiProvider } from "./types.js";
 
 /** Google AI Studio / Gemini Developer API provider authenticated with an API key. */
@@ -9,6 +10,13 @@ export class GeminiApiProvider implements AiProvider {
     private readonly apiKey: string,
     private readonly fetcher: typeof fetch = fetch,
   ) {}
+
+  async streamText(input: AiGenerateInput, onDelta: TextDelta): Promise<AiGenerateResult> {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:streamGenerateContent?alt=sse`;
+    const headers = { "content-type": "application/json", "x-goog-api-key": this.apiKey };
+    const response = await this.fetcher(endpoint, { method: "POST", headers, body: googleTextBody(input), signal: input.signal });
+    return readTextStream(response, this.name, this.model, googleTextChunk, onDelta);
+  }
 
   async generate(input: AiGenerateInput): Promise<AiGenerateResult> {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`;

@@ -1,7 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import type { Db } from "../../db/client.js";
-import { experiences, experienceVersions, guideCaptureCheckpoints, segments, sites } from "../../db/schema.js";
+import { experiences, experienceVersions, guideCaptureCheckpoints, knowledgeSources, segments, sites } from "../../db/schema.js";
 import type { ExperienceDefinition, ExperienceKind, WidgetType } from "./types.js";
 import { isChecklistDefinition } from "./types.js";
 import { onsiteProjectionIsConsistent } from "./builderContentContract.js";
@@ -25,6 +25,18 @@ export async function validateReferences(db: Db, siteId: string, definition: Exp
   const segmentIds = audience.type === "segment" ? [audience.segmentId] : audience.type === "segment_rules" ? audience.conditions.map(condition => condition.segmentId) : [];
   if (isChecklistDefinition(definition)) for (const item of definition.items) if (item.completion.type === "segment") segmentIds.push(item.completion.segmentId);
   for (const segmentId of new Set(segmentIds)) { const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1); if (!segment || (segment && segment.siteId !== siteId)) return "invalid_segment"; }
+  if ("geoAgent" in definition) {
+    const { sourceIds, enabled, showLauncher, identityPublicKey } = definition.geoAgent;
+    if (publishing && enabled && showLauncher && audience.type !== "all" && !identityPublicKey) return "geo_agent_verified_identity_required";
+    if (sourceIds.length) {
+      const rows = await db.select({ id: knowledgeSources.id }).from(knowledgeSources).where(and(
+        eq(knowledgeSources.siteId, siteId), inArray(knowledgeSources.id, sourceIds),
+        publishing && enabled ? eq(knowledgeSources.enabled, true) : undefined,
+        publishing && enabled ? eq(knowledgeSources.visibility, "public") : undefined,
+      ));
+      if (rows.length !== sourceIds.length) return "invalid_geo_agent_sources";
+    }
+  }
   if (isChecklistDefinition(definition)) {
     const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1); const origin = siteOrigin(site?.domain ?? null);
     for (const item of definition.items) if (item.action.type === "navigate" && /^https?:\/\//i.test(item.action.url) && (!origin || new URL(item.action.url).origin !== origin)) return "navigate_url_outside_site_domain";
@@ -57,14 +69,14 @@ export async function saveExperienceDraft(db: Db, site: typeof sites.$inferSelec
   if (experience.builderMode === "onsite" && isChecklistDefinition(definition)) {
     if (rawOnsiteDocument(definition.builder) === undefined || validateCompiledOnsiteBuilder(definition.builder,{heading:definition.title,body:definition.description??""},"checklist",false,undefined,definition).length) throw new DraftWriteError(400,"inconsistent_onsite_content");
   }
-  if (experience.builderMode === "onsite" && !isChecklistDefinition(definition)) {
+  if (experience.builderMode === "onsite" && !isChecklistDefinition(definition) && !("geoAgent" in definition)) {
     const survey = "survey" in definition ? definition.survey : undefined;
     const parts = "steps" in definition ? definition.steps : survey?.steps ?? [definition];
     if (parts.some(part => !part.builder || (rawOnsiteDocument(part.builder) !== undefined
       ? validateCompiledOnsiteBuilder(part.builder, part.content, "pattern" in part ? part.pattern ?? "anchored_card" : experience.widgetType as WidgetType, "pattern" in part, survey && "questions" in part ? { questions: part.questions, submitLabel: survey.submitLabel } : undefined).length > 0
       : !onsiteProjectionIsConsistent(part.builder.html, part.content)))) throw new DraftWriteError(400, "inconsistent_onsite_content");
   }
-  if (experience.kind === "widget" && experience.widgetType && !widgetSizeIsValid(experience.widgetType as WidgetType, definition)) throw new DraftWriteError(400, "invalid_widget_size");
+  if (experience.kind === "widget" && experience.widgetType && experience.widgetType !== "geo_agent" && !widgetSizeIsValid(experience.widgetType as WidgetType, definition)) throw new DraftWriteError(400, "invalid_widget_size");
   return runEntitlementTransaction(db, async tx => {
     await assertSubscriptionActive(tx, site.orgId);
     const referenceError = await validateReferences(tx as unknown as Db, site.id, definition);

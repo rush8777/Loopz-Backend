@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
-import { experiences, experienceVersions, guideCaptureCheckpoints, segments, sites } from "../../db/schema.js";
+import { experiences, experienceVersions, guideCaptureCheckpoints, knowledgeSources, segments, sites } from "../../db/schema.js";
 import { isChecklistDefinition } from "./types.js";
 import { onsiteProjectionIsConsistent } from "./builderContentContract.js";
 import { rawOnsiteDocument, validateCompiledOnsiteBuilder } from "./onsiteDocument.js";
@@ -41,6 +41,16 @@ export async function validateReferences(db, siteId, definition, publishing = fa
         const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1);
         if (!segment || (segment && segment.siteId !== siteId))
             return "invalid_segment";
+    }
+    if ("geoAgent" in definition) {
+        const { sourceIds, enabled, showLauncher, identityPublicKey } = definition.geoAgent;
+        if (publishing && enabled && showLauncher && audience.type !== "all" && !identityPublicKey)
+            return "geo_agent_verified_identity_required";
+        if (sourceIds.length) {
+            const rows = await db.select({ id: knowledgeSources.id }).from(knowledgeSources).where(and(eq(knowledgeSources.siteId, siteId), inArray(knowledgeSources.id, sourceIds), publishing && enabled ? eq(knowledgeSources.enabled, true) : undefined, publishing && enabled ? eq(knowledgeSources.visibility, "public") : undefined));
+            if (rows.length !== sourceIds.length)
+                return "invalid_geo_agent_sources";
+        }
     }
     if (isChecklistDefinition(definition)) {
         const [site] = await db.select().from(sites).where(eq(sites.id, siteId)).limit(1);
@@ -83,7 +93,7 @@ export async function saveExperienceDraft(db, site, experience, draft, candidate
         if (rawOnsiteDocument(definition.builder) === undefined || validateCompiledOnsiteBuilder(definition.builder, { heading: definition.title, body: definition.description ?? "" }, "checklist", false, undefined, definition).length)
             throw new DraftWriteError(400, "inconsistent_onsite_content");
     }
-    if (experience.builderMode === "onsite" && !isChecklistDefinition(definition)) {
+    if (experience.builderMode === "onsite" && !isChecklistDefinition(definition) && !("geoAgent" in definition)) {
         const survey = "survey" in definition ? definition.survey : undefined;
         const parts = "steps" in definition ? definition.steps : survey?.steps ?? [definition];
         if (parts.some(part => !part.builder || (rawOnsiteDocument(part.builder) !== undefined
@@ -91,7 +101,7 @@ export async function saveExperienceDraft(db, site, experience, draft, candidate
             : !onsiteProjectionIsConsistent(part.builder.html, part.content))))
             throw new DraftWriteError(400, "inconsistent_onsite_content");
     }
-    if (experience.kind === "widget" && experience.widgetType && !widgetSizeIsValid(experience.widgetType, definition))
+    if (experience.kind === "widget" && experience.widgetType && experience.widgetType !== "geo_agent" && !widgetSizeIsValid(experience.widgetType, definition))
         throw new DraftWriteError(400, "invalid_widget_size");
     return runEntitlementTransaction(db, async (tx) => {
         await assertSubscriptionActive(tx, site.orgId);

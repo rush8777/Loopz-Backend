@@ -25,6 +25,8 @@ const envSchema = z.object({
     KNOWLEDGE_EMBEDDING_VERSION: z.string().min(1).max(30).default("1"),
     KNOWLEDGE_CHUNK_WORDS: z.coerce.number().int().min(80).max(600).default(360),
     KNOWLEDGE_CHUNK_OVERLAP: z.coerce.number().int().min(0).max(79).default(40),
+    GEO_AGENT_DAILY_TOKEN_LIMIT: z.coerce.number().int().min(24000).default(250000),
+    GEO_AGENT_RETENTION_DAYS: z.coerce.number().int().min(1).max(90).default(30),
     AI_ENABLED: z.string().trim().toLowerCase().default("false").transform((value) => value === "true"),
     AI_PROVIDER: z.enum(["vertex", "gemini", "openai"]).default("vertex"),
     AI_DAILY_TOKEN_LIMIT: z.coerce.number().int().positive().default(250_000),

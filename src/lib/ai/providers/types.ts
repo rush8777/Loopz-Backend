@@ -18,4 +18,5 @@ export interface AiProvider {
   readonly name: AiGenerateResult["provider"];
   readonly model: string;
   generate(input: AiGenerateInput): Promise<AiGenerateResult>;
+  streamText?(input: AiGenerateInput, onDelta: (text: string) => void): Promise<AiGenerateResult>;
 }

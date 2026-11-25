@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { KnowledgeError } from "./contracts.js";
 
 const MAX_TEXT = 120_000;
-const pdfModule = import.meta.resolve("pdfjs-dist/legacy/build/pdf.mjs");
-const parser = `
+const parser = (pdfModule: string) => `
 const { getDocument, VerbosityLevel } = await import(${JSON.stringify(pdfModule)});
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
@@ -32,8 +33,10 @@ process.stdout.write(JSON.stringify(text.slice(0, ${MAX_TEXT})));
 `;
 
 export function extractPdf(data: Buffer, signal: AbortSignal): Promise<string> {
+  const entry = createRequire(import.meta.url).resolve("pdfjs-dist/legacy/build/pdf.mjs");
+  const inline = parser(pathToFileURL(entry).href);
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--max-old-space-size=112", "--input-type=module", "-e", parser], {
+    const child = spawn(process.execPath, ["--max-old-space-size=112", "--input-type=module", "-e", inline], {
       env: {},
       signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
       killSignal: "SIGKILL",

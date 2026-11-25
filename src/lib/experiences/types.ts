@@ -1,9 +1,11 @@
+import type { GeoAgentConfig } from "../geoAgent/config.js";
 import type { PageRule } from "../pages/types.js";
 import type { SiteThemeTokens, VisualThemeState } from "../themes/types.js";
 
 export type ExperienceKind = "guide" | "widget" | "checklist";
 export type WidgetType = "anchored_card" | "toast" | "cursor_follow" | "modal" | "slideout" | "hotspot" | "banner" | "survey";
-export type BuilderMode = "grapesjs" | "onsite";
+export type ExperienceWidgetType = WidgetType | "geo_agent";
+export type BuilderMode = "grapesjs" | "onsite" | "geo_agent";
 export type ExperienceStatus = "draft" | "published" | "paused" | "archived";
 
 export interface ExperienceAction {
@@ -195,7 +197,11 @@ export interface GuideExperienceDefinition {
   template?: { id: string; version: 1 };
 }
 
-export type ExperienceDefinition = WidgetExperienceDefinition | GuideExperienceDefinition | ChecklistExperienceDefinition;
+export interface GeoAgentDefinition {
+  geoAgent: GeoAgentConfig;
+  targeting: ExperienceTargeting;
+}
+export type ExperienceDefinition = WidgetExperienceDefinition | GuideExperienceDefinition | ChecklistExperienceDefinition | GeoAgentDefinition;
 
 export function isGuideDefinition(definition: ExperienceDefinition): definition is GuideExperienceDefinition {
   return "steps" in definition;

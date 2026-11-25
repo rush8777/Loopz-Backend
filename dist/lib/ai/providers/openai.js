@@ -1,3 +1,4 @@
+import { readTextStream } from "./textStream.js";
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 3;
 const MAX_INTERACTIVE_RETRY_DELAY_MS = 30_000;
@@ -24,6 +25,25 @@ export class OpenAiProvider {
         this.reasoningEffort = reasoningEffort;
         this.fetcher = fetcher;
         this.sleeper = sleeper;
+    }
+    async streamText(input, onDelta) {
+        const response = await this.fetcher("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+            body: JSON.stringify({
+                model: this.model, stream: true, stream_options: { include_usage: true },
+                reasoning_effort: this.reasoningEffort, max_completion_tokens: input.maxOutputTokens ?? 640,
+                messages: [{ role: "system", content: input.system }, { role: "user", content: input.prompt }],
+            }),
+            signal: input.signal,
+        });
+        return readTextStream(response, this.name, this.model, data => {
+            const frame = data;
+            return {
+                delta: frame.choices?.[0]?.delta?.content ?? "",
+                ...(frame.usage && { usage: { promptTokens: frame.usage.prompt_tokens ?? 0, completionTokens: frame.usage.completion_tokens ?? 0, totalTokens: frame.usage.total_tokens ?? 0 } }),
+            };
+        }, onDelta);
     }
     async generate(input) {
         const request = {

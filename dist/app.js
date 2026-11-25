@@ -1,3 +1,4 @@
+import { registerGeoAgentRoutes } from "./routes/geo-agent.js";
 import { registerKnowledgeRoutes } from "./routes/knowledge.js";
 import { createKnowledgeEmbedder } from "./lib/knowledge/embeddings.js";
 import { startKnowledgeWorker } from "./lib/knowledge/jobs.js";
@@ -85,6 +86,7 @@ export async function buildApp(db, options = {}) {
     let stopKnowledgeWorker;
     const knowledgeEmbedder = options.knowledgeEmbedder === undefined ? createKnowledgeEmbedder() : options.knowledgeEmbedder;
     registerKnowledgeRoutes(app, db, knowledgeEmbedder);
+    registerGeoAgentRoutes(app, db, aiProvider, knowledgeEmbedder);
     if (env.KNOWLEDGE_WORKER_ENABLED) {
         app.addHook("onReady", async () => {
             stopKnowledgeWorker = startKnowledgeWorker(db, knowledgeEmbedder);

@@ -1401,3 +1401,48 @@ export const knowledgeSyncJobs = sqliteTable("knowledge_sync_jobs", {
   index("knowledge_sync_jobs_claim_idx").on(table.status, table.runAt, table.leaseUntil),
   index("knowledge_sync_jobs_source_created_idx").on(table.sourceId, table.createdAt),
 ]);
+
+export const geoAgentConversations = sqliteTable("geo_agent_conversations", {
+  id: text("id").primaryKey().$defaultFn(() => cuid("gac")),
+  siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+  experienceId: text("experience_id").notNull().references(() => experiences.id, { onDelete: "cascade" }),
+  versionId: text("version_id").notNull().references(() => experienceVersions.id, { onDelete: "cascade" }),
+  owner: text("owner").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+}, table => [
+  index("geo_agent_conversations_owner_idx").on(table.siteId, table.experienceId, table.owner, table.updatedAt),
+  index("geo_agent_conversations_expiry_idx").on(table.expiresAt),
+]);
+
+export const geoAgentTurns = sqliteTable("geo_agent_turns", {
+  id: text("id").primaryKey().$defaultFn(() => cuid("gat")),
+  conversationId: text("conversation_id").notNull().references(() => geoAgentConversations.id, { onDelete: "cascade" }),
+  siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+  requestId: text("request_id").notNull(),
+  question: text("question").notNull(),
+  status: text("status", { enum: ["running", "completed", "failed", "cancelled"] }).notNull(),
+  answer: text("answer", { mode: "json" }),
+  attempt: integer("attempt").notNull().default(1),
+  reservedTokens: integer("reserved_tokens").notNull(),
+  usedTokens: integer("used_tokens").notNull().default(0),
+  retrievedCount: integer("retrieved_count").notNull().default(0),
+  latencyMs: integer("latency_ms"),
+  firstDeltaMs: integer("first_delta_ms"),
+  provider: text("provider"),
+  model: text("model"),
+  feedback: text("feedback", { enum: ["helpful", "unhelpful"] }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, table => [
+  uniqueIndex("geo_agent_turns_request_idx").on(table.conversationId, table.requestId),
+  uniqueIndex("geo_agent_turns_active_idx").on(table.conversationId).where(sql`${table.status} = 'running'`),
+  index("geo_agent_turns_site_created_idx").on(table.siteId, table.createdAt),
+]);
+
+export const geoAgentUsage = sqliteTable("geo_agent_usage", {
+  siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+  day: text("day").notNull(),
+  tokens: integer("tokens").notNull().default(0),
+}, table => [uniqueIndex("geo_agent_usage_site_day_idx").on(table.siteId, table.day)]);

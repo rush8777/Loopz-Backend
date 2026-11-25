@@ -16,7 +16,8 @@ import { signEditorAccessToken, verifyEditorAccessToken } from "../lib/auth.js";
 import { createSurveyResponseSchema, definitionSchemaFor, impressionSchema, manifestQuerySchema, updateDraftSchema, updateSurveyResponseSchema } from "../lib/experiences/validation.js";
 import { widgetSizeIsValid } from "../lib/experiences/widgetSizing.js";
 import { matchesRules } from "../lib/pages/pageMatcher.js";
-import { evaluateSegment } from "../lib/segments/evaluator.js";
+import { matchesExperienceAudience } from "../lib/experiences/audience.js";
+import { deliveryConfig } from "../lib/geoAgent/config.js";
 import { deliveredChecklist } from "./public-checklists.js";
 import { getOrganizationSubscription, subscriptionIsActive } from "../lib/entitlements/subscription.js";
 import { siteThemeTokensSchema } from "../lib/themes/validation.js";
@@ -64,19 +65,6 @@ function grapesLiveEditorChangeAllowed(previous, next) {
         return sameJson(previousCopy, nextCopy);
     }
     return false;
-}
-async function matchesAudience(db, siteId, identityKey, audience) {
-    if (audience.type === "all")
-        return true;
-    const conditions = audience.type === "segment" ? [{ segmentId: audience.segmentId, operator: "matches" }] : audience.conditions;
-    const results = await Promise.all(conditions.map(async (condition) => {
-        const [segment] = await db.select().from(segments).where(eq(segments.id, condition.segmentId)).limit(1);
-        if (!segment || segment.siteId !== siteId)
-            return false;
-        const member = (await evaluateSegment(db, siteId, segment.definition)).has(identityKey);
-        return condition.operator === "matches" ? member : !member;
-    }));
-    return audience.type === "segment_rules" && audience.logic === "any" ? results.some(Boolean) : results.every(Boolean);
 }
 function withoutPrivateTargeting(definition) {
     const { targeting: _targeting, ...presentation } = definition;
@@ -207,6 +195,7 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
         const identityKey = trackedUserId ?? query.data.anonymousId;
         const rows = (await db.select().from(experiences).where(and(eq(experiences.siteId, site.id), eq(experiences.status, "published"))))
             .filter((row) => row.publishedVersionId);
+        const agents = [];
         const eligible = [];
         for (const experience of rows) {
             if (experience.kind === "checklist")
@@ -229,6 +218,13 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
                 continue;
             if (!resumingGuide && target.pageRules.length > 0 && !matchesRules(pagePath, target.pageRules))
                 continue;
+            if ("geoAgent" in definition) {
+                if (!query.data.trigger && definition.geoAgent.enabled && definition.geoAgent.showLauncher
+                    && await matchesExperienceAudience(db, site.id, identityKey, target.audience)) {
+                    agents.push({ id: experience.id, versionId: version.id, priority: target.priority, configuration: deliveryConfig(definition.geoAgent) });
+                }
+                continue;
+            }
             const impressions = await db.select().from(experienceImpressions).where(and(eq(experienceImpressions.siteId, site.id), eq(experienceImpressions.experienceId, experience.id)));
             const personImpressions = impressions.filter((item) => item.anonymousId === query.data.anonymousId || (trackedUserId && item.trackedUserId === trackedUserId));
             const surveyImpression = experience.widgetType === "survey" ? personImpressions.find(item => item.versionId === version.id && item.sessionId === query.data.sessionId && item.anonymousId === query.data.anonymousId && !item.completedAt && !item.dismissedAt) : undefined;
@@ -239,7 +235,7 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
                 continue;
             if (!resuming && target.trigger.type === "manual")
                 continue;
-            if (!resumingGuide && !await matchesAudience(db, site.id, identityKey, target.audience))
+            if (!resumingGuide && !await matchesExperienceAudience(db, site.id, identityKey, target.audience))
                 continue;
             if (!resuming && target.frequency.mode === "once" && personImpressions.length > 0)
                 continue;
@@ -253,9 +249,10 @@ export function registerPublicExperienceRoutes(app, db, providerOverride) {
             eligible.push({ id: experience.id, versionId: version.id, kind: experience.kind, widgetType: experience.widgetType, priority: target.priority, interruptPolicy: target.interruptPolicy ?? "queue", ...(activeImpression ? { impressionId: activeImpression.id } : {}), definition: withoutPrivateTargeting(definition) });
         }
         eligible.sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
+        agents.sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
         const checklist = await deliveredChecklist(db, site, query.data);
         reply.header("Cache-Control", "private, no-store");
-        return reply.send({ experiences: eligible, checklists: checklist ? [checklist] : [], hasChecklists: rows.some(row => row.kind === "checklist") });
+        return reply.send({ experiences: eligible, ...(agents.length ? { geoAgent: agents[0] } : {}), checklists: checklist ? [checklist] : [], hasChecklists: rows.some(row => row.kind === "checklist") });
     });
     app.post("/public/sites/:siteId/experience-events", async (request, reply) => {
         const { siteId } = request.params;

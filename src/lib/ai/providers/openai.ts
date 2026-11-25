@@ -1,3 +1,4 @@
+import { readTextStream, type TextDelta } from "./textStream.js";
 import type { AiGenerateInput, AiGenerateResult, AiProvider } from "./types.js";
 
 type OpenAiErrorBody = {
@@ -25,6 +26,29 @@ export class OpenAiProvider implements AiProvider {
     private readonly fetcher: typeof fetch = fetch,
     private readonly sleeper: (milliseconds: number, signal?: AbortSignal) => Promise<void> = wait,
   ) {}
+
+  async streamText(input: AiGenerateInput, onDelta: TextDelta): Promise<AiGenerateResult> {
+    const response = await this.fetcher("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: this.model, stream: true, stream_options: { include_usage: true },
+        reasoning_effort: this.reasoningEffort, max_completion_tokens: input.maxOutputTokens ?? 640,
+        messages: [{ role: "system", content: input.system }, { role: "user", content: input.prompt }],
+      }),
+      signal: input.signal,
+    });
+    return readTextStream(response, this.name, this.model, data => {
+      const frame = data as {
+        choices?: Array<{ delta?: { content?: string } }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+      };
+      return {
+        delta: frame.choices?.[0]?.delta?.content ?? "",
+        ...(frame.usage && { usage: { promptTokens: frame.usage.prompt_tokens ?? 0, completionTokens: frame.usage.completion_tokens ?? 0, totalTokens: frame.usage.total_tokens ?? 0 } }),
+      };
+    }, onDelta);
+  }
 
   async generate(input: AiGenerateInput): Promise<AiGenerateResult> {
     const request: RequestInit = {

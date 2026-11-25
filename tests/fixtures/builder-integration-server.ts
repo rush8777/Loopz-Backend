@@ -34,7 +34,23 @@ const guideCaptureProvider: AiProvider = {
     };
   },
 };
-const app = await buildApp(db, env.GUIDE_CAPTURE_ENABLED ? { aiProvider: guideCaptureProvider } : {});
+const geoProvider: AiProvider = {
+  name: "mock", model: "geo-agent-integration",
+  async generate() { throw new Error("Expected the visitor streaming provider"); },
+  async streamText(input, delta) {
+    const prompt = JSON.parse(input.prompt);
+    if (!prompt.excerpts?.length) throw new Error("Expected retrieved knowledge");
+    if (prompt.question.includes("slow")) await new Promise<void>((resolve, reject) => {
+      const abort = () => { clearTimeout(timer); reject(input.signal?.reason); };
+      const timer = setTimeout(() => { input.signal?.removeEventListener("abort", abort); resolve(); }, 3000);
+      input.signal?.addEventListener("abort", abort, { once: true });
+    });
+    delta("Open Billing and choose New invoice. [[K1]]\n");
+    return { text: "", provider: "mock", model: this.model, usage: { promptTokens: 46, completionTokens: 14, totalTokens: 60 } };
+  },
+};
+const app = await buildApp(db, env.GUIDE_CAPTURE_ENABLED ? { aiProvider: guideCaptureProvider }
+  : process.env.GEO_AGENT_INTEGRATION === "true" ? { aiProvider: geoProvider, knowledgeEmbedder: null } : {});
 app.get('/__test__/ready', async () => ({ isolated: true }));
 app.get('/__test__/analytics/:experienceId', async request => {
   const { experienceId } = request.params as { experienceId: string };
