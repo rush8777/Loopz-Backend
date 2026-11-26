@@ -25,4 +25,41 @@ describe('bundled experience templates and reusable styles',()=>{
   const f=await setup('style-owner'),other=await signup(ctx.app,{email:'style-other@example.com'}),tokens={version:1,colors:{background:'#fff',surface:'#f8fafc',text:'#111827',mutedText:'#64748b',primary:'#7c3aed',primaryForeground:'#fff',border:'#e2e8f0'},typography:{bodyFontFamily:'Inter, sans-serif',headingFontFamily:'Inter, sans-serif',bodyFontSize:16,headingFontSize:28,bodyFontWeight:400,headingFontWeight:700,bodyLineHeight:1.5,headingLineHeight:1.2},radii:{sm:4,md:10,lg:20},shadows:{sm:{x:0,y:2,blur:8,spread:0,color:'rgba(0,0,0,.1)'},md:{x:0,y:12,blur:32,spread:0,color:'rgba(0,0,0,.18)'}}};
   const created=await ctx.app.inject({method:'POST',url:`${f.base}/style-presets`,headers:f.headers,payload:{name:'Product polish',tokens}});expect(created.statusCode,created.body).toBe(201);const id=created.json().preset.id;expect((await ctx.app.inject({method:'GET',url:`${f.base}/style-presets`,headers:f.headers})).json().presets).toHaveLength(1);expect((await ctx.app.inject({method:'GET',url:`${f.base}/style-presets`,headers:{authorization:`Bearer ${other.accessToken}`}})).statusCode).toBe(404);expect((await ctx.app.inject({method:'PATCH',url:`${f.base}/style-presets/${id}`,headers:f.headers,payload:{name:'Renamed polish'}})).json().preset.name).toBe('Renamed polish');expect((await ctx.app.inject({method:'DELETE',url:`${f.base}/style-presets/${id}`,headers:f.headers})).statusCode).toBe(204);
  });
+ it("stores reusable structures with fresh IDs and discards original content and behavior", async () => {
+  const f = await setup("saved-layout");
+  const outsider = await setup("other-layout");
+  const create = (name: string, kind: "guide" | "checklist" | "widget", widgetType: "modal" | "survey" | null, template: string) => ctx.app.inject({
+   method: "POST", url: `${f.base}/experiences`, headers: f.headers,
+   payload: { kind, widgetType, builderMode: "onsite", name, buildUrl: "https://saved-layout.example.com/private", template, useBuildPageAsTarget: true },
+  });
+  const examples = [
+   ["guide", null, "guide-product-tour", "Keep work organized"],
+   ["checklist", null, "checklist-getting-started", "Personalize your workspace"],
+   ["widget", "modal", "widget-welcome-modal", "Discover the essentials"],
+   ["widget", "survey", "survey-csat", "How satisfied are you"],
+  ] as const;
+  for (const [kind, widgetType, builtIn, originalCopy] of examples) {
+   const created = await create(`Original ${builtIn}`, kind, widgetType, builtIn);
+   expect(created.statusCode, created.body).toBe(201);
+   const { id, draftVersion } = created.json();
+   const source = `${f.base}/experiences/${id}/save-template`;
+   const payload = { name: `Saved ${builtIn}`, versionId: draftVersion.id, revision: draftVersion.revision };
+   expect((await ctx.app.inject({ method: "POST", url: source, headers: f.headers, payload: { ...payload, revision: payload.revision + 1 } })).statusCode).toBe(409);
+   const stored = await ctx.app.inject({ method: "POST", url: source, headers: f.headers, payload });
+   expect(stored.statusCode, stored.body).toBe(201);
+   const template = stored.json().template;
+   const wrongSite = await ctx.app.inject({ method: "POST", url: `${outsider.base}/experiences`, headers: outsider.headers,
+    payload: { kind, widgetType, builderMode: "onsite", name: "Cross-tenant attempt", template: template.id, buildUrl: "https://other-layout.example.com/" } });
+   expect(wrongSite.statusCode).toBe(404);
+   const cloned = await create(`New ${builtIn}`, kind, widgetType, template.id);
+   expect(cloned.statusCode, cloned.body).toBe(201);
+   const clone = cloned.json().draftVersion.definition;
+   expect(clone.template).toEqual({ id: template.id, version: 1 });
+   expect(definitionSchemaFor(kind, widgetType).safeParse(clone).success).toBe(true);
+   expect(JSON.stringify(clone)).not.toContain(originalCopy);
+   expect(JSON.stringify(clone)).not.toContain(draftVersion.id);
+   expect((await ctx.app.inject({ method: "DELETE", url: `${f.base}/saved-experience-templates/${template.id}`, headers: f.headers })).statusCode).toBe(204);
+   expect((await ctx.app.inject({ method: "GET", url: `${f.base}/experiences/${cloned.json().id}`, headers: f.headers })).json().draftVersion.definition).toEqual(clone);
+  }
+ });
 });

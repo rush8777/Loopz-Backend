@@ -43,4 +43,36 @@ describe("site themes", () => {
     expect((await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/theme-captures`, headers: authorization })).statusCode).toBe(409);
     expect((await ctx.app.inject({ method: "GET", url: `/orgs/${owner.org.id}/sites/${site.id}/theme`, headers: { authorization: `Bearer ${stranger.accessToken}` } })).statusCode).toBe(404);
   });
+
+  it("resolves saved component defaults into immutable experience and site snapshots", async () => {
+    const owner = await signup(ctx.app, { email: "studio-owner@example.com" });
+    const headers = { authorization: `Bearer ${owner.accessToken}` };
+    const org = `/orgs/${owner.org.id}`;
+    async function newSite(name: string) {
+      return (await ctx.app.inject({ method: "POST", url: `${org}/sites`, headers, payload: { name, domain: `https://${name}.example.com` } })).json();
+    }
+    const site = await newSite("studio");
+    const other = await newSite("other");
+    const root = `${org}/sites/${site.id}`;
+    const extended = { ...tokens, spacing: 12, components: { modal: { spacing: 28, buttonRadius: 22 } } };
+    const saved = await ctx.app.inject({ method: "POST", url: `${root}/style-presets`, headers, payload: { name: "Ocean", tokens: extended } });
+    expect(saved.statusCode, saved.body).toBe(201);
+    const { preset } = saved.json();
+    expect((await ctx.app.inject({ method: "PUT", url: `${org}/sites/${other.id}/theme/default`, headers, payload: { source: "saved", presetId: preset.id } })).statusCode).toBe(404);
+    const preview = await ctx.app.inject({ method: "POST", url: `${root}/theme-previews`, headers, payload: extended });
+    expect(preview.json().previews).toHaveLength(10);
+    expect(preview.json().previews.find((item: { id: string }) => item.id === "modal").definition.design.theme).toMatchObject({ spacing: 28, siteTheme: { radii: { md: 22 } } });
+    expect((await ctx.app.inject({ method: "PUT", url: `${root}/theme/default`, headers, payload: { source: "saved", presetId: preset.id } })).statusCode).toBe(200);
+    const created = await ctx.app.inject({ method: "POST", url: `${root}/experiences`, headers, payload: {
+      kind: "widget", widgetType: "modal", builderMode: "onsite", name: "Snapshot", buildUrl: "https://studio.example.com/", theme: { source: "saved", presetId: preset.id },
+    } });
+    expect(created.statusCode, created.body).toBe(201);
+    const { id, draftVersion } = created.json();
+    expect(draftVersion.definition.design.theme).toMatchObject({ spacing: 28, siteTheme: { radii: { md: 22 } } });
+    expect(draftVersion.definition.visualTheme.savedStyleId).toBe(preset.id);
+    expect((await ctx.app.inject({ method: "PATCH", url: `${root}/style-presets/${preset.id}`, headers, payload: { name: "Ocean revised", tokens } })).statusCode).toBe(200);
+    expect((await ctx.app.inject({ method: "DELETE", url: `${root}/style-presets/${preset.id}`, headers })).statusCode).toBe(204);
+    expect((await ctx.app.inject({ method: "GET", url: `${root}/theme`, headers })).json().active.tokens).toEqual(extended);
+    expect((await ctx.app.inject({ method: "GET", url: `${root}/experiences/${id}`, headers })).json().draftVersion.definition).toEqual(draftVersion.definition);
+  });
 });
