@@ -8,11 +8,11 @@ import crypto from "node:crypto";
 import { PassThrough } from "node:stream";
 import { isDeepStrictEqual } from "node:util";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { and, desc, eq, gte, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { runInTransaction } from "../db/transaction.js";
 import type { Db, DbExecutor } from "../db/client.js";
-import { aiConversations, aiMessages, aiProviderUsage, aiToolExecutions, experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, siteStylePresets, siteThemes, surveyResponses } from "../db/schema.js";
+import { aiConversations, aiMessages, aiProviderUsage, aiToolExecutions, experienceEditorSessions, experienceEvents, experienceImpressions, experiences, experienceVersions, segments, sites, siteExperienceTemplates, siteStylePresets, siteThemes, surveyResponses } from "../db/schema.js";
 import { env } from "../config.js";
 import { signEditorAccessToken, verifyEditorAccessToken } from "../lib/auth.js";
 import { createSurveyResponseSchema, definitionSchemaFor, impressionSchema, manifestQuerySchema, updateDraftSchema, updateSurveyResponseSchema } from "../lib/experiences/validation.js";
@@ -136,9 +136,15 @@ async function loadEditorDraftForSession(db: Db, session: typeof experienceEdito
     db.select({ id: experiences.id, name: experiences.name, status: experiences.status }).from(experiences).where(and(eq(experiences.siteId, session.siteId), eq(experiences.kind, "guide"))).limit(200),
     db.select({ id: segments.id, name: segments.name }).from(segments).where(eq(segments.siteId, session.siteId)).limit(200),
   ]) : [[], []];
+  const layoutTemplates = experience.builderMode === "onsite" && experience.kind === "widget" && experience.widgetType !== "survey"
+    ? await db.select({ id: siteExperienceTemplates.id, name: siteExperienceTemplates.name }).from(siteExperienceTemplates)
+      .where(and(eq(siteExperienceTemplates.siteId, session.siteId), sql`json_extract(${siteExperienceTemplates.layout}, '$.kind') = 'widget'`,
+        sql`json_extract(${siteExperienceTemplates.layout}, '$.widgetType') = ${experience.widgetType}`))
+      .orderBy(desc(siteExperienceTemplates.createdAt))
+    : [];
   return {
     ...(isPendingGuideCapture(draft.definition) ? { guidedCapture: true } : {}),
-    references: { guides, segments: segmentReferences, stylePresets, siteTheme: themes[0]?.activeTokens ?? null },
+    references: { guides, segments: segmentReferences, stylePresets, siteTheme: themes[0]?.activeTokens ?? null, themeStudioUrl: new URL("/experiences/themes", env.DASHBOARD_URL).href, layoutTemplates },
     experience: { id: experience.id, name: experience.name, kind: experience.kind, widgetType: experience.widgetType, builderMode: experience.builderMode },
     version: { id: draft.id, versionNumber: draft.versionNumber, revision: draft.revision, definition: draft.definition },
   };
@@ -478,8 +484,10 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
       heartbeat = setInterval(() => writeEvent({ type: "heartbeat" }), 10_000);
     }
     try {
+      const definition = draft.definition as ExperienceDefinition;
       const result = await runEditorAiTurn(aiProvider, parsed.data, history.reverse(), abort.signal, proposal => validateEditorProposalAgainstDraft(draft.definition as ExperienceDefinition, parsed.data, proposal, serverResources), {
         deadlineMs: env.EDITOR_AI_DEADLINE_MS,
+        theme: "visualTheme" in definition && definition.visualTheme ? definition.design?.theme : undefined,
         onProgress: progress => writeEvent({ type: "progress", ...progress }),
       });
       const finalResult = { conversationId: conversation.id, revision: draft.revision, markdown: result.markdown, proposal: result.proposal };
@@ -513,6 +521,19 @@ export function registerPublicExperienceRoutes(app: FastifyInstance, db: Db, pro
       request.raw.removeListener("aborted", onIncomingAborted); reply.raw.removeListener("close", onOutgoingClose);
       if (wantsStream && stream && !terminal) stream.end();
     }
+  });
+
+  app.get("/public/experience-editor/:sessionId/layout-templates/:templateId", async (request, reply) => {
+    const session = await validateEditorAccess(request, db);
+    const { sessionId, templateId } = request.params as { sessionId: string; templateId: string };
+    if (!session || session.id !== sessionId) return reply.code(401).send({ error: "invalid_editor_access" });
+    const [[experience], [template]] = await Promise.all([
+      db.select().from(experiences).where(and(eq(experiences.id, session.experienceId), eq(experiences.siteId, session.siteId))).limit(1),
+      db.select().from(siteExperienceTemplates).where(and(eq(siteExperienceTemplates.id, templateId), eq(siteExperienceTemplates.siteId, session.siteId))).limit(1),
+    ]);
+    if (experience?.builderMode !== "onsite" || experience.kind !== "widget" || template?.layout.kind !== "widget" || template.layout.widgetType !== experience.widgetType)
+      return reply.code(404).send({ error: "template_not_found" });
+    return reply.send({ template: { id: template.id, version: 1, document: template.layout.document } });
   });
 
   app.post("/public/experience-editor/:sessionId/style-presets", async (request, reply) => {

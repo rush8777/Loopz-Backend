@@ -14,6 +14,22 @@ export interface SiteThemeTokens {
   };
   radii: { sm: number; md: number; lg: number };
   shadows: { sm: ThemeShadow; md: ThemeShadow };
+  spacing?: number;
+  components?: Partial<Record<ThemeComponent, { spacing?: number; radius?: number; buttonRadius?: number }>>;
+}
+
+export const THEME_COMPONENTS = ["modal", "anchored_card", "survey", "checklist", "banner", "slideout", "toast", "hotspot", "cursor_follow", "guide"] as const;
+export type ThemeComponent = typeof THEME_COMPONENTS[number];
+
+export function componentTheme(tokens: SiteThemeTokens, component: ThemeComponent): SiteThemeTokens {
+  const { components, ...base } = tokens;
+  const defaults = components?.[component];
+  if (!defaults) return base;
+  return {
+    ...base,
+    spacing: defaults.spacing ?? base.spacing,
+    radii: { ...base.radii, lg: defaults.radius ?? base.radii.lg, md: defaults.buttonRadius ?? base.radii.md },
+  };
 }
 
 export interface ThemeCaptureEvidence {
@@ -27,6 +43,7 @@ export type VisualPresetId = "minimal" | "modern" | "soft" | "dark";
 export interface VisualThemeState {
   source: VisualThemeSource;
   preset?: VisualPresetId;
+  savedStyleId?: string;
   templateId?: string;
   templateTokens: SiteThemeTokens;
   baseTokens: SiteThemeTokens;

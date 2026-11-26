@@ -60,6 +60,15 @@ export function createOnsiteDocument(guide = false) {
     const button = emptyCell(createBlock("button", guide));
     return { schemaVersion: 2, id: onsiteId("document"), root: { ...emptyCell(), direction: "column", gap: 12, padding: { top: 20, right: 20, bottom: 20, left: 20 }, children: [heading, text, button] } };
 }
+export function inheritThemeDefaults(document) {
+    for (const block of listBlocks(document.root)) {
+        if (block.type === "heading" || block.type === "text")
+            block.inheritTypography = true;
+        if (block.type === "button")
+            block.inheritRadius = true;
+    }
+    return document;
+}
 export function createOnsiteSurveyDocument(questions, content) {
     const document = createOnsiteDocument();
     document.schemaVersion = 3;
@@ -348,15 +357,15 @@ function renderBlock(block, css, survey, checklist) {
     if (block.type === "survey_controls")
         return surveyControlsMarkup(block.id, survey?.submitLabel ?? "Submit");
     if (block.type === "heading") {
-        css.push(`${selector}{font:${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.25} var(--movcues-font-heading,ui-sans-serif,system-ui,sans-serif);text-align:${align};${block.color ? `color:${block.color};` : ""}}`);
+        css.push(`${selector}{font:${block.inheritTypography ? `var(--movcues-font-heading-weight,${block.weight}) var(--movcues-font-heading-size,${block.fontSize}px)/var(--movcues-font-heading-line-height,${block.lineHeight ?? 1.25})` : `${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.25}`} var(--movcues-font-heading,ui-sans-serif,system-ui,sans-serif);text-align:${align};${block.color ? `color:${block.color};` : ""}}`);
         return `<h${block.level} class="movcues-block movcues-heading" data-movcues-block-id="${block.id}" data-movcues-content="heading">${sanitizeRichText(block.html)}</h${block.level}>`;
     }
     if (block.type === "text") {
-        css.push(`${selector}{font:${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.5} var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);text-align:${align};white-space:pre-wrap;${block.color ? `color:${block.color};` : ""}}`);
+        css.push(`${selector}{font:${block.inheritTypography ? `var(--movcues-font-body-weight,${block.weight}) var(--movcues-font-body-size,${block.fontSize}px)/var(--movcues-font-body-line-height,${block.lineHeight ?? 1.5})` : `${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.5}`} var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);text-align:${align};white-space:pre-wrap;${block.color ? `color:${block.color};` : ""}}`);
         return `<div class="movcues-block movcues-text" data-movcues-block-id="${block.id}" data-movcues-content="body">${sanitizeRichText(block.html)}</div>`;
     }
     if (block.type === "button") {
-        css.push(`${selector}{align-self:${align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center"};padding:${block.paddingY}px ${block.paddingX}px;border-radius:${block.radius}px;${block.width === "full" ? "width:100%;" : ""}${block.background ? `background:${block.background};` : ""}${block.color ? `color:${block.color};` : ""}}`);
+        css.push(`${selector}{align-self:${align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center"};padding:${block.paddingY}px ${block.paddingX}px;border-radius:${block.inheritRadius ? `var(--movcues-button-radius,${block.radius}px)` : `${block.radius}px`};${block.width === "full" ? "width:100%;" : ""}${block.background ? `background:${block.background};` : ""}${block.color ? `color:${block.color};` : ""}}`);
         return `<button type="button" class="movcues-block movcues-button movcues-button--${block.variant}${block.width === "full" ? " movcues-block--full" : ""}" data-movcues-block-id="${block.id}" data-movcues-action-id="${block.action.id}">${escapeText(block.label)}</button>`;
     }
     if (block.type === "image") {
@@ -474,7 +483,7 @@ export function validateOnsiteDocument(value) {
 function validateBlock(block, path, addId, number, errors) {
     addId(block.id, path);
     const base = ["id", "type", "align"];
-    const keys = { checklist_task: [...base, "itemId", "fontSize", "color", "indicator"], checklist_text: [...base, "role", "fontSize", "color", "text"], checklist_control: [...base, "role", "fontSize", "color"], checklist_progress: [...base, "fontSize", "color"], question: [...base, "questionId", "fontSize", "color"], survey_controls: base, heading: [...base, "html", "level", "fontSize", "weight", "color", "lineHeight"], text: [...base, "html", "fontSize", "weight", "color", "lineHeight"], button: [...base, "label", "action", "variant", "background", "color", "radius", "paddingX", "paddingY", "width"], image: [...base, "src", "alt", "fit", "width", "height", "radius"], divider: [...base, "orientation", "thickness", "color"], spacer: [...base, "size"], icon: [...base, "icon", "size", "color"] };
+    const keys = { checklist_task: [...base, "itemId", "fontSize", "color", "indicator"], checklist_text: [...base, "role", "fontSize", "color", "text"], checklist_control: [...base, "role", "fontSize", "color"], checklist_progress: [...base, "fontSize", "color"], question: [...base, "questionId", "fontSize", "color"], survey_controls: base, heading: [...base, "html", "level", "fontSize", "weight", "color", "lineHeight", "inheritTypography"], text: [...base, "html", "fontSize", "weight", "color", "lineHeight", "inheritTypography"], button: [...base, "label", "action", "variant", "background", "color", "radius", "inheritRadius", "paddingX", "paddingY", "width"], image: [...base, "src", "alt", "fit", "width", "height", "radius"], divider: [...base, "orientation", "thickness", "color"], spacer: [...base, "size"], icon: [...base, "icon", "size", "color"] };
     if (!Object.prototype.hasOwnProperty.call(keys, block.type)) {
         errors.push(`${path} has an unsupported block type.`);
         return;
@@ -498,6 +507,8 @@ function validateBlock(block, path, addId, number, errors) {
         number(block.fontSize, 10, 36, `${path} font size`);
     }
     else if (block.type === "heading" || block.type === "text") {
+        if (block.inheritTypography !== undefined && typeof block.inheritTypography !== "boolean")
+            errors.push(`${path} has an invalid typography inheritance flag.`);
         if (typeof block.html !== "string" || block.html.length > ONSITE_LIMITS.maxRichText || sanitizeRichText(block.html) !== block.html)
             errors.push(`${path} contains unsupported or unsafe rich text.`);
         number(block.fontSize, 10, 72, `${path} font size`);
@@ -508,6 +519,8 @@ function validateBlock(block, path, addId, number, errors) {
             errors.push(`${path} has an invalid heading level.`);
     }
     else if (block.type === "button") {
+        if (block.inheritRadius !== undefined && typeof block.inheritRadius !== "boolean")
+            errors.push(`${path} has an invalid radius inheritance flag.`);
         if (!block.label?.trim() || block.label.length > 80)
             errors.push(`${path} label must contain 1–80 characters.`);
         addId(block.action?.id, `${path} action`);

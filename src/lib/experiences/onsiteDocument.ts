@@ -56,9 +56,9 @@ export type OnsiteBlock =
   | (BlockBase & { type: "checklist_progress"; fontSize: number; color?: string })
   | (BlockBase & { type: "question"; questionId: string; fontSize: number; color?: string })
   | (BlockBase & { type: "survey_controls" })
-  | (BlockBase & { type: "heading"; html: string; level: 1 | 2 | 3 | 4; fontSize: number; weight: 400 | 500 | 600 | 700; color?: string; lineHeight?: number })
-  | (BlockBase & { type: "text"; html: string; fontSize: number; weight: 400 | 500 | 600 | 700; color?: string; lineHeight?: number })
-  | (BlockBase & { type: "button"; label: string; action: OnsiteButtonAction; variant: "primary" | "secondary" | "outline"; background?: string; color?: string; radius: number; paddingX: number; paddingY: number; width: "hug" | "full" })
+  | (BlockBase & { type: "heading"; html: string; level: 1 | 2 | 3 | 4; fontSize: number; weight: 400 | 500 | 600 | 700; color?: string; lineHeight?: number; inheritTypography?: boolean })
+  | (BlockBase & { type: "text"; html: string; fontSize: number; weight: 400 | 500 | 600 | 700; color?: string; lineHeight?: number; inheritTypography?: boolean })
+  | (BlockBase & { type: "button"; label: string; action: OnsiteButtonAction; variant: "primary" | "secondary" | "outline"; background?: string; color?: string; radius: number; inheritRadius?: boolean; paddingX: number; paddingY: number; width: "hug" | "full" })
   | (BlockBase & { type: "image"; src: string; alt: string; fit: "contain" | "cover"; width: number; height?: number; radius: number })
   | (BlockBase & { type: "divider"; orientation: "horizontal" | "vertical"; thickness: number; color: string })
   | (BlockBase & { type: "spacer"; size: number })
@@ -105,6 +105,14 @@ export function createOnsiteDocument(guide = false): OnsiteDocument {
   const text = emptyCell(createBlock("text", guide));
   const button = emptyCell(createBlock("button", guide));
   return { schemaVersion: 2, id: onsiteId("document"), root: { ...emptyCell(), direction: "column", gap: 12, padding: { top: 20, right: 20, bottom: 20, left: 20 }, children: [heading, text, button] } };
+}
+
+export function inheritThemeDefaults(document: OnsiteDocument): OnsiteDocument {
+  for (const block of listBlocks(document.root)) {
+    if (block.type === "heading" || block.type === "text") block.inheritTypography = true;
+    if (block.type === "button") block.inheritRadius = true;
+  }
+  return document;
 }
 
 export function createOnsiteSurveyDocument(questions: SurveyQuestion[], content?: ExperienceContent): OnsiteDocument {
@@ -309,9 +317,9 @@ function renderBlock(block: OnsiteBlock, css: string[], survey?: OnsiteSurveyCon
   }
   if (block.type === "question") { css.push(`${selector}{font:${block.fontSize}px/1.5 var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);text-align:${align};${block.color ? `color:${block.color};` : ""}}`); return surveyQuestionMarkup(survey!.questions.find(question => question.id === block.questionId)!, block.id); }
   if (block.type === "survey_controls") return surveyControlsMarkup(block.id, survey?.submitLabel ?? "Submit");
-  if (block.type === "heading") { css.push(`${selector}{font:${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.25} var(--movcues-font-heading,ui-sans-serif,system-ui,sans-serif);text-align:${align};${block.color ? `color:${block.color};` : ""}}`); return `<h${block.level} class="movcues-block movcues-heading" data-movcues-block-id="${block.id}" data-movcues-content="heading">${sanitizeRichText(block.html)}</h${block.level}>`; }
-  if (block.type === "text") { css.push(`${selector}{font:${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.5} var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);text-align:${align};white-space:pre-wrap;${block.color ? `color:${block.color};` : ""}}`); return `<div class="movcues-block movcues-text" data-movcues-block-id="${block.id}" data-movcues-content="body">${sanitizeRichText(block.html)}</div>`; }
-  if (block.type === "button") { css.push(`${selector}{align-self:${align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center"};padding:${block.paddingY}px ${block.paddingX}px;border-radius:${block.radius}px;${block.width === "full" ? "width:100%;" : ""}${block.background ? `background:${block.background};` : ""}${block.color ? `color:${block.color};` : ""}}`); return `<button type="button" class="movcues-block movcues-button movcues-button--${block.variant}${block.width === "full" ? " movcues-block--full" : ""}" data-movcues-block-id="${block.id}" data-movcues-action-id="${block.action.id}">${escapeText(block.label)}</button>`; }
+  if (block.type === "heading") { css.push(`${selector}{font:${block.inheritTypography ? `var(--movcues-font-heading-weight,${block.weight}) var(--movcues-font-heading-size,${block.fontSize}px)/var(--movcues-font-heading-line-height,${block.lineHeight ?? 1.25})` : `${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.25}`} var(--movcues-font-heading,ui-sans-serif,system-ui,sans-serif);text-align:${align};${block.color ? `color:${block.color};` : ""}}`); return `<h${block.level} class="movcues-block movcues-heading" data-movcues-block-id="${block.id}" data-movcues-content="heading">${sanitizeRichText(block.html)}</h${block.level}>`; }
+  if (block.type === "text") { css.push(`${selector}{font:${block.inheritTypography ? `var(--movcues-font-body-weight,${block.weight}) var(--movcues-font-body-size,${block.fontSize}px)/var(--movcues-font-body-line-height,${block.lineHeight ?? 1.5})` : `${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.5}`} var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);text-align:${align};white-space:pre-wrap;${block.color ? `color:${block.color};` : ""}}`); return `<div class="movcues-block movcues-text" data-movcues-block-id="${block.id}" data-movcues-content="body">${sanitizeRichText(block.html)}</div>`; }
+  if (block.type === "button") { css.push(`${selector}{align-self:${align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center"};padding:${block.paddingY}px ${block.paddingX}px;border-radius:${block.inheritRadius ? `var(--movcues-button-radius,${block.radius}px)` : `${block.radius}px`};${block.width === "full" ? "width:100%;" : ""}${block.background ? `background:${block.background};` : ""}${block.color ? `color:${block.color};` : ""}}`); return `<button type="button" class="movcues-block movcues-button movcues-button--${block.variant}${block.width === "full" ? " movcues-block--full" : ""}" data-movcues-block-id="${block.id}" data-movcues-action-id="${block.action.id}">${escapeText(block.label)}</button>`; }
   if (block.type === "image") { css.push(`${selector}{align-self:${align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center"};width:${block.width}%;${block.height ? `height:${block.height}px;` : "height:auto;"}object-fit:${block.fit};border-radius:${block.radius}px}`); return `<img class="movcues-block movcues-image" data-movcues-block-id="${block.id}" src="${escapeAttribute(block.src)}" alt="${escapeAttribute(block.alt)}">`; }
   if (block.type === "divider") { css.push(`${selector}{align-self:stretch;${block.orientation === "horizontal" ? `width:100%;height:${block.thickness}px` : `width:${block.thickness}px;min-height:24px`};border:0;background:${block.color}}`); return `<hr class="movcues-block movcues-divider" data-movcues-block-id="${block.id}">`; }
   if (block.type === "spacer") { css.push(`${selector}{flex:0 0 ${block.size}px;width:${block.size}px;height:${block.size}px}`); return `<div class="movcues-block movcues-spacer" data-movcues-block-id="${block.id}" aria-hidden="true"></div>`; }
@@ -358,7 +366,7 @@ export function validateOnsiteDocument(value: unknown): OnsiteValidationResult {
 
 function validateBlock(block: OnsiteBlock, path: string, addId: (id: unknown, path: string) => void, number: (value: unknown, min: number, max: number, path: string) => void, errors: string[]): void {
   addId(block.id, path);
-  const base = ["id", "type", "align"]; const keys: Record<OnsiteBlock["type"], string[]> = { checklist_task: [...base,"itemId","fontSize","color","indicator"], checklist_text: [...base,"role","fontSize","color","text"], checklist_control: [...base,"role","fontSize","color"], checklist_progress: [...base,"fontSize","color"], question: [...base, "questionId", "fontSize", "color"], survey_controls: base, heading: [...base, "html", "level", "fontSize", "weight", "color", "lineHeight"], text: [...base, "html", "fontSize", "weight", "color", "lineHeight"], button: [...base, "label", "action", "variant", "background", "color", "radius", "paddingX", "paddingY", "width"], image: [...base, "src", "alt", "fit", "width", "height", "radius"], divider: [...base, "orientation", "thickness", "color"], spacer: [...base, "size"], icon: [...base, "icon", "size", "color"] };
+  const base = ["id", "type", "align"]; const keys: Record<OnsiteBlock["type"], string[]> = { checklist_task: [...base,"itemId","fontSize","color","indicator"], checklist_text: [...base,"role","fontSize","color","text"], checklist_control: [...base,"role","fontSize","color"], checklist_progress: [...base,"fontSize","color"], question: [...base, "questionId", "fontSize", "color"], survey_controls: base, heading: [...base, "html", "level", "fontSize", "weight", "color", "lineHeight", "inheritTypography"], text: [...base, "html", "fontSize", "weight", "color", "lineHeight", "inheritTypography"], button: [...base, "label", "action", "variant", "background", "color", "radius", "inheritRadius", "paddingX", "paddingY", "width"], image: [...base, "src", "alt", "fit", "width", "height", "radius"], divider: [...base, "orientation", "thickness", "color"], spacer: [...base, "size"], icon: [...base, "icon", "size", "color"] };
   if (!Object.prototype.hasOwnProperty.call(keys, block.type)) { errors.push(`${path} has an unsupported block type.`); return; }
   unexpectedKeys(block as unknown as Record<string, unknown>, keys[block.type], path, errors);
   if (block.align !== undefined && !["left", "center", "right"].includes(block.align)) errors.push(`${path} has an invalid alignment.`);
@@ -371,10 +379,12 @@ function validateBlock(block: OnsiteBlock, path: string, addId: (id: unknown, pa
   }
   else if (block.type === "question") { if (typeof block.questionId !== "string" || !block.questionId.trim() || block.questionId.length > 64) errors.push(`${path} must reference a stable question ID.`); number(block.fontSize, 10, 36, `${path} font size`); }
   else if (block.type === "heading" || block.type === "text") {
+    if (block.inheritTypography !== undefined && typeof block.inheritTypography !== "boolean") errors.push(`${path} has an invalid typography inheritance flag.`);
     if (typeof block.html !== "string" || block.html.length > ONSITE_LIMITS.maxRichText || sanitizeRichText(block.html) !== block.html) errors.push(`${path} contains unsupported or unsafe rich text.`);
     number(block.fontSize, 10, 72, `${path} font size`); number(block.lineHeight ?? 1.4, 0.9, 3, `${path} line height`);
     if (![400, 500, 600, 700].includes(block.weight)) errors.push(`${path} has an invalid font weight.`); if (block.type === "heading" && ![1, 2, 3, 4].includes(block.level)) errors.push(`${path} has an invalid heading level.`);
   } else if (block.type === "button") {
+    if (block.inheritRadius !== undefined && typeof block.inheritRadius !== "boolean") errors.push(`${path} has an invalid radius inheritance flag.`);
     if (!block.label?.trim() || block.label.length > 80) errors.push(`${path} label must contain 1–80 characters.`);
     addId(block.action?.id, `${path} action`);
     if (!block.action || !["next_step", "previous_step", "dismiss", "open_url", "track_event"].includes(block.action.type)) errors.push(`${path} has an invalid action.`);

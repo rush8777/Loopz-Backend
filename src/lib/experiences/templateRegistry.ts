@@ -2,6 +2,7 @@ import type { WidgetType } from "./types.js";
 
 export type ExperienceTemplateCategory = "widget" | "guide" | "survey" | "checklist";
 export type VisualPresetId = "minimal" | "modern" | "soft" | "dark";
+export const SAVED_LAYOUT_ID = /^layout-[a-f0-9]{32}$/;
 
 export interface ExperienceTemplateSummary {
   id: string;
@@ -23,6 +24,9 @@ export const EXPERIENCE_TEMPLATES: readonly ExperienceTemplateSummary[] = [
   { id: "widget-upgrade-slideout", version: 1, category: "widget", widgetType: "slideout", name: "Upgrade or promotion", description: "A focused slideout for plans, trials, and offers.", accent: "#0f766e", surface: "#f0fdfa", preset: "modern" },
   { id: "widget-feature-tooltip", version: 1, category: "widget", widgetType: "anchored_card", name: "Contextual feature tooltip", description: "A compact explanation placed beside a product control.", accent: "#2563eb", surface: "#eff6ff", preset: "minimal" },
   { id: "widget-notification-toast", version: 1, category: "widget", widgetType: "toast", name: "Compact notification", description: "A concise confirmation or status message.", accent: "#15803d", surface: "#f0fdf4", preset: "minimal" },
+  { id: "widget-announcement-banner", version: 1, category: "widget", widgetType: "banner", name: "Announcement banner", description: "A short update across the page.", accent: "#2563eb", surface: "#eff6ff", preset: "modern" },
+  { id: "widget-feature-hotspot", version: 1, category: "widget", widgetType: "hotspot", name: "Feature hotspot", description: "Point out an element with an expandable hint.", accent: "#4f46e5", surface: "#eef2ff", preset: "modern" },
+  { id: "widget-cursor-hint", version: 1, category: "widget", widgetType: "cursor_follow", name: "Cursor hint", description: "Keep a short instruction close to the cursor.", accent: "#0284c7", surface: "#f0f9ff", preset: "minimal" },
   { id: "guide-new-user-onboarding", version: 1, category: "guide", name: "New-user onboarding", description: "A welcoming three-step path to the first success.", accent: "#4f46e5", surface: "#ffffff", preset: "modern" },
   { id: "guide-feature-discovery", version: 1, category: "guide", name: "Feature discovery", description: "Introduce a useful feature in context.", accent: "#0284c7", surface: "#f0f9ff", preset: "soft" },
   { id: "guide-product-tour", version: 1, category: "guide", name: "Multi-step product tour", description: "A structured tour across key product areas.", accent: "#7c3aed", surface: "#faf5ff", preset: "modern" },

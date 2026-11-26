@@ -11,7 +11,7 @@ import type { FastifyInstance } from "fastify";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db, DbExecutor } from "../db/client.js";
-import { experienceEditorSessions, guideCaptureCheckpoints, experiences, experienceVersions, pageDefinitions, segments, sites, siteThemes } from "../db/schema.js";
+import { experienceEditorSessions, guideCaptureCheckpoints, experiences, experienceVersions, pageDefinitions, segments, sites, siteExperienceTemplates, siteStylePresets, siteThemes } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { createExperienceSchema, definitionSchemaFor, guidePublishIssues, updateDraftSchema } from "../lib/experiences/validation.js";
@@ -27,11 +27,13 @@ import { sendEntitlementError } from "../lib/entitlements/http.js";
 import { requiredExperienceFeatures } from "../lib/entitlements/experienceFeatures.js";
 import type { SiteThemeTokens } from "../lib/themes/types.js";
 import { siteThemeCss } from "../lib/themes/css.js";
-import { applyOnsiteDocument, createOnsiteChecklistDocument, createOnsiteDocument, createOnsiteSurveyDocument, listBlocks } from "../lib/experiences/onsiteDocument.js";
+import { applyOnsiteDocument, createOnsiteChecklistDocument, createOnsiteDocument, createOnsiteSurveyDocument, inheritThemeDefaults, listBlocks } from "../lib/experiences/onsiteDocument.js";
 import { onsiteId } from "../lib/experiences/onsiteDocument.js";
-import { resolveTemplate, templatesFor, type VisualPresetId } from "../lib/experiences/templateRegistry.js";
+import { EXPERIENCE_TEMPLATES, SAVED_LAYOUT_ID, resolveTemplate, templatesFor, type ExperienceTemplateSummary, type VisualPresetId } from "../lib/experiences/templateRegistry.js";
+import { applyExperienceLayout, captureExperienceLayout, type ExperienceLayout } from "../lib/experiences/layoutTemplate.js";
 import { presetTokens } from "../lib/themes/presets.js";
-import type { VisualThemeState } from "../lib/themes/types.js";
+import { componentTheme, THEME_COMPONENTS, type ThemeComponent, type VisualThemeState } from "../lib/themes/types.js";
+import { siteThemeTokensSchema } from "../lib/themes/validation.js";
 
 const SUPPORTED_WIDGET_TYPES: ExperienceWidgetType[] = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey", "geo_agent"];
 
@@ -101,7 +103,7 @@ function onsiteBuilder(content: ExperienceContent, widgetType: string): WidgetBu
   const body = blocks.find(block => block.type === "text"); if (body?.type === "text") body.html = escapeBuilderText(content.body);
   const button = blocks.find(block => block.type === "button");
   if (button?.type === "button" && content.primaryAction) { const action = content.primaryAction; button.label = action.label; button.action = { id: button.action.id, ...(action.type === "open_url" && action.url ? { type: "open_url" as const, url: action.url } : action.type === "track_event" && action.eventName ? { type: "track_event" as const, eventName: action.eventName } : { type: action.type === "next_step" ? "next_step" as const : "dismiss" as const }) }; }
-  const builder: WidgetBuilderState = { version: 1, projectData: {}, html: "", css: "" }; applyOnsiteDocument(builder, document, widgetType as WidgetType); return builder;
+  const builder: WidgetBuilderState = { version: 1, projectData: {}, html: "", css: "" }; applyOnsiteDocument(builder, inheritThemeDefaults(document), widgetType as WidgetType); return builder;
 }
 
 function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, pageRules: PageRule[], siteTheme?: SiteThemeTokens, builderMode: BuilderMode = "grapesjs", guidePattern: GuideStepPattern = "anchored_card"): ExperienceDefinition {
@@ -166,7 +168,7 @@ function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, 
       delete definition.builder;
       for (const step of definition.survey.steps) {
         step.builder = { version: 1, projectData: {}, html: "", css: "" };
-        step.content = applyOnsiteDocument(step.builder, createOnsiteSurveyDocument(step.questions, step.content), "survey", { questions: step.questions, submitLabel: definition.survey.submitLabel }).content;
+        step.content = applyOnsiteDocument(step.builder, inheritThemeDefaults(createOnsiteSurveyDocument(step.questions, step.content)), "survey", { questions: step.questions, submitLabel: definition.survey.submitLabel }).content;
       }
       definition.content = { ...definition.survey.steps[0].content };
     }
@@ -185,7 +187,7 @@ function surveyStarter(stepId: string, ratingId: string | null, detailId: string
 
 function themedDesign(theme?: SiteThemeTokens) {
   if (!theme) return DEFAULT_DESIGN;
-  return { width: "md" as const, theme: { background: theme.colors.background, foreground: theme.colors.text, primary: theme.colors.primary, borderRadius: (theme.radii.md <= 6 ? "sm" : theme.radii.md >= 18 ? "lg" : "md") as "sm" | "md" | "lg", siteTheme: theme } };
+  return { width: "md" as const, theme: { background: theme.colors.background, foreground: theme.colors.text, primary: theme.colors.primary, borderRadius: (theme.radii.md <= 6 ? "sm" : theme.radii.md >= 18 ? "lg" : "md") as "sm" | "md" | "lg", spacing: theme.spacing, siteTheme: theme } };
 }
 
 function templateTokens(template: ReturnType<typeof resolveTemplate>): SiteThemeTokens {
@@ -194,8 +196,9 @@ function templateTokens(template: ReturnType<typeof resolveTemplate>): SiteTheme
   return tokens;
 }
 
-function visualTheme(template: ReturnType<typeof resolveTemplate>, requested: { source: "template" | "site" | "preset"; preset?: VisualPresetId } | undefined, captured?: SiteThemeTokens): { state: VisualThemeState; tokens: SiteThemeTokens } {
+function visualTheme(template: ReturnType<typeof resolveTemplate>, requested: { source: "template" | "site" | "preset"; preset?: VisualPresetId } | undefined, captured?: SiteThemeTokens, saved?: { id: string; tokens: SiteThemeTokens }): { state: VisualThemeState; tokens: SiteThemeTokens } {
   const defaults = templateTokens(template);
+  if (saved) return { tokens: saved.tokens, state: { source: "preset", savedStyleId: saved.id, ...(template ? { templateId: template.id } : {}), templateTokens: defaults, baseTokens: structuredClone(saved.tokens), overrides: {} } };
   const source = requested?.source ?? (captured ? "site" : "template");
   const base = source === "site" && captured ? structuredClone(captured) : source === "preset" ? presetTokens(requested?.preset ?? "modern") : structuredClone(defaults);
   return { tokens: base, state: { source, ...(source === "preset" ? { preset: requested?.preset ?? "modern" } : {}), ...(template ? { templateId: template.id } : {}), templateTokens: defaults, baseTokens: structuredClone(base), overrides: {} } };
@@ -215,6 +218,9 @@ function widgetTemplateCopy(id: string): { heading: string; body: string; action
     "widget-upgrade-slideout": { heading: "Unlock more for your team", body: "Upgrade to collaborate without limits and access advanced insights.", action: "View plans" },
     "widget-feature-tooltip": { heading: "New: saved views", body: "Save this filtered view and return to it whenever you need it.", action: "Got it" },
     "widget-notification-toast": { heading: "Changes saved", body: "Your latest updates are ready for the team.", action: "Dismiss" },
+    "widget-announcement-banner": { heading: "A new update is available", body: "Take a quick look at what changed.", action: "Got it" },
+    "widget-feature-hotspot": { heading: "Find it here", body: "Open this control whenever you need it.", action: "Got it" },
+    "widget-cursor-hint": { heading: "Choose an item", body: "Select an item to see its details.", action: "Got it" },
   };
   return copy[id] ?? { heading: "A helpful message", body: "Add a concise message for your visitors.", action: "Got it" };
 }
@@ -288,7 +294,7 @@ function instantiateTemplate(definition: ExperienceDefinition, kind: ExperienceK
     const steps = surveyQuestions(templateId); const submitLabel = "Submit feedback";
     definition.survey = { showProgress: steps.length > 1, allowBack: true, submitLabel, steps: steps.map(spec => {
       const builder: WidgetBuilderState = { version: 1, projectData: {}, html: "", css: "" };
-      const content = applyOnsiteDocument(builder, createOnsiteSurveyDocument(spec.questions, { heading: spec.heading, body: spec.body }), "survey", { questions: spec.questions, submitLabel }).content;
+      const content = applyOnsiteDocument(builder, inheritThemeDefaults(createOnsiteSurveyDocument(spec.questions, { heading: spec.heading, body: spec.body })), "survey", { questions: spec.questions, submitLabel }).content;
       return { id: onsiteId("step"), content, questions: spec.questions, builder };
     }) };
     definition.content = { ...definition.survey.steps[0].content };
@@ -300,6 +306,42 @@ function instantiateTemplate(definition: ExperienceDefinition, kind: ExperienceK
     definition.builder = onsiteBuilder(definition.content, widgetType ?? "modal");
   }
   return definition;
+}
+
+const PREVIEW_TARGET = { primarySelector: "#theme-preview-target", fallbackSelectors: [], reliability: "reliable" as const };
+
+function savedTemplateSummary(template: typeof siteExperienceTemplates.$inferSelect): ExperienceTemplateSummary {
+  const { layout } = template;
+  return {
+    id: template.id, name: template.name, version: 1, category: layout.kind, description: "Saved layout",
+    ...(layout.kind === "widget" ? { widgetType: layout.widgetType } : layout.kind === "survey" ? { widgetType: "survey" } : {}),
+    accent: "#4f46e5", surface: "#f8fafc", preset: "modern",
+  };
+}
+
+function matchesLayout(layout: ExperienceLayout, kind: ExperienceKind, widgetType?: ExperienceWidgetType | null) {
+  if (kind === "widget" && widgetType === "survey") return layout.kind === "survey";
+  return layout.kind === kind && (layout.kind !== "widget" || layout.widgetType === widgetType);
+}
+
+function themePreview(component: ThemeComponent, tokens: SiteThemeTokens) {
+  const kind = component === "guide" || component === "checklist" ? component : "widget";
+  const widgetType = component === "guide" || component === "checklist" ? null : component;
+  const template = templatesFor(kind, widgetType)[0];
+  const base = initialDefinition(kind, widgetType, [], tokens, "onsite");
+  const definition = instantiateTemplate(base, kind, widgetType, template?.id ?? "blank");
+  const { state } = visualTheme(template ?? null, { source: "site" }, tokens);
+  applyDesign(definition, { ...themedDesign(tokens), ...(widgetType ? { size: defaultWidgetSize(widgetType) } : {}) }, state, template?.id);
+  let stepId: string | undefined;
+  if ("steps" in definition) {
+    const step = definition.steps.find(step => step.pattern === "anchored_card") ?? definition.steps[0];
+    step.pattern = "anchored_card";
+    step.target = PREVIEW_TARGET;
+    step.builder = onsiteBuilder(step.content, "anchored_card");
+    stepId = step.id;
+  }
+  if ("content" in definition && (widgetType === "anchored_card" || widgetType === "hotspot")) definition.target = PREVIEW_TARGET;
+  return { id: component, versionId: "theme-preview", kind, widgetType, priority: 0, definition, stepId };
 }
 
 async function serializeExperience(db: Db, row: typeof experiences.$inferSelect) {
@@ -387,9 +429,74 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!site) return reply.code(404).send({ error: "site_not_found" });
     const query = z.object({ kind: z.enum(["guide", "widget", "checklist"]), widgetType: z.enum(SUPPORTED_WIDGET_TYPES).nullable().optional() }).safeParse(request.query);
     if (!query.success || (query.data.kind === "widget") !== Boolean(query.data.widgetType)) return reply.code(400).send({ error: "invalid_query" });
-    const [theme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
+    const [[theme], savedLayouts, savedThemes] = await Promise.all([
+      db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1),
+      db.select().from(siteExperienceTemplates).where(eq(siteExperienceTemplates.siteId, site.id)).orderBy(desc(siteExperienceTemplates.createdAt)),
+      db.select({ id: siteStylePresets.id, name: siteStylePresets.name }).from(siteStylePresets).where(eq(siteStylePresets.siteId, site.id)).orderBy(desc(siteStylePresets.updatedAt)),
+    ]);
     const siteTheme = theme?.activeTokens as SiteThemeTokens | null | undefined;
-    return reply.send({ templates: query.data.widgetType === "geo_agent" ? [] : templatesFor(query.data.kind, query.data.widgetType), presets: ["minimal", "modern", "soft", "dark"], hasSiteTheme: Boolean(siteTheme), ...(query.data.kind === "guide" && env.GUIDE_CAPTURE_ENABLED ? { guidedCaptureEnabled: true } : {}), ...(siteTheme ? { siteThemeColors: [siteTheme.colors.surface, siteTheme.colors.text, siteTheme.colors.primary] } : {}) });
+    const templates = query.data.widgetType === "geo_agent" ? [] : [
+      ...templatesFor(query.data.kind, query.data.widgetType),
+      ...savedLayouts.filter(template => matchesLayout(template.layout, query.data.kind, query.data.widgetType)).map(savedTemplateSummary),
+    ];
+    return reply.send({ templates, presets: ["minimal", "modern", "soft", "dark"], savedThemes, hasSiteTheme: Boolean(siteTheme), ...(query.data.kind === "guide" && env.GUIDE_CAPTURE_ENABLED ? { guidedCaptureEnabled: true } : {}), ...(siteTheme ? { siteThemeColors: [siteTheme.colors.surface, siteTheme.colors.text, siteTheme.colors.primary] } : {}) });
+  });
+
+  app.get("/orgs/:orgId/sites/:siteId/saved-experience-templates", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
+    const { siteId } = request.params as { siteId: string };
+    const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const layouts = await db.select().from(siteExperienceTemplates).where(eq(siteExperienceTemplates.siteId, site.id)).orderBy(desc(siteExperienceTemplates.createdAt));
+    return reply.send({ templates: layouts.map(savedTemplateSummary) });
+  });
+
+  app.delete("/orgs/:orgId/sites/:siteId/saved-experience-templates/:templateId", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+    const { siteId, templateId } = request.params as { siteId: string; templateId: string };
+    const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const [removed] = await db.delete(siteExperienceTemplates).where(and(eq(siteExperienceTemplates.siteId, site.id), eq(siteExperienceTemplates.id, templateId))).returning({ id: siteExperienceTemplates.id });
+    return removed ? reply.code(204).send() : reply.code(404).send({ error: "template_not_found" });
+  });
+
+  app.post("/orgs/:orgId/sites/:siteId/experiences/:experienceId/save-template", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+    const { siteId, experienceId } = request.params as { siteId: string; experienceId: string };
+    const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const row = await loadExperience(db, site.id, experienceId);
+    if (!row) return reply.code(404).send({ error: "experience_not_found" });
+    if (row.builderMode !== "onsite") return reply.code(409).send({ error: "template_unsupported", message: "Only structured on-site designs can be saved as templates." });
+    const input = z.object({ name: z.string().trim().min(1).max(80), versionId: z.string().min(1).max(100), revision: z.number().int().positive() }).strict().safeParse(request.body);
+    if (!input.success) return reply.code(400).send({ error: "invalid_body" });
+    const [version] = await db.select().from(experienceVersions).where(and(eq(experienceVersions.experienceId, row.id), eq(experienceVersions.id, input.data.versionId))).limit(1);
+    if (!version || version.revision !== input.data.revision) return reply.code(409).send({ error: "draft_conflict", message: "Reload the latest design before saving a template." });
+    if (isPendingGuideCapture(version.definition)) return reply.code(409).send({ error: "guide_capture_pending" });
+    const definition = definitionSchemaFor(row.kind as ExperienceKind, row.widgetType).safeParse(version.definition);
+    if (!definition.success) return reply.code(409).send({ error: "template_unsupported" });
+    let layout: ExperienceLayout;
+    try { layout = captureExperienceLayout(definition.data, row.widgetType as WidgetType | null); }
+    catch (error) { return reply.code(409).send({ error: "template_unsupported", message: error instanceof Error ? error.message : "This design cannot be templated." }); }
+    if (Buffer.byteLength(JSON.stringify(layout)) > 250_000) return reply.code(409).send({ error: "template_too_large", message: "This layout exceeds the template size limit." });
+    const template = await runEntitlementTransaction(db, async tx => {
+      const existing = await tx.select({ id: siteExperienceTemplates.id }).from(siteExperienceTemplates).where(eq(siteExperienceTemplates.siteId, site.id)).limit(50);
+      if (existing.length >= 50) return null;
+      const [saved] = await tx.insert(siteExperienceTemplates).values({ id: `layout-${crypto.randomUUID().replaceAll("-", "")}`, siteId: site.id, name: input.data.name, layout }).onConflictDoNothing().returning();
+      return saved;
+    });
+    if (template === null) return reply.code(409).send({ error: "template_limit" });
+    if (!template) return reply.code(409).send({ error: "template_name_exists" });
+    return reply.code(201).send({ template: savedTemplateSummary(template) });
+  });
+
+  app.post("/orgs/:orgId/sites/:siteId/theme-previews", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
+    const { siteId } = request.params as { siteId: string };
+    const site = await loadSiteInOrg(db, siteId, request.membership!.orgId);
+    if (!site) return reply.code(404).send({ error: "site_not_found" });
+    const parsed = siteThemeTokensSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_theme_tokens" });
+    return reply.send({
+      previews: THEME_COMPONENTS.map(component => themePreview(component, componentTheme(parsed.data, component))),
+      templates: EXPERIENCE_TEMPLATES,
+    });
   });
 
   app.post("/orgs/:orgId/sites/:siteId/experiences", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
@@ -417,17 +524,33 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
           : [{ id: "build_page", kind: "include" as const, operator: "equals" as const, value: new URL(buildUrl!).pathname }]
       : [];
     const [storedTheme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
-    const activeTheme = (storedTheme?.activeTokens ?? undefined) as SiteThemeTokens | undefined;
+    const component = visualType ?? (parsed.data.kind === "checklist" ? "checklist" : "guide");
+    const activeTheme = storedTheme?.activeTokens ? componentTheme(storedTheme.activeTokens as SiteThemeTokens, component) : undefined;
+    const theme = parsed.data.theme;
+    let savedStyle: { id: string; tokens: SiteThemeTokens } | undefined;
+    if (theme?.source === "saved") {
+      const [style] = await db.select().from(siteStylePresets).where(and(eq(siteStylePresets.id, theme.presetId), eq(siteStylePresets.siteId, site.id))).limit(1);
+      if (!style) return reply.code(404).send({ error: "style_preset_not_found" });
+      savedStyle = { id: style.id, tokens: componentTheme(style.tokens as SiteThemeTokens, component) };
+    }
     if (parsed.data.builderMode === "onsite" && !onsiteCompatible(parsed.data.kind, visualType)) return reply.code(400).send({ error: "onsite_builder_unsupported" });
     const isLegacyChecklistPreset = parsed.data.kind === "checklist" && ["default","minimal","soft","compact"].includes(parsed.data.template);
     const legacyPreset = isLegacyChecklistPreset ? parsed.data.template as ChecklistPreset : "default";
     let definition: ExperienceDefinition = geo
       ? { geoAgent: geoAgentConfig.parse({ schemaVersion: 1, appearance: {} }), targeting: { ...targeting([]), frequency: { mode: "every_time" } } }
       : parsed.data.kind === "checklist" ? initialChecklistDefinition(legacyPreset, activeTheme) : initialDefinition(parsed.data.kind, visualType, initialPageRules, activeTheme, parsed.data.builderMode, parsed.data.guideCreation ? "modal" : parsed.data.guidePattern);
-    const selectedTemplate = resolveTemplate(parsed.data.template, parsed.data.kind, visualType);
-    const selectedTheme = visualTheme(selectedTemplate, parsed.data.theme, activeTheme);
+    let selectedTemplate = resolveTemplate(parsed.data.template, parsed.data.kind, visualType);
+    let layout: ExperienceLayout | undefined;
+    if (SAVED_LAYOUT_ID.test(parsed.data.template)) {
+      const [saved] = await db.select().from(siteExperienceTemplates).where(and(eq(siteExperienceTemplates.siteId, site.id), eq(siteExperienceTemplates.id, parsed.data.template))).limit(1);
+      if (!saved || !matchesLayout(saved.layout, parsed.data.kind, visualType)) return reply.code(404).send({ error: "template_not_found" });
+      selectedTemplate = savedTemplateSummary(saved);
+      layout = saved.layout;
+    }
+    const selectedTheme = visualTheme(selectedTemplate, theme?.source === "saved" ? undefined : theme, activeTheme, savedStyle);
     if (parsed.data.builderMode === "onsite") {
-      definition = instantiateTemplate(definition, parsed.data.kind, visualType, isLegacyChecklistPreset ? "blank" : parsed.data.template);
+      if (layout) applyExperienceLayout(definition, layout);
+      else if (!parsed.data.guideCreation) definition = instantiateTemplate(definition, parsed.data.kind, visualType, isLegacyChecklistPreset ? "blank" : parsed.data.template);
       const design = { ...themedDesign(selectedTheme.tokens), ...(parsed.data.kind === "widget" ? { size: defaultWidgetSize(visualType!) } : {}) };
       applyDesign(definition, design, selectedTheme.state, selectedTemplate?.id);
       if (parsed.data.kind === "checklist" && isChecklistDefinition(definition) && (parsed.data.template === "blank" || isLegacyChecklistPreset)) applyOnsiteDocument(definition.builder,createOnsiteChecklistDocument(definition),"checklist",undefined,definition);

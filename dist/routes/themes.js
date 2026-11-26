@@ -5,6 +5,8 @@ import { auditLogs, sites, siteStylePresets, siteThemes, themeCaptureRequests } 
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
 import { siteThemeTokensSchema, themeCapturePayloadSchema } from "../lib/themes/validation.js";
+import { VISUAL_PRESETS, presetTokens } from "../lib/themes/presets.js";
+import { runEntitlementTransaction } from "../db/transaction.js";
 export const THEME_CAPTURE_TTL_MS = 5 * 60 * 1000;
 function siteOrigin(domain) {
     if (!domain)
@@ -46,12 +48,17 @@ export function registerThemeRoutes(app, db) {
         const site = await siteInOrg(db, siteId, request.membership.orgId);
         if (!site)
             return reply.code(404).send({ error: "site_not_found" });
-        const existing = await db.select({ id: siteStylePresets.id }).from(siteStylePresets).where(eq(siteStylePresets.siteId, site.id));
-        if (existing.length >= 20)
-            return reply.code(409).send({ error: "style_preset_limit" });
         try {
-            const [created] = await db.insert(siteStylePresets).values({ siteId: site.id, name: parsed.data.name, tokens: parsed.data.tokens, createdBy: request.user.id }).returning();
-            await db.insert(auditLogs).values({ orgId: site.orgId, userId: request.user.id, action: "site_style_preset.created", detail: { siteId: site.publicId, presetId: created.id } });
+            const created = await runEntitlementTransaction(db, async (tx) => {
+                const existing = await tx.select({ id: siteStylePresets.id }).from(siteStylePresets).where(eq(siteStylePresets.siteId, site.id)).limit(20);
+                if (existing.length >= 20)
+                    return null;
+                const [preset] = await tx.insert(siteStylePresets).values({ siteId: site.id, name: parsed.data.name, tokens: parsed.data.tokens, createdBy: request.user.id }).returning();
+                await tx.insert(auditLogs).values({ orgId: site.orgId, userId: request.user.id, action: "site_style_preset.created", detail: { siteId: site.publicId, presetId: preset.id } });
+                return preset;
+            });
+            if (!created)
+                return reply.code(409).send({ error: "style_preset_limit" });
             return reply.code(201).send({ preset: { ...created, createdAt: created.createdAt.toISOString(), updatedAt: created.updatedAt.toISOString() } });
         }
         catch {
@@ -59,7 +66,8 @@ export function registerThemeRoutes(app, db) {
         }
     });
     app.patch("/orgs/:orgId/sites/:siteId/style-presets/:presetId", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
-        const parsed = z.object({ name: z.string().trim().min(1).max(80) }).strict().safeParse(request.body);
+        const parsed = z.object({ name: z.string().trim().min(1).max(80).optional(), tokens: siteThemeTokensSchema.optional() }).strict()
+            .refine(value => value.name !== undefined || value.tokens !== undefined).safeParse(request.body);
         if (!parsed.success)
             return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
         const { siteId, presetId } = request.params;
@@ -70,7 +78,10 @@ export function registerThemeRoutes(app, db) {
         if (!preset)
             return reply.code(404).send({ error: "style_preset_not_found" });
         try {
-            const [updated] = await db.update(siteStylePresets).set({ name: parsed.data.name, updatedAt: new Date() }).where(eq(siteStylePresets.id, preset.id)).returning();
+            const [updated] = await db.update(siteStylePresets).set({ ...parsed.data, updatedAt: new Date() })
+                .where(and(eq(siteStylePresets.id, presetId), eq(siteStylePresets.siteId, site.id))).returning();
+            if (!updated)
+                return reply.code(404).send({ error: "style_preset_not_found" });
             return reply.send({ preset: { ...updated, createdAt: updated.createdAt.toISOString(), updatedAt: updated.updatedAt.toISOString() } });
         }
         catch {
@@ -89,6 +100,37 @@ export function registerThemeRoutes(app, db) {
         await db.insert(auditLogs).values({ orgId: site.orgId, userId: request.user.id, action: "site_style_preset.deleted", detail: { siteId: site.publicId, presetId: preset.id } });
         return reply.code(204).send();
     });
+    app.put("/orgs/:orgId/sites/:siteId/theme/default", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
+        const parsed = z.discriminatedUnion("source", [
+            z.object({ source: z.literal("preset"), preset: z.enum(["minimal", "modern", "soft", "dark"]) }).strict(),
+            z.object({ source: z.literal("saved"), presetId: z.string().min(1).max(100) }).strict(),
+            z.object({ source: z.literal("none") }).strict(),
+        ]).safeParse(request.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "invalid_body" });
+        const { siteId } = request.params;
+        const site = await siteInOrg(db, siteId, request.membership.orgId);
+        if (!site)
+            return reply.code(404).send({ error: "site_not_found" });
+        const selection = parsed.data;
+        const result = await runEntitlementTransaction(db, async (tx) => {
+            let tokens = selection.source === "preset" ? presetTokens(selection.preset) : null;
+            if (selection.source === "saved") {
+                const [preset] = await tx.select({ tokens: siteStylePresets.tokens }).from(siteStylePresets)
+                    .where(and(eq(siteStylePresets.id, selection.presetId), eq(siteStylePresets.siteId, site.id))).limit(1);
+                if (!preset)
+                    return null;
+                tokens = preset.tokens;
+            }
+            const now = new Date();
+            const update = { activeTokens: tokens, activeUpdatedAt: tokens ? now : null, updatedAt: now };
+            await tx.insert(siteThemes).values({ siteId: site.id, ...update })
+                .onConflictDoUpdate({ target: siteThemes.siteId, set: update });
+            await tx.insert(auditLogs).values({ orgId: site.orgId, userId: request.user.id, action: "site_theme.activated", detail: { siteId: site.publicId, ...selection } });
+            return { active: tokens ? { tokens, updatedAt: now } : null };
+        });
+        return result ? reply.send(result) : reply.code(404).send({ error: "style_preset_not_found" });
+    });
     app.get("/orgs/:orgId/sites/:siteId/theme", { preHandler: [authenticate, requireOrgRole(db, "VIEWER")] }, async (request, reply) => {
         const { siteId } = request.params;
         const site = await siteInOrg(db, siteId, request.membership.orgId);
@@ -100,6 +142,7 @@ export function registerThemeRoutes(app, db) {
             active: theme?.activeTokens ? { tokens: theme.activeTokens, updatedAt: theme.activeUpdatedAt } : null,
             candidate: theme?.candidateTokens ? { captureId: theme.candidateCaptureId, tokens: theme.candidateTokens, evidence: theme.candidateEvidence, origin: theme.candidateOrigin, capturedAt: theme.candidateCapturedAt } : null,
             capture: capture ? captureStatus(capture) : null,
+            builtIn: VISUAL_PRESETS,
         });
     });
     app.post("/orgs/:orgId/sites/:siteId/theme-captures", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {
@@ -138,8 +181,16 @@ export function registerThemeRoutes(app, db) {
         if (!theme?.candidateTokens || theme.candidateCaptureId !== parsed.data.captureId || !capture?.completedAt)
             return reply.code(409).send({ error: "theme_candidate_required" });
         const now = new Date();
-        const [updated] = await db.update(siteThemes).set({ activeTokens: parsed.data.tokens, activeUpdatedAt: now, candidateTokens: null, candidateCaptureId: null, candidateEvidence: null, candidateOrigin: null, candidateCapturedAt: null, updatedAt: now }).where(eq(siteThemes.siteId, site.id)).returning();
-        await db.insert(auditLogs).values({ orgId: site.orgId, userId: request.user.id, action: "site_theme.activated", detail: { siteId: site.publicId, captureId: capture.id } });
+        const updated = await runEntitlementTransaction(db, async (tx) => {
+            const [row] = await tx.update(siteThemes).set({ activeTokens: parsed.data.tokens, activeUpdatedAt: now, candidateTokens: null, candidateCaptureId: null, candidateEvidence: null, candidateOrigin: null, candidateCapturedAt: null, updatedAt: now })
+                .where(and(eq(siteThemes.siteId, site.id), eq(siteThemes.candidateCaptureId, capture.id))).returning();
+            if (!row)
+                return null;
+            await tx.insert(auditLogs).values({ orgId: site.orgId, userId: request.user.id, action: "site_theme.activated", detail: { siteId: site.publicId, captureId: capture.id } });
+            return row;
+        });
+        if (!updated)
+            return reply.code(409).send({ error: "theme_candidate_required" });
         return reply.send({ active: { tokens: updated.activeTokens, updatedAt: updated.activeUpdatedAt }, candidate: null });
     });
     app.delete("/orgs/:orgId/sites/:siteId/theme-candidate", { preHandler: [authenticate, requireOrgRole(db, "ADMIN")] }, async (request, reply) => {

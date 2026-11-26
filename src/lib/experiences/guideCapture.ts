@@ -1,7 +1,7 @@
 import { createHmac, createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { AiProvider } from "../ai/providers/types.js";
-import { applyOnsiteDocument, createBlock, createOnsiteDocument, emptyCell } from "./onsiteDocument.js";
+import { applyOnsiteDocument, createBlock, createOnsiteDocument, emptyCell, inheritThemeDefaults } from "./onsiteDocument.js";
 import { guideDefinitionSchema, guidePublishIssues, targetSchema } from "./validation.js";
 import type { PageRule } from "../pages/types.js";
 import type { GuideExperienceDefinition, GuideStep, WidgetBuilderState } from "./types.js";
@@ -209,9 +209,10 @@ function captureTemplate(draft: GuideExperienceDefinition, plan: CapturePlan, in
   const variant = step.variant ?? (step.pattern === "anchored_card" ? step.advance.type === "button" ? "information" : "action"
     : completion ? "completion" : index === 0 ? "welcome" : undefined);
   const document = createOnsiteDocument(true);
-  const padding = step.pattern === "modal" ? 24 : 16;
+  const compact = draft.template?.id === "guide-feature-discovery";
+  const padding = step.pattern === "modal" ? compact ? 18 : 24 : compact ? 12 : 16;
   document.root.padding = { top: padding, right: padding, bottom: padding, left: padding };
-  document.root.gap = variant === "action" ? 8 : 12;
+  document.root.gap = compact || variant === "action" ? 8 : 12;
   for (const { block } of document.root.children ?? []) {
     if (block?.type === "heading") block.fontSize = step.pattern === "modal" ? 24 : 18;
     if (block?.type === "text") block.fontSize = step.pattern === "modal" ? 15 : 14;
@@ -227,7 +228,7 @@ function captureTemplate(draft: GuideExperienceDefinition, plan: CapturePlan, in
       document.root.children?.unshift(emptyCell(icon));
     }
   }
-  return document;
+  return draft.visualTheme ? inheritThemeDefaults(document) : document;
 }
 
 export function compileCapturedGuide(draft: GuideExperienceDefinition, plan: CapturePlan, targets: CapturedTarget[]): GuideExperienceDefinition {

@@ -140,6 +140,13 @@ export const themeCaptureRequests = sqliteTable("theme_capture_requests", {
     errorCode: text("error_code"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
 }, table => [index("theme_capture_requests_site_created_idx").on(table.siteId, table.createdAt)]);
+export const siteExperienceTemplates = sqliteTable("site_experience_templates", {
+    id: text("id").primaryKey(),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    layout: text("layout", { mode: "json" }).notNull().$type(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql `(unixepoch('now') * 1000)`),
+}, table => [uniqueIndex("site_experience_templates_name_idx").on(table.siteId, table.name)]);
 /** Billing belongs to the organization. Provider identifiers are stored here,
  * but plan policy remains internal and provider-neutral. */
 export const organizationSubscriptions = sqliteTable("organization_subscriptions", {

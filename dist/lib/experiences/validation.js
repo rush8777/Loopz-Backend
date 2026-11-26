@@ -6,7 +6,7 @@ import { builderCssIsSafe, builderHtmlIsSafe } from "./builderContentContract.js
 import { pageRuleSchema } from "../pages/validation.js";
 import { siteThemeTokensSchema } from "../themes/validation.js";
 import { rawOnsiteDocument, validateCompiledOnsiteBuilder } from "./onsiteDocument.js";
-import { resolveTemplate } from "./templateRegistry.js";
+import { resolveTemplate, SAVED_LAYOUT_ID } from "./templateRegistry.js";
 const selectorSchema = z.string().trim().min(1).max(1000);
 const safeColorSchema = z.string().trim().min(1).max(40).regex(/^(#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([0-9.,%\s-]+\)|[a-z]{1,20})$/i, "unsupported color value");
 const actionSchema = z.object({
@@ -57,6 +57,7 @@ const templateIdentitySchema = z.object({ id: z.string().trim().min(1).max(100).
 const visualThemeSchema = z.object({
     source: z.enum(["template", "site", "preset"]),
     preset: z.enum(["minimal", "modern", "soft", "dark"]).optional(),
+    savedStyleId: z.string().min(1).max(100).optional(),
     templateId: z.string().trim().min(1).max(100).regex(/^[a-z0-9-]+$/).optional(),
     templateTokens: siteThemeTokensSchema,
     baseTokens: siteThemeTokensSchema,
@@ -334,11 +335,16 @@ export const createExperienceSchema = z.object({
     buildPageId: z.string().min(1).max(64).nullable().optional(),
     buildUrl: z.url().max(2000).nullable().optional(),
     template: z.string().trim().min(1).max(100).regex(/^[a-z0-9-]+$/).default("blank"),
-    theme: z.object({ source: z.enum(["template", "site", "preset"]), preset: z.enum(["minimal", "modern", "soft", "dark"]).optional() }).strict().optional(),
+    theme: z.discriminatedUnion("source", [
+        z.object({ source: z.literal("template") }).strict(),
+        z.object({ source: z.literal("site") }).strict(),
+        z.object({ source: z.literal("preset"), preset: z.enum(["minimal", "modern", "soft", "dark"]) }).strict(),
+        z.object({ source: z.literal("saved"), presetId: z.string().min(1).max(100) }).strict(),
+    ]).optional(),
     useBuildPageAsTarget: z.boolean().default(false),
 }).strict().superRefine((value, ctx) => {
-    if (value.guideCreation && (value.kind !== "guide" || value.builderMode !== "onsite" || value.template !== "blank"))
-        ctx.addIssue({ code: "custom", path: ["guideCreation"], message: "Guided Capture requires a blank on-site guide" });
+    if (value.guideCreation && (value.kind !== "guide" || value.builderMode !== "onsite" || SAVED_LAYOUT_ID.test(value.template)))
+        ctx.addIssue({ code: "custom", path: ["guideCreation"], message: "Guided Capture requires an on-site guide with a compatible built-in layout" });
     if (value.kind === "widget" && !value.widgetType)
         ctx.addIssue({ code: "custom", path: ["widgetType"], message: "widgetType is required" });
     if (value.kind !== "widget" && value.widgetType)
@@ -353,12 +359,10 @@ export const createExperienceSchema = z.object({
     if (!geo && (value.kind !== "checklist" || value.builderMode === "onsite") && !value.buildPageId && !value.buildUrl)
         ctx.addIssue({ code: "custom", path: ["buildUrl"], message: "a build page or URL is required" });
     const legacyChecklistPreset = value.kind === "checklist" && ["default", "minimal", "soft", "compact"].includes(value.template);
-    if (value.template !== "blank" && !legacyChecklistPreset && !resolveTemplate(value.template, value.kind, geo ? null : value.widgetType))
+    if (value.template !== "blank" && !legacyChecklistPreset && !SAVED_LAYOUT_ID.test(value.template) && !resolveTemplate(value.template, value.kind, geo ? null : value.widgetType))
         ctx.addIssue({ code: "custom", path: ["template"], message: "template is not available for this experience type" });
     if (value.builderMode === "grapesjs" && value.template !== "blank" && !legacyChecklistPreset)
         ctx.addIssue({ code: "custom", path: ["template"], message: "bundled visual templates require the on-site builder" });
-    if (value.theme?.source === "preset" && !value.theme.preset)
-        ctx.addIssue({ code: "custom", path: ["theme", "preset"], message: "preset is required" });
 });
 export const updateDraftSchema = z.object({
     name: z.string().trim().min(1).max(200).optional(),

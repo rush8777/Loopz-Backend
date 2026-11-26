@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { THEME_COMPONENTS } from "./types.js";
 
 const color = z.string().trim().min(1).max(40).regex(/^(#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([0-9.,%\s-]+\)|[a-z]{1,20})$/i);
 const family = z.string().trim().min(1).max(200).refine(value => !/[{};@]|url\s*\(/i.test(value), "unsafe font family");
@@ -15,6 +16,12 @@ export const siteThemeTokensSchema = z.object({
   }).strict(),
   radii: z.object({ sm: z.number().min(0).max(100), md: z.number().min(0).max(100), lg: z.number().min(0).max(100) }).strict(),
   shadows: z.object({ sm: shadow, md: shadow }).strict(),
+  spacing: z.number().min(0).max(64).optional(),
+  components: z.partialRecord(z.enum(THEME_COMPONENTS), z.object({
+    spacing: z.number().min(0).max(64).optional(),
+    radius: z.number().min(0).max(100).optional(),
+    buttonRadius: z.number().min(0).max(100).optional(),
+  }).strict()).optional(),
 }).strict();
 
 const safeEvidenceValue = z.string().max(300).refine(value => !/[{}]|javascript\s*:|expression\s*\(|url\s*\(/i.test(value));

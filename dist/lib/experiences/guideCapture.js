@@ -1,6 +1,6 @@
 import { createHmac, createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { applyOnsiteDocument, createBlock, createOnsiteDocument, emptyCell } from "./onsiteDocument.js";
+import { applyOnsiteDocument, createBlock, createOnsiteDocument, emptyCell, inheritThemeDefaults } from "./onsiteDocument.js";
 import { guideDefinitionSchema, guidePublishIssues, targetSchema } from "./validation.js";
 const safePath = z.string().max(350).refine(value => /^\/(?!\/)[a-z0-9/_~.%+-]*(?:#\/[a-z0-9/_~.%+-]*)?$/i.test(value)
     && !/%(?![\da-f]{2})|%(?:25|2f|3f|23|40|5c)|[a-f\d]{24,}|[\da-z_-]{40,}|(?:^|[\/_-])(?:token|secret|password|credential)(?:[\/_-]|$)/i.test(value), "Use a page path without sensitive or query parameters");
@@ -200,9 +200,10 @@ function captureTemplate(draft, plan, index) {
     const variant = step.variant ?? (step.pattern === "anchored_card" ? step.advance.type === "button" ? "information" : "action"
         : completion ? "completion" : index === 0 ? "welcome" : undefined);
     const document = createOnsiteDocument(true);
-    const padding = step.pattern === "modal" ? 24 : 16;
+    const compact = draft.template?.id === "guide-feature-discovery";
+    const padding = step.pattern === "modal" ? compact ? 18 : 24 : compact ? 12 : 16;
     document.root.padding = { top: padding, right: padding, bottom: padding, left: padding };
-    document.root.gap = variant === "action" ? 8 : 12;
+    document.root.gap = compact || variant === "action" ? 8 : 12;
     for (const { block } of document.root.children ?? []) {
         if (block?.type === "heading")
             block.fontSize = step.pattern === "modal" ? 24 : 18;
@@ -221,7 +222,7 @@ function captureTemplate(draft, plan, index) {
             document.root.children?.unshift(emptyCell(icon));
         }
     }
-    return document;
+    return draft.visualTheme ? inheritThemeDefaults(document) : document;
 }
 export function compileCapturedGuide(draft, plan, targets) {
     validateCapturePlan(plan, targets, false);
