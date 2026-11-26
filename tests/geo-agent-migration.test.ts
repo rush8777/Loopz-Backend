@@ -16,7 +16,7 @@ it("upgrades a populated database and preserves widget revisions, events and cap
     await cp(new URL("../drizzle", import.meta.url), migrations, { recursive: true });
     const journalPath = join(migrations, "meta", "_journal.json");
     const journal = JSON.parse(await readFile(journalPath, "utf8"));
-    journal.entries = journal.entries.filter((entry: { tag: string }) => entry.tag !== "0042_geo_agent");
+    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 42);
     await writeFile(journalPath, JSON.stringify(journal));
     await db.run(sql`PRAGMA foreign_keys = OFF`);
     await migrate(db, { migrationsFolder: migrations });
