@@ -7,6 +7,30 @@ import checklistFixture from "./fixtures/checklist-v4.json";
 
 const context = { experience: { id: "exp_1", name: "Welcome", widgetType: "modal", builderMode: "onsite" as const }, selection: { kind: "step" as const, label: "Step" }, document: { schemaVersion: 2, id: "document_1", root: {} } };
 
+it("keeps themed generation structured and still allows explicitly requested CSS", async () => {
+  const markup = { type: "replace_markup", html: '<section class="movcues-widget" data-movcues-widget-type="modal"></section>', css: ".movcues-widget{padding:20px}", actionBindings: {} };
+  const structured = { type: "update_text", blockId: "heading_1", text: "Welcome aboard" };
+  const prompts: string[] = [];
+  const provider: AiProvider = {
+    name: "mock", model: "mock",
+    async generate({ prompt }) {
+      prompts.push(prompt);
+      const operation = prompt.includes("structured_theme_required") ? structured : markup;
+      return { text: JSON.stringify({ markdown: "Preview the change", proposal: { summary: "Updated proposal", operations: [operation] } }),
+        provider: "mock", model: "mock", usage: { promptTokens: 2, completionTokens: 2, totalTokens: 4 } };
+    },
+  };
+  const options = { theme: { siteTheme: { colors: { primary: "#007788" } } } };
+  const contentRequest = editorAiRequestSchema.parse({ prompt: "Write a welcome heading", revision: 1, context });
+  const result = await runEditorAiTurn(provider, contentRequest, [], undefined, undefined, options);
+  expect(prompts[0]).toContain("#007788");
+  expect(prompts[0]).not.toContain('"replace_markup"');
+  expect(result.proposal?.operations).toEqual([structured]);
+  expect(result.generation.logicalAttempts).toBe(2);
+  const advanced = await runEditorAiTurn(provider, { ...contentRequest, prompt: "Add custom CSS" }, [], undefined, undefined, options);
+  expect(advanced.proposal?.operations).toEqual([markup]);
+});
+
 describe("editor AI contract", () => {
   it("rejects secrets and executable browser context", () => {
     expect(editorAiRequestSchema.safeParse({ prompt: "Improve it", revision: 1, context: { ...context, document: { accessToken: "secret" } } }).success).toBe(false);

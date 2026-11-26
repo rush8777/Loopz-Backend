@@ -336,8 +336,8 @@ export const createExperienceSchema = z.object({
     buildUrl: z.url().max(2000).nullable().optional(),
     template: z.string().trim().min(1).max(100).regex(/^[a-z0-9-]+$/).default("blank"),
     theme: z.discriminatedUnion("source", [
-        z.object({ source: z.literal("template") }).strict(),
-        z.object({ source: z.literal("site") }).strict(),
+        z.object({ source: z.literal("template"), preset: z.enum(["minimal", "modern", "soft", "dark"]).optional() }).strict(),
+        z.object({ source: z.literal("site"), preset: z.enum(["minimal", "modern", "soft", "dark"]).optional() }).strict(),
         z.object({ source: z.literal("preset"), preset: z.enum(["minimal", "modern", "soft", "dark"]) }).strict(),
         z.object({ source: z.literal("saved"), presetId: z.string().min(1).max(100) }).strict(),
     ]).optional(),
