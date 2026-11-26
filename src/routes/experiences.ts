@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import type { Db } from "../db/client.js";
+import type { Db, DbExecutor } from "../db/client.js";
 import { experienceEditorSessions, guideCaptureCheckpoints, experiences, experienceVersions, pageDefinitions, segments, sites, siteThemes } from "../db/schema.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { requireOrgRole } from "../middleware/requireOrgRole.js";
@@ -46,7 +46,7 @@ async function loadExperience(db: Db, siteId: string, experienceId: string) {
   return row?.siteId === siteId ? row : null;
 }
 
-async function experienceNameExists(db: Db, siteId: string, name: string, excludeId?: string) {
+async function experienceNameExists(db: DbExecutor, siteId: string, name: string, excludeId?: string) {
   const rows = await db.select({ id: experiences.id, name: experiences.name }).from(experiences).where(eq(experiences.siteId, siteId));
   const normalizedName = name.toLowerCase();
   return rows.some((row) => row.id !== excludeId && row.name.toLowerCase() === normalizedName);
@@ -398,8 +398,9 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (!site) return reply.code(404).send({ error: "site_not_found" });
     const parsed = createExperienceSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body", details: parsed.error.flatten() });
+    const geo = parsed.data.widgetType === "geo_agent";
     if (parsed.data.guideCreation && !env.GUIDE_CAPTURE_ENABLED) return reply.code(409).send({ error: "guide_capture_disabled" });
-    if (await experienceNameExists(db, site.id, parsed.data.name)) return reply.code(409).send({ error: "experience_name_exists", message: "An experience with this name already exists." });
+    if (!geo && await experienceNameExists(db, site.id, parsed.data.name)) return reply.code(409).send({ error: "experience_name_exists", message: "An experience with this name already exists." });
 
     let page: typeof pageDefinitions.$inferSelect | null = null;
     if (parsed.data.buildPageId) {
@@ -407,7 +408,6 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
       if (!page || page.siteId !== site.id) return reply.code(400).send({ error: "invalid_build_page" });
     }
     const visualType = parsed.data.widgetType === "geo_agent" ? null : parsed.data.widgetType ?? null;
-    const geo = parsed.data.widgetType === "geo_agent";
     const buildUrl = geo || parsed.data.kind === "checklist" && parsed.data.builderMode !== "onsite" ? null : parsed.data.buildUrl ?? (page ? deriveBuildUrl(site.domain, page.rules as PageRule[]) : null);
     if (!geo && (parsed.data.kind !== "checklist" || parsed.data.builderMode === "onsite") && (!buildUrl || !urlBelongsToSite(buildUrl, site.domain))) return reply.code(400).send({ error: "build_url_outside_site_domain" });
     const initialPageRules = parsed.data.useBuildPageAsTarget
@@ -439,12 +439,26 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     try {
       experience = await runEntitlementTransaction(db, async tx => {
         await assertSubscriptionActive(tx, site.orgId);
+        // The MVP creation policy leaves existing agents and their versions intact.
+        if (geo) {
+          const [existing] = await tx.select({ id: experiences.id }).from(experiences).where(and(
+            eq(experiences.siteId, site.id), eq(experiences.kind, "widget"), eq(experiences.widgetType, "geo_agent"),
+          )).limit(1);
+          if (existing) throw new DraftWriteError(409, "geo_agent_exists");
+          if (await experienceNameExists(tx, site.id, parsed.data.name)) throw new DraftWriteError(409, "experience_name_exists");
+        }
         const [created] = await tx.insert(experiences).values({ siteId: site.id, kind: parsed.data.kind, widgetType: parsed.data.kind === "widget" ? parsed.data.widgetType! : null, builderMode: parsed.data.builderMode, name: parsed.data.name, buildPageId: page?.id ?? null, buildUrl: buildUrl ?? null, createdBy: request.user!.id }).returning();
         await tx.insert(experienceVersions).values({ experienceId: created.id, versionNumber: 1, state: "draft", definition, createdBy: request.user!.id });
         if (parsed.data.guideCreation) await tx.insert(guideCaptureCheckpoints).values({ experienceId: created.id, checkpoint: { targets: [], mode: "select" } });
         return created;
       });
-    } catch (error) { return sendEntitlementError(reply, error); }
+    } catch (error) {
+      if (error instanceof DraftWriteError) return reply.code(error.status).send({
+        error: error.message,
+        ...(error.message === "experience_name_exists" ? { message: "An experience with this name already exists." } : {}),
+      });
+      return sendEntitlementError(reply, error);
+    }
     return reply.code(201).send(await serializeExperience(db, experience));
   });
 

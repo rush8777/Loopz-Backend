@@ -5,7 +5,7 @@ import { createTestApp, signup } from "./helpers.js";
 import { publishReviewed } from "./reviewedPublish.js";
 import type { AiGenerateInput, AiProvider } from "../src/lib/ai/providers/types.js";
 import { env } from "../src/config.js";
-import { experienceEvents, geoAgentConversations, geoAgentUsage, trackedUserProperties, trackedUsers } from "../src/db/schema.js";
+import { experienceEvents, experiences as experienceRows, experienceVersions, geoAgentConversations, geoAgentUsage, memberships, trackedUserProperties, trackedUsers } from "../src/db/schema.js";
 import { processKnowledgeJob } from "../src/lib/knowledge/jobs.js";
 import type { GeoAgentDefinition } from "../src/lib/experiences/types.js";
 
@@ -103,6 +103,37 @@ describe("Geo Agent lifecycle", () => {
     return ctx.app.inject({ url: `/public/sites/${site.siteId}/experiences?${query}` });
   }
 
+  it("creates one draft per site during concurrent setup and keeps creation tenant- and role-scoped", async () => {
+    const create = (name: string, url = experiences, headers = admin) => ctx.app.inject({
+      method: "POST", url, headers, payload: { kind: "widget", widgetType: "geo_agent", builderMode: "geo_agent", name },
+    });
+    const responses = await Promise.all([create("Geo A"), create("Geo B")]);
+    expect(responses.map(response => response.statusCode).sort()).toEqual([201, 409]);
+    const created = responses.find(response => response.statusCode === 201)!.json();
+    expect(responses.find(response => response.statusCode === 409)!.json().error).toBe("geo_agent_exists");
+    expect(created).toMatchObject({ siteId: site.id, status: "draft", publishedVersionId: null });
+    expect((await manifest()).json().geoAgent).toBeUndefined();
+    const listUrl = `${experiences}?kind=widget&widgetType=geo_agent`;
+
+    const other = await signup(ctx.app);
+    const viewer = { authorization: `Bearer ${other.accessToken}` };
+    expect((await create("Other org", experiences, viewer)).statusCode).toBe(404);
+    expect((await create("Wrong site", `/orgs/${other.org.id}/sites/${site.id}/experiences`, viewer)).statusCode).toBe(404);
+    await ctx.db.insert(memberships).values({ orgId: owner.org.id, userId: other.user.id, role: "VIEWER" });
+    expect((await create("Viewer setup", experiences, viewer)).statusCode).toBe(403);
+    const listed = await ctx.app.inject({ url: listUrl, headers: viewer });
+    expect(listed.json().experiences).toEqual([created]);
+
+    const otherSite = await ctx.app.inject({ method: "POST", url: `/orgs/${owner.org.id}/sites`, headers: admin,
+      payload: { name: "Second site", domain: "https://other.example.com" } });
+    expect(otherSite.statusCode, otherSite.body).toBe(201);
+    const otherSiteExperiences = `/orgs/${owner.org.id}/sites/${otherSite.json().id}/experiences`;
+    const second = await create(created.name, otherSiteExperiences);
+    expect(second.statusCode, second.body).toBe(201);
+    expect(second.json().id).not.toBe(created.id);
+    expect((await ctx.app.inject({ url: `${otherSiteExperiences}/${created.id}`, headers: admin })).statusCode).toBe(404);
+  });
+
   it("validates and publishes through Experiences, sanitizes manifest and previews in isolation", async () => {
     const widget = await draft();
     expect((await manifest()).json().geoAgent).toBeUndefined();
@@ -128,14 +159,32 @@ describe("Geo Agent lifecycle", () => {
     expect((await manifest(origin + "/settings")).json().geoAgent).toBeUndefined();
     expect((await ctx.app.inject({ method: "POST", url: widget.route + "/session", headers: { origin: "https://wrong.example.com" }, payload: { url: page } })).statusCode).toBe(404);
 
-    const second = await draft("Second assistant");
+    // Fixture for a second agent created before the MVP setup policy.
+    const [legacy] = await ctx.db.insert(experienceRows).values({ siteId: site.id, createdBy: owner.user.id,
+      kind: "widget", widgetType: "geo_agent", builderMode: "geo_agent", name: "Second assistant" }).returning();
+    const [legacyDraft] = await ctx.db.insert(experienceVersions).values({ experienceId: legacy.id, versionNumber: 1,
+      state: "draft", definition: widget.version.definition, createdBy: owner.user.id }).returning();
+    const second = { id: legacy.id, endpoint: `${experiences}/${legacy.id}`,
+      route: `/public/sites/${site.siteId}/geo-agent/${legacy.id}`,
+      version: { ...legacyDraft, definition: legacyDraft.definition as GeoAgentDefinition } };
     expect((await configure(second, definition => { definition.geoAgent.appearance.name = "Second assistant"; })).statusCode).toBe(200);
     expect((await publish(second)).statusCode).toBe(200);
     expect((await manifest()).json().geoAgent.id).toBe([widget.id, second.id].sort()[0]);
     const session = await visitor(widget.route);
     const chat = await conversation(widget.route, session);
+    const list = () => ctx.app.inject({ url: `${experiences}?kind=widget&widgetType=geo_agent`, headers: admin });
+    const beforeSetup = (await list()).json().experiences;
+    expect(beforeSetup).toHaveLength(2);
+    expect(beforeSetup.every((agent: { status: string }) => agent.status === "published")).toBe(true);
+    const rejected = await ctx.app.inject({ method: "POST", url: experiences, headers: admin,
+      payload: { kind: "widget", widgetType: "geo_agent", builderMode: "geo_agent", name: "Another agent" } });
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json().error).toBe("geo_agent_exists");
+    expect((await list()).json().experiences).toEqual(beforeSetup);
+    expect((await ctx.app.inject({ url: chat + query, headers: session })).statusCode).toBe(200);
     expect((await ctx.app.inject({ method: "POST", url: widget.endpoint + "/pause", headers: admin })).statusCode).toBe(200);
     expect((await ctx.app.inject({ url: chat + query, headers: session })).statusCode).toBe(404);
+    expect((await manifest()).json().geoAgent.id).toBe(second.id);
   });
 
   it("streams grounded answers once, restores history, and enforces ownership and source visibility", async () => {
@@ -204,7 +253,7 @@ describe("Geo Agent lifecycle", () => {
     expect((await message(chat, session)).statusCode).toBe(429);
   });
 
-  it("checks customer-issued identity for segment targeting and rejects cross-site tokens", async () => {
+  it("checks customer-issued identity against multiple segment rules and rejects cross-site tokens", async () => {
     const widget = await draft();
     const now = new Date();
     const [tracked] = await ctx.db.insert(trackedUsers).values({
@@ -212,20 +261,28 @@ describe("Geo Agent lifecycle", () => {
       firstIdentifiedAt: now, lastIdentifiedAt: now,
     }).returning();
     await ctx.db.insert(trackedUserProperties).values({ trackedUserId: tracked.id, siteId: site.id, name: "plan", value: "pro", valueType: "string", source: "identify", firstSeenAt: now, lastSeenAt: now });
-    const segmentResponse = await ctx.app.inject({
+    const createPlanSegment = (name: string, value: string) => ctx.app.inject({
       method: "POST", url: `/orgs/${owner.org.id}/sites/${site.id}/segments`, headers: admin, payload: {
-        name: "Pro users", definition: { logic: "and", conditions: [{ type: "user_property", propertyName: "plan", operator: "equals", value: "pro" }] },
+        name, definition: { logic: "and", conditions: [{ type: "user_property", propertyName: "plan", operator: "equals", value }] },
       },
     });
-    expect(segmentResponse.statusCode, segmentResponse.body).toBe(201);
-    const segmentId = segmentResponse.json().id;
+    const pro = await createPlanSegment("Pro users", "pro");
+    const free = await createPlanSegment("Free users", "free");
+    expect(pro.statusCode, pro.body).toBe(201);
+    expect(free.statusCode, free.body).toBe(201);
+    const audience = { type: "segment_rules", logic: "all", conditions: [
+      { id: "allow-pro", segmentId: pro.json().id, operator: "matches" },
+      { id: "exclude-free", segmentId: free.json().id, operator: "not_matches" },
+    ] } satisfies GeoAgentDefinition["targeting"]["audience"];
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const configured = await configure(widget, definition => {
       definition.geoAgent.identityPublicKey = publicKey.export({ type: "spki", format: "pem" }).toString();
-      definition.targeting.audience = { type: "segment", segmentId };
+      definition.targeting.audience = audience;
     });
     expect(configured.statusCode, configured.body).toBe(200);
-    expect((await publish(widget)).statusCode).toBe(200);
+    const published = await publish(widget);
+    expect(published.statusCode, published.body).toBe(200);
+    expect(published.json().publishedVersion.definition.targeting.audience).toEqual(audience);
     expect((await manifest(page, "verified-user")).json().geoAgent.id).toBe(widget.id);
     expect((await manifest()).json().geoAgent).toBeUndefined();
     expect((await ctx.app.inject({ method: "POST", url: widget.route + "/session", headers: { origin }, payload: { url: page } })).statusCode).toBe(403);
