@@ -1,7 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import type { Db } from "../../db/client.js";
-import { experiences, experienceVersions, guideCaptureCheckpoints, knowledgeSources, segments, sites } from "../../db/schema.js";
+import { agentSkills, experiences, experienceVersions, guideCaptureCheckpoints, knowledgeSources, segments, sites } from "../../db/schema.js";
 import type { ExperienceDefinition, ExperienceKind, WidgetType } from "./types.js";
 import { isChecklistDefinition } from "./types.js";
 import { onsiteProjectionIsConsistent } from "./builderContentContract.js";
@@ -26,8 +26,13 @@ export async function validateReferences(db: Db, siteId: string, definition: Exp
   if (isChecklistDefinition(definition)) for (const item of definition.items) if (item.completion.type === "segment") segmentIds.push(item.completion.segmentId);
   for (const segmentId of new Set(segmentIds)) { const [segment] = await db.select().from(segments).where(eq(segments.id, segmentId)).limit(1); if (!segment || (segment && segment.siteId !== siteId)) return "invalid_segment"; }
   if ("geoAgent" in definition) {
-    const { sourceIds, enabled, showLauncher, identityPublicKey } = definition.geoAgent;
+    const { sourceIds, skillIds, enabled, showLauncher, identityPublicKey } = definition.geoAgent;
     if (publishing && enabled && showLauncher && audience.type !== "all" && !identityPublicKey) return "geo_agent_verified_identity_required";
+    if (skillIds?.length) {
+      const available = await db.select({ id: agentSkills.id }).from(agentSkills)
+        .where(and(eq(agentSkills.siteId, siteId), inArray(agentSkills.id, skillIds)));
+      if (available.length !== skillIds.length) return "invalid_geo_agent_skills";
+    }
     if (sourceIds.length) {
       const rows = await db.select({ id: knowledgeSources.id }).from(knowledgeSources).where(and(
         eq(knowledgeSources.siteId, siteId), inArray(knowledgeSources.id, sourceIds),

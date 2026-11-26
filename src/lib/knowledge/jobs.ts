@@ -1,3 +1,4 @@
+import { processSkillIndex } from "../skills/registry.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNotNull, lte, ne, or, sql } from "drizzle-orm";
 import { env } from "../../config.js";
@@ -173,6 +174,8 @@ export function startKnowledgeWorker(db: Db, embedder: KnowledgeEmbedder | null)
       let processed = false;
       try { processed = await processKnowledgeJob(db, embedder, controller.signal); }
       catch { console.error("knowledge_worker_iteration_failed"); }
+      try { processed = await processSkillIndex(db, embedder, controller.signal) || processed; }
+      catch { if (!controller.signal.aborted) console.error("skill_worker_iteration_failed"); }
       if (!controller.signal.aborted) {
         timer = setTimeout(run, processed ? 25 : 3000);
         timer.unref();

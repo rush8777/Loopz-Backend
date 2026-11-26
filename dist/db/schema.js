@@ -1247,6 +1247,7 @@ export const geoAgentTurns = sqliteTable("geo_agent_turns", {
     attempt: integer("attempt").notNull().default(1),
     reservedTokens: integer("reserved_tokens").notNull(),
     usedTokens: integer("used_tokens").notNull().default(0),
+    skillDiagnostics: text("skill_diagnostics", { mode: "json" }).$type(),
     retrievedCount: integer("retrieved_count").notNull().default(0),
     latencyMs: integer("latency_ms"),
     firstDeltaMs: integer("first_delta_ms"),
@@ -1265,4 +1266,28 @@ export const geoAgentUsage = sqliteTable("geo_agent_usage", {
     day: text("day").notNull(),
     tokens: integer("tokens").notNull().default(0),
 }, table => [uniqueIndex("geo_agent_usage_site_day_idx").on(table.siteId, table.day)]);
+export const agentSkills = sqliteTable("agent_skills", {
+    id: text("id").primaryKey().$defaultFn(() => cuid("ask")),
+    orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    guideId: text("guide_id").notNull().references(() => experiences.id, { onDelete: "cascade" }),
+    entryPath: text("entry_path"),
+    guideVersionId: text("guide_version_id").notNull().references(() => experienceVersions.id, { onDelete: "cascade" }),
+    revision: text("revision").notNull(),
+    metadata: text("metadata", { mode: "json" }).notNull().$type(),
+    contentHash: text("content_hash").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull(),
+    indexState: text("index_state", { enum: ["pending", "ready", "failed"] }).notNull(),
+    embeddingKey: text("embedding_key"),
+    embedding: text("embedding", { mode: "json" }).$type(),
+    leaseUntil: integer("lease_until", { mode: "timestamp_ms" }),
+    leaseId: text("lease_id"),
+    indexTokens: integer("index_tokens").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, table => [
+    uniqueIndex("agent_skills_guide_idx").on(table.guideId),
+    index("agent_skills_site_idx").on(table.orgId, table.siteId, table.enabled),
+    index("agent_skills_pending_idx").on(table.indexState, table.leaseUntil),
+]);
 //# sourceMappingURL=schema.js.map

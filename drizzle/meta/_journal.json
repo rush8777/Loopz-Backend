@@ -302,6 +302,13 @@
       "when": 1795634835283,
       "tag": "0042_geo_agent",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1795690000000,
+      "tag": "0043_agent_skills",
+      "breakpoints": true
     }
   ]
 }

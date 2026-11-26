@@ -1,3 +1,4 @@
+import { skillSelection } from "../skills/contracts.js";
 import { createPublicKey } from "node:crypto";
 import { z } from "zod";
 
@@ -25,6 +26,7 @@ export const geoAgentConfig = z.object({
   enabled: z.boolean().default(true),
   showLauncher: z.boolean().default(true),
   persistence: z.enum(["page", "tab"]).default("tab"),
+  skillIds: skillSelection.optional(),
   sourceIds: z.array(z.string().min(1).max(64)).max(30).default([]).transform(ids => [...new Set(ids)]),
   instructions: z.string().trim().max(1500).default(""),
   fallback: z.string().trim().min(1).max(350).default("I couldn’t find an answer in the available help content."),

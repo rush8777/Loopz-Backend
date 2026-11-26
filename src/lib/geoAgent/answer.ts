@@ -1,3 +1,6 @@
+import { contextualSkillQuery } from "../skills/ranking.js";
+import { retrieveSkills, skillStillEligible } from "../skills/retrieval.js";
+import type { SkillDiagnostics } from "../skills/contracts.js";
 import { z } from "zod";
 import type { Db } from "../../db/client.js";
 import type { AiGenerateResult, AiProvider } from "../ai/providers/types.js";
@@ -17,12 +20,35 @@ export async function answerFromKnowledge(options: {
   db: Db; scope: KnowledgeScope; config: GeoAgentConfig; provider: AiProvider | null; embedder: KnowledgeEmbedder | null;
   question: string; history: History[]; signal: AbortSignal; onDelta: (text: string) => void;
   publicOnly: boolean;
+  skillAccess?: { origin?: string; verifiedIdentity?: string; inspect?: boolean; permitted?: boolean };
 }) {
   const { db, scope, config, provider, embedder, question, history, signal, onDelta, publicOnly } = options;
   const prior = history.at(-1);
   const followUp = /\b(it|that|those|them|these|this|one|next|then)\b/i.test(question) && question.length <= 240;
   const retrievalQuestion = followUp && prior ? `${question}\nPrevious question: ${prior.question.slice(0, 450)}` : question;
-  const knowledge = await retrieveKnowledge(db, embedder, { ...scope, publicOnly, question: retrievalQuestion, sourceIds: config.sourceIds, topK: 6, signal });
+  const started = performance.now();
+  const knowledgeQuery = { ...scope, publicOnly, question: retrievalQuestion, sourceIds: config.sourceIds, topK: 6, signal };
+  const [knowledge, skills] = await Promise.all([
+    retrieveKnowledge(db, embedder, knowledgeQuery).catch(error => {
+      signal.throwIfAborted();
+      if (!embedder) throw error;
+      return retrieveKnowledge(db, null, knowledgeQuery);
+    }),
+    options.skillAccess && config.skillIds?.length
+      ? retrieveSkills(db, scope, config.skillIds, contextualSkillQuery(question, prior?.question), options.skillAccess, embedder, signal)
+        .catch(() => { signal.throwIfAborted(); return null; })
+      : null,
+  ]);
+  signal.throwIfAborted();
+  const diagnostics: SkillDiagnostics | undefined = config.skillIds?.length ? {
+    recommendation: skills?.recommendation ?? { schemaVersion: 1, decision: "answer_only" },
+    eligibleCount: skills?.eligibleCount ?? 0, retrievalMs: skills?.retrievalMs ?? 0,
+    embeddingTokens: skills?.embeddingTokens ?? 0, degraded: !skills || skills.degraded,
+  } : undefined;
+  const selected = skills?.selected;
+  const useSkill = selected && options.skillAccess && await skillStillEligible(db, scope, selected, options.skillAccess).catch(() => false);
+  if (diagnostics && selected && !useSkill) diagnostics.recommendation = { schemaVersion: 1, decision: "answer_only" };
+  const retrievalMs = Math.round(performance.now() - started);
   const accepted: string[] = [];
   const citationsById = new Map<string, Citation>();
   let retrievedCount = 0;
@@ -34,10 +60,13 @@ export async function answerFromKnowledge(options: {
     }));
     retrievedCount = evidence.length;
     const input = {
-      system: SYSTEM,
+      system: useSkill
+        ? `${SYSTEM} A workflow summary may be supplied as context for interpreting the question. Cite only excerpts for the answer. Never promise to launch or perform the workflow.`
+        : SYSTEM,
       prompt: JSON.stringify({
         sitePreferences: config.instructions,
         excerpts: evidence,
+        ...(useSkill ? { workflowSummary: { name: selected.name, description: selected.metadata.description } } : {}),
         history: history.slice(-4).map(turn => ({ question: turn.question.slice(0, 500), message: turn.message.slice(0, 700) })),
         question,
       }),
@@ -46,6 +75,7 @@ export async function answerFromKnowledge(options: {
     let partial = "";
     const acceptLine = (line: string) => {
       const references = [...line.matchAll(/\[\[K(\d{1,2})\]\]/g)];
+      if (/\[\[S\d+\]\]/i.test(line)) return;
       if (!references.length || references.some(match => !knowledge.matches[Number(match[1]) - 1])) return;
       const text = line.replace(/\[\[K\d{1,2}\]\]/g, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
         .replace(/https?:\/\/\S+/gi, "").trim();
@@ -66,16 +96,26 @@ export async function answerFromKnowledge(options: {
     if (provider.streamText) usage = await provider.streamText(input, delta);
     else {
       const schema = z.object({ lines: z.array(z.string().max(2200)).max(12) }).strict();
-      usage = await provider.generate({ ...input, system: `${SYSTEM} Return a JSON object with a single lines array of strings.` });
-      const parsed = schema.safeParse(JSON.parse(usage.text));
-      if (parsed.success) parsed.data.lines.forEach(acceptLine);
+      usage = await provider.generate({ ...input, system: `${input.system} Return a JSON object with a single lines array of strings.` });
+      try {
+        const parsed = schema.safeParse(JSON.parse(usage.text));
+        if (parsed.success) parsed.data.lines.forEach(acceptLine);
+      } catch (error) { if (!(error instanceof SyntaxError)) throw error; }
     }
     if (partial) acceptLine(partial);
   }
-  if (!accepted.length) { accepted.push(config.fallback); onDelta(config.fallback); }
+  signal.throwIfAborted();
+  const stillEligible = useSkill && await skillStillEligible(db, scope, selected, options.skillAccess!).catch(() => false);
+  if (diagnostics && useSkill && !stillEligible) diagnostics.recommendation = { schemaVersion: 1, decision: "answer_only" };
+  const add = (text: string) => { onDelta(accepted.length ? `\n${text}` : text); accepted.push(text); };
+  if (stillEligible && !accepted.length) add(selected.metadata.description.replace(/https?:\/\/\S+/gi, "").trim() || config.fallback);
+  if (diagnostics?.recommendation.decision === "clarify") add("Which task are you trying to do?");
+  if (!accepted.length) add(config.fallback);
   return {
     message: accepted.join("\n"), citations: [...citationsById.values()],
-    tokens: knowledge.embeddingTokens + (usage?.usage.totalTokens ?? 0),
+    tokens: knowledge.embeddingTokens + (diagnostics?.embeddingTokens ?? 0) + (usage?.usage.totalTokens ?? 0),
     provider: usage?.provider ?? null, model: usage?.model ?? null, retrievedCount,
+    diagnostics, candidates: skills?.candidates ?? [], retrievalMs,
+    documentation: options.skillAccess?.inspect ? knowledge.matches.map(({ title, url, heading, score, content }) => ({ title, url, heading, score, excerpt: content.slice(0, 400) })) : [],
   };
 }

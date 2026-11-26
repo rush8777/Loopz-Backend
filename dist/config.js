@@ -18,6 +18,8 @@ const envSchema = z.object({
     PADDLE_GROWTH_PRICE_ID: z.string().trim().min(1).optional(),
     PADDLE_SCALE_PRICE_ID: z.string().trim().min(1).optional(),
     GUIDE_CAPTURE_ENABLED: z.string().trim().toLowerCase().default("false").transform(value => value === "true"),
+    GEO_SKILL_MAX_CANDIDATES: z.coerce.number().int().min(5).max(100).default(64),
+    GEO_SKILL_RELEVANCE_THRESHOLD: z.coerce.number().min(0.5).max(0.95).default(0.57),
     KNOWLEDGE_WORKER_ENABLED: z.string().trim().toLowerCase().default("false").transform(value => value === "true"),
     KNOWLEDGE_FILE_MAX_BYTES: z.coerce.number().int().positive().max(5_000_000).default(3_000_000),
     KNOWLEDGE_EMBEDDING_MODEL: z.enum(["text-embedding-3-small", "text-embedding-3-large"]).default("text-embedding-3-small"),

@@ -1,3 +1,4 @@
+import { registerAgentSkills } from "./routes/agent-skills.js";
 import { registerGeoAgentRoutes } from "./routes/geo-agent.js";
 import { registerKnowledgeRoutes } from "./routes/knowledge.js";
 import { createKnowledgeEmbedder, type KnowledgeEmbedder } from "./lib/knowledge/embeddings.js";
@@ -92,6 +93,7 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
   registerSdkVerificationRoutes(app, db);
   registerThemeRoutes(app, db);
   registerAiRoutes(app, db, aiProvider);
+  registerAgentSkills(app, db, aiProvider);
   let stopKnowledgeWorker: (() => Promise<void>) | undefined;
   const knowledgeEmbedder = options.knowledgeEmbedder === undefined ? createKnowledgeEmbedder() : options.knowledgeEmbedder;
   registerKnowledgeRoutes(app, db, knowledgeEmbedder);

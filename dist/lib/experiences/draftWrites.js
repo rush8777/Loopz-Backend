@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
-import { experiences, experienceVersions, guideCaptureCheckpoints, knowledgeSources, segments, sites } from "../../db/schema.js";
+import { agentSkills, experiences, experienceVersions, guideCaptureCheckpoints, knowledgeSources, segments, sites } from "../../db/schema.js";
 import { isChecklistDefinition } from "./types.js";
 import { onsiteProjectionIsConsistent } from "./builderContentContract.js";
 import { rawOnsiteDocument, validateCompiledOnsiteBuilder } from "./onsiteDocument.js";
@@ -43,9 +43,15 @@ export async function validateReferences(db, siteId, definition, publishing = fa
             return "invalid_segment";
     }
     if ("geoAgent" in definition) {
-        const { sourceIds, enabled, showLauncher, identityPublicKey } = definition.geoAgent;
+        const { sourceIds, skillIds, enabled, showLauncher, identityPublicKey } = definition.geoAgent;
         if (publishing && enabled && showLauncher && audience.type !== "all" && !identityPublicKey)
             return "geo_agent_verified_identity_required";
+        if (skillIds?.length) {
+            const available = await db.select({ id: agentSkills.id }).from(agentSkills)
+                .where(and(eq(agentSkills.siteId, siteId), inArray(agentSkills.id, skillIds)));
+            if (available.length !== skillIds.length)
+                return "invalid_geo_agent_skills";
+        }
         if (sourceIds.length) {
             const rows = await db.select({ id: knowledgeSources.id }).from(knowledgeSources).where(and(eq(knowledgeSources.siteId, siteId), inArray(knowledgeSources.id, sourceIds), publishing && enabled ? eq(knowledgeSources.enabled, true) : undefined, publishing && enabled ? eq(knowledgeSources.visibility, "public") : undefined));
             if (rows.length !== sourceIds.length)

@@ -1,3 +1,7 @@
+import { matchesRules } from "../lib/pages/pageMatcher.js";
+import { matchesExperienceAudience } from "../lib/experiences/audience.js";
+import { resolveDeliveryUserId } from "../lib/identity/deliveryIdentity.js";
+import { geoAgentDefinitionSchema } from "../lib/experiences/validation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -200,7 +204,7 @@ export function registerGeoAgentRoutes(
           const history = recent.reverse().map(row => ({ question: row.question, message: (row.answer as GeoAgentAnswer).message }));
           const result = await answerFromKnowledge({
             db, scope: { orgId: agent.site.orgId, siteId: agent.site.id }, config: agent.definition.geoAgent, provider, embedder,
-            publicOnly: true, question, history, signal, onDelta(text) {
+            publicOnly: true, question, history, signal, skillAccess: { origin: agent.origin, verifiedIdentity: runtime.claims.identity }, onDelta(text) {
               signal.throwIfAborted();
               firstDeltaMs ??= Math.round(performance.now() - started);
               streamItem(stream, { type: "delta", text });
@@ -210,7 +214,7 @@ export function registerGeoAgentRoutes(
           const answer: GeoAgentAnswer = { schemaVersion: 1, conversationId: turn.conversationId, messageId: turn.id, message: result.message, citations: result.citations, actions: [] };
           const persisted = await runEntitlementTransaction(db, async tx => {
             const [updated] = await tx.update(turns).set({
-              status: "completed", answer, usedTokens: result.tokens, retrievedCount: result.retrievedCount,
+              status: "completed", answer, usedTokens: result.tokens, retrievedCount: result.retrievedCount, skillDiagnostics: result.diagnostics,
               provider: result.provider, model: result.model, latencyMs: Math.round(performance.now() - started),
               firstDeltaMs, updatedAt: new Date(),
             }).where(stillRunning).returning({ id: turns.id });
@@ -276,18 +280,58 @@ export function registerGeoAgentRoutes(
 
   const admin = [authenticate, requireOrgRole(db, "ADMIN")];
   async function adminAgent(params: AdminParams) {
-    const [row] = await db.select({ id: experiences.id }).from(experiences).innerJoin(sites, eq(experiences.siteId, sites.id))
+    const [row] = await db.select({ id: experiences.id, domain: sites.domain, publicId: sites.publicId }).from(experiences).innerJoin(sites, eq(experiences.siteId, sites.id))
       .where(and(eq(sites.id, params.siteId), eq(sites.orgId, params.orgId), eq(experiences.id, params.experienceId), eq(experiences.widgetType, "geo_agent"))).limit(1);
     if (!row) throw new GeoError(404, "geo_agent_unavailable");
+    return row;
   }
   app.post(`${adminPath}/preview`, { preHandler: admin, errorHandler: respondError, config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async request => {
     const params = request.params as AdminParams;
-    await adminAgent(params);
-    const { config, question } = z.object({ config: geoAgentConfig, question: questionSchema }).strict().parse(request.body);
+    const site = await adminAgent(params);
+    const { config, question, evaluation } = z.object({
+      config: geoAgentConfig, question: questionSchema,
+      evaluation: z.object({
+        mode: z.enum(["admin", "visitor"]),
+        url: pageSchema.optional(),
+        identityToken: z.string().max(4000).optional(),
+        priorQuestion: questionSchema.optional(),
+        targeting: geoAgentDefinitionSchema.shape.targeting.optional(),
+      }).strict().optional(),
+    }).strict().parse(request.body);
+    let origin: string | undefined;
+    let verifiedIdentity: string | undefined;
+    let permitted = true;
+    if (site.domain) {
+      try { origin = new URL(/^https?:\/\//i.test(site.domain) ? site.domain : `https://${site.domain}`).origin; }
+      catch { /* A guide's origin restrictions remain in force. */ }
+    }
+    if (evaluation?.mode === "visitor") {
+      if (!evaluation.url || !evaluation.targeting) throw new GeoError(400, "preview_visitor_context_required");
+      const page = new URL(evaluation.url);
+      const { targeting } = evaluation;
+      const now = Date.now();
+      const identityToken = evaluation.identityToken;
+      if (identityToken) {
+        verifiedIdentity = config.identityPublicKey ? verifyCustomerIdentity(identityToken, config.identityPublicKey, site.publicId) ?? undefined : undefined;
+        if (!verifiedIdentity) throw new GeoError(401, "invalid_visitor_identity");
+      }
+      permitted = config.enabled && config.showLauncher && !!origin && page.origin === origin
+        && (!targeting.allowedOrigins?.length || targeting.allowedOrigins.includes(page.origin))
+        && (!targeting.pageRules.length || matchesRules(page.pathname + page.search + page.hash, targeting.pageRules))
+        && (!targeting.schedule?.startsAt || Date.parse(targeting.schedule.startsAt) <= now)
+        && (!targeting.schedule?.endsAt || now < Date.parse(targeting.schedule.endsAt));
+      if (targeting.audience.type !== "all") {
+        const internalId = verifiedIdentity ? await resolveDeliveryUserId(db, params.siteId, verifiedIdentity) : null;
+        permitted &&= !!internalId && await matchesExperienceAudience(db, params.siteId, internalId, targeting.audience);
+      }
+    }
     const result = await answerFromKnowledge({
-      db, scope: params, config, question, provider, embedder, publicOnly: true, history: [], signal: AbortSignal.timeout(TIMEOUT), onDelta() {},
+      db, scope: params, config: permitted ? config : { ...config, sourceIds: [] }, question, provider, embedder,
+      publicOnly: true, history: evaluation?.priorQuestion ? [{ question: evaluation.priorQuestion, message: "" }] : [],
+      skillAccess: { origin, verifiedIdentity, inspect: true, permitted }, signal: AbortSignal.timeout(TIMEOUT), onDelta() {},
     });
-    return { message: result.message, citations: result.citations };
+    return { message: result.message, citations: result.citations, decision: result.diagnostics?.recommendation,
+      candidates: result.candidates, documentation: result.documentation, retrievalMs: result.retrievalMs, permitted };
   });
   app.get(`${adminPath}/metrics`, { preHandler: admin, errorHandler: respondError }, async request => {
     const params = request.params as AdminParams;
@@ -302,6 +346,10 @@ export function registerGeoAgentRoutes(
         unhelpful: sql<number>`count(case when ${turns.feedback} = 'unhelpful' then 1 end)`,
         answeredWithKnowledge: sql<number>`count(case when ${turns.status} = 'completed' and ${turns.retrievedCount} > 0 then 1 end)`,
         tokens: sql<number>`coalesce(sum(${turns.usedTokens}), 0)`,
+        skillRecommendations: sql<number>`count(case when json_extract(${turns.skillDiagnostics}, '$.recommendation.decision') = 'recommend_skill' then 1 end)`,
+        skillClarifications: sql<number>`count(case when json_extract(${turns.skillDiagnostics}, '$.recommendation.decision') = 'clarify' then 1 end)`,
+        skillNoMatches: sql<number>`count(case when json_extract(${turns.skillDiagnostics}, '$.recommendation.decision') = 'insufficient_evidence' then 1 end)`,
+        averageSkillRetrievalMs: sql<number | null>`avg(json_extract(${turns.skillDiagnostics}, '$.retrievalMs'))`,
         averageLatencyMs: sql<number | null>`round(avg(${turns.latencyMs}))`,
         averageFirstDeltaMs: sql<number | null>`round(avg(${turns.firstDeltaMs}))`,
       }).from(turns).innerJoin(conversations, eq(turns.conversationId, conversations.id)).where(scope),

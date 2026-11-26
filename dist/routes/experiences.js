@@ -1,3 +1,6 @@
+import { skillRegistration } from "../lib/skills/contracts.js";
+import { registerSkill } from "../lib/skills/registry.js";
+import { entryPathForGuide } from "../lib/skills/metadata.js";
 import { geoAgentConfig } from "../lib/geoAgent/config.js";
 import { captureBuildPageRules } from "../lib/experiences/guideCapture.js";
 import { GUIDE_CAPTURE_PLACEHOLDER, isPendingGuideCapture } from "../lib/experiences/guideCaptureContract.js";
@@ -570,9 +573,11 @@ export function registerExperienceRoutes(app, db) {
         const draft = versions.find((version) => version.state === "draft");
         if (!draft)
             return reply.code(409).send({ error: "draft_not_found" });
-        const review = z.object({ draftVersionId: z.string().min(1), revision: z.number().int().positive() }).strict().safeParse(request.body);
+        const review = z.object({ draftVersionId: z.string().min(1), revision: z.number().int().positive(), skill: skillRegistration.optional() }).strict().safeParse(request.body);
         if (!review.success)
             return reply.code(400).send({ error: "reviewed_revision_required" });
+        if (review.data.skill && row.kind !== "guide")
+            return reply.code(400).send({ error: "skill_requires_guide" });
         if (review.data.draftVersionId !== draft.id || review.data.revision !== draft.revision)
             return reply.code(409).send({ error: "reviewed_draft_changed" });
         const checked = definitionSchemaFor(row.kind, row.widgetType).safeParse(draft.definition);
@@ -608,6 +613,9 @@ export function registerExperienceRoutes(app, db) {
                     throw new DraftWriteError(409, "reviewed_draft_changed");
                 await tx.insert(experienceVersions).values({ experienceId: row.id, versionNumber: draft.versionNumber + 1, state: "draft", definition: checked.data, createdBy: request.user.id });
                 const [published] = await tx.update(experiences).set({ status: "published", publishedVersionId: draft.id, updatedAt: now }).where(eq(experiences.id, row.id)).returning();
+                if (review.data.skill && "steps" in checked.data) {
+                    await registerSkill(tx, { orgId: site.orgId, siteId: site.id }, row.id, draft.id, review.data.skill, entryPathForGuide(checked.data, row.buildUrl));
+                }
                 return published;
             });
         }
