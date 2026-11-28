@@ -35,7 +35,7 @@ The server resolves the entry route from existing guide context, approved skill 
 
 Visitors click **Go to start page** to accept navigation. The default full-page navigation uses the browser’s existing unload guards. Hosts with SPA navigation guards can set `geoAgent.navigateToGuidanceEntry(url)` and return whether the router accepted the validated destination. Reload and back/forward use tab-scoped continuation plus fresh server checks. An accepted walkthrough may continue off the launcher’s page rules without expanding where the widget itself appears. Page-only chat still starts a new conversation on the new page.
 
-A different active guide prompts the visitor to continue it or switch. Other active experiences must be closed first. Missing targets and configured skips use the existing guide policies. Local cancellation is scoped to the specific guidance instance. Reload and route changes revalidate, as do lifecycle requests and the existing visible Geo refresh. No extra background polling is added. An off-launcher view has a cancellation control while a guide is active.
+A different active guide prompts the visitor to continue it or switch. Other active experiences must be closed first. Missing targets and configured skips use the existing guide policies. Local cancellation is scoped to the specific guidance instance. Reload and route changes revalidate, as do lifecycle requests and the existing refresh on visible pages. Active guidance continues that refresh when the chat launcher is excluded by page targeting. No extra background polling is added. An off-launcher view has a cancellation control while a guide is active.
 
 ## Progress, analytics and theme
 
@@ -79,8 +79,8 @@ The usual SDK build was run at the fetched Theme Studio base and again with Phas
 | --- | ---: | ---: |
 | Core | 82,329 / 20,412 | 82,329 / 20,412 |
 | Core minified | 47,205 / 14,772 | 47,205 / 14,772 |
-| Experiences | 154,740 / 32,495 | 162,566 / 34,058 |
-| Experiences minified | 92,182 / 25,394 | 97,213 / 26,611 |
+| Experiences | 154,740 / 32,495 | 162,716 / 34,079 |
+| Experiences minified | 92,182 / 25,394 | 97,351 / 26,633 |
 | Geo Agent lazy module | 21,660 / 6,324 | 49,125 / 12,032 |
 | Geo Agent lazy module minified | 14,557 / 5,297 | 32,120 / 10,100 |
 
