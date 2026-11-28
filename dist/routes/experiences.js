@@ -22,12 +22,13 @@ import { runEntitlementTransaction } from "../db/transaction.js";
 import { assertSubscriptionActive, createEntitlementService } from "../lib/entitlements/service.js";
 import { sendEntitlementError } from "../lib/entitlements/http.js";
 import { siteThemeCss } from "../lib/themes/css.js";
-import { applyOnsiteDocument, createOnsiteChecklistDocument, createOnsiteDocument, createOnsiteSurveyDocument, inheritThemeDefaults, listBlocks } from "../lib/experiences/onsiteDocument.js";
+import { applyOnsiteDocument, createOnsiteChecklistDocument, createOnsiteDocument, createOnsiteSurveyDocument, duplicateDocument, inheritThemeDefaults, listBlocks, onsiteDocumentFromBuilder } from "../lib/experiences/onsiteDocument.js";
+import { isSourceAuthored } from "../lib/experiences/sourceMarkup.js";
 import { onsiteId } from "../lib/experiences/onsiteDocument.js";
 import { EXPERIENCE_TEMPLATES, SAVED_LAYOUT_ID, resolveTemplate, templatesFor } from "../lib/experiences/templateRegistry.js";
 import { applyExperienceLayout, captureExperienceLayout } from "../lib/experiences/layoutTemplate.js";
 import { presetTokens } from "../lib/themes/presets.js";
-import { componentTheme, THEME_COMPONENTS } from "../lib/themes/types.js";
+import { authoringThemeSnapshot, componentTheme, THEME_COMPONENTS } from "../lib/themes/types.js";
 import { siteThemeTokensSchema } from "../lib/themes/validation.js";
 const SUPPORTED_WIDGET_TYPES = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey", "geo_agent"];
 async function loadSiteInOrg(db, siteId, orgId) {
@@ -103,6 +104,44 @@ function onsiteBuilder(content, widgetType) {
     const builder = { version: 1, projectData: {}, html: "", css: "" };
     applyOnsiteDocument(builder, inheritThemeDefaults(document), widgetType);
     return builder;
+}
+function applyFlowSettings(definition, flow) {
+    if (flow.kind === "guide" && "steps" in definition) {
+        if (isPendingGuideCapture(definition) || isPendingGuideCapture(flow))
+            throw new DraftWriteError(409, "guided_capture_pending");
+        const saved = new Map(definition.steps.map(step => [step.id, step]));
+        const steps = flow.steps.map(step => {
+            const previous = saved.get(step.id);
+            if (previous) {
+                // The Live Editor owns the authored content, target and theme.
+                return { ...previous, label: step.label, advance: step.advance, presentation: step.presentation, behavior: step.behavior };
+            }
+            const seed = step.seed;
+            if (!seed || seed.id !== step.id)
+                throw new DraftWriteError(400, "invalid_flow_step");
+            const pattern = seed.pattern ?? "anchored_card";
+            const builder = seed.builder ?? onsiteBuilder(seed.content, pattern);
+            const document = seed.builder && onsiteDocumentFromBuilder(builder);
+            if (document && !isSourceAuthored(builder)) {
+                const copy = { ...builder };
+                const { content } = applyOnsiteDocument(copy, duplicateDocument(document), pattern);
+                return { ...seed, pattern, content, builder: copy };
+            }
+            return { ...seed, pattern, builder };
+        });
+        return { ...definition, steps };
+    }
+    if (flow.kind === "survey" && "survey" in definition && definition.survey) {
+        const saved = new Map(definition.survey.steps.map(step => [step.id, step]));
+        const steps = flow.steps.map(({ id, branching }) => {
+            const previous = saved.get(id);
+            if (!previous)
+                throw new DraftWriteError(400, "invalid_flow_step");
+            return { ...previous, branching };
+        });
+        return { ...definition, survey: { ...definition.survey, steps } };
+    }
+    throw new DraftWriteError(400, "invalid_flow_kind");
 }
 function initialDefinition(kind, widgetType, pageRules, siteTheme, builderMode = "grapesjs", guidePattern = "anchored_card") {
     if (kind === "checklist")
@@ -571,14 +610,14 @@ export function registerExperienceRoutes(app, db) {
             : [];
         const [storedTheme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
         const component = visualType ?? (parsed.data.kind === "checklist" ? "checklist" : "guide");
-        const activeTheme = storedTheme?.activeTokens ? componentTheme(storedTheme.activeTokens, component) : undefined;
+        const activeTheme = storedTheme?.activeTokens ? authoringThemeSnapshot(storedTheme.activeTokens, component) : undefined;
         const theme = parsed.data.theme;
         let savedStyle;
         if (theme?.source === "saved") {
             const [style] = await db.select().from(siteStylePresets).where(and(eq(siteStylePresets.id, theme.presetId), eq(siteStylePresets.siteId, site.id))).limit(1);
             if (!style)
                 return reply.code(404).send({ error: "style_preset_not_found" });
-            savedStyle = { id: style.id, tokens: componentTheme(style.tokens, component) };
+            savedStyle = { id: style.id, tokens: authoringThemeSnapshot(style.tokens, component) };
         }
         if (parsed.data.builderMode === "onsite" && !onsiteCompatible(parsed.data.kind, visualType))
             return reply.code(400).send({ error: "onsite_builder_unsupported" });
@@ -672,9 +711,21 @@ export function registerExperienceRoutes(app, db) {
                 return reply.code(409).send({ error: "builder_mode_mismatch" });
             if (draft.revision !== parsed.data.revision)
                 return reply.code(409).send({ error: "draft_conflict", currentRevision: draft.revision });
-            const candidate = parsed.data.settings
+            let candidate = parsed.data.settings
                 ? { ...draft.definition, targeting: parsed.data.settings.targeting }
                 : parsed.data.definition;
+            if (parsed.data.settings?.flow) {
+                if (row.builderMode !== "onsite")
+                    return reply.code(409).send({ error: "builder_mode_mismatch" });
+                try {
+                    candidate = applyFlowSettings(candidate, parsed.data.settings.flow);
+                }
+                catch (error) {
+                    if (error instanceof DraftWriteError)
+                        return reply.code(error.status).send({ error: error.message });
+                    throw error;
+                }
+            }
             const definition = definitionSchemaFor(row.kind, row.widgetType).safeParse(candidate);
             if (!definition.success)
                 return reply.code(400).send({ error: "invalid_definition", details: { ...definition.error.flatten(), issues: definition.error.issues } });

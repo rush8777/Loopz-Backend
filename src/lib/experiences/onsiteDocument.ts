@@ -238,7 +238,9 @@ export function validateCompiledOnsiteBuilder(builder: WidgetBuilderState, conte
   try { compiled = compileOnsiteDocument(document, widgetType, survey, checklist); } catch (error) { return [error instanceof Error ? error.message : "Invalid Survey document."]; }
   const errors: string[] = [];
   if (builder.html !== compiled.html) errors.push("Compiled on-site HTML does not match the structured document.");
-  if (builder.css !== compiled.css) errors.push("Compiled on-site CSS does not match the structured document.");
+  if (builder.css !== compiled.css && builder.css !== compileOnsiteDocument(document, widgetType, survey, checklist, "legacy").css) {
+    errors.push("Compiled on-site CSS does not match the structured document.");
+  }
   const movcues = builder.projectData.movcues as Record<string, unknown>;
   if (JSON.stringify(movcues.actionBindings) !== JSON.stringify(compiled.actionBindings)) errors.push("Compiled on-site action binding map does not match the structured document.");
   if (JSON.stringify(content) !== JSON.stringify(compiled.content)) errors.push("Structured content does not match the compiled on-site document projection.");
@@ -246,7 +248,7 @@ export function validateCompiledOnsiteBuilder(builder: WidgetBuilderState, conte
   return errors;
 }
 
-export function compileOnsiteDocument(document: OnsiteDocument, widgetType: string, survey?: OnsiteSurveyContext, checklist?: OnsiteChecklistContext): CompiledOnsiteDocument {
+export function compileOnsiteDocument(document: OnsiteDocument, widgetType: string, survey?: OnsiteSurveyContext, checklist?: OnsiteChecklistContext, cssVersion: "current" | "legacy" = "current"): CompiledOnsiteDocument {
   const validation = validateOnsiteDocument(document);
   if (!validation.valid) throw new Error(validation.errors.join(" "));
   if (document.schemaVersion === 4) {
@@ -265,14 +267,14 @@ export function compileOnsiteDocument(document: OnsiteDocument, widgetType: stri
     ".movcues-widget .movcues-block img{display:block;max-width:100%}",
     ".movcues-widget .movcues-heading{font-family:var(--movcues-font-heading,var(--movcues-font-body));font-size:var(--movcues-font-heading-size,inherit)}",
     ".movcues-widget .movcues-button{min-height:40px;border:0;border-radius:var(--movcues-button-radius,8px);font:600 14px/1.2 var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);cursor:pointer}",
-    ".movcues-widget .movcues-button--primary{background:var(--movcues-primary);color:var(--movcues-primary-fg,#fff)}",
-    ".movcues-widget .movcues-button--secondary{background:transparent;color:inherit}",
-    ".movcues-widget .movcues-button--outline{background:transparent;color:inherit;border:1px solid currentColor}",
+    cssVersion === "legacy" ? ".movcues-widget .movcues-button--primary{background:var(--movcues-primary);color:var(--movcues-primary-fg,#fff)}" : ".movcues-widget .movcues-button--primary{min-height:var(--movcues-primary-height,40px);background:var(--movcues-primary-bg,var(--movcues-primary));color:var(--movcues-primary-fg,#fff)}",
+    cssVersion === "legacy" ? ".movcues-widget .movcues-button--secondary{background:transparent;color:inherit}" : ".movcues-widget .movcues-button--secondary{min-height:var(--movcues-secondary-height,40px);background:var(--movcues-secondary-bg,transparent);color:var(--movcues-secondary-fg,inherit)}",
+    cssVersion === "legacy" ? ".movcues-widget .movcues-button--outline{background:transparent;color:inherit;border:1px solid currentColor}" : ".movcues-widget .movcues-button--outline{min-height:var(--movcues-secondary-height,40px);background:var(--movcues-secondary-bg,transparent);color:var(--movcues-secondary-fg,inherit);border:1px solid currentColor}",
     ".movcues-widget .movcues-block--full{width:100%}",
   ];
   if (document.schemaVersion === 3) css.push(SURVEY_CELL_CSS);
   if (document.schemaVersion === 4) css.push(CHECKLIST_CELL_CSS);
-  const html = renderCell(document.root, css, 0, survey, checklist);
+  const html = renderCell(document.root, css, 0, survey, checklist, cssVersion);
   css.push("@media(max-width:480px){.movcues-widget [data-movcues-responsive-stack=\"true\"]{flex-direction:column!important}.movcues-widget [data-movcues-sizing=\"fixed\"]{max-width:100%!important}.movcues-widget .movcues-button{min-height:40px}.movcues-widget img{height:auto!important}}");
   const blocks = listBlocks(document.root);
   const firstHeading = blocks.find(block => block.type === "heading") as Extract<OnsiteBlock, { type: "heading" }> | undefined;
@@ -289,17 +291,23 @@ export function compileOnsiteDocument(document: OnsiteDocument, widgetType: stri
   return { html: `<section class="movcues-widget movcues-widget--${escapeAttribute(widgetType)}" data-movcues-widget-type="${escapeAttribute(widgetType)}" data-movcues-document-version="${document.schemaVersion}"${checklist ? ' data-movcues-checklist-role="root"' : ""}>${html}</section>`, css: css.join(""), content, actionBindings };
 }
 
-function renderCell(cell: OnsiteCell, css: string[], depth: number, survey?: OnsiteSurveyContext, checklist?: OnsiteChecklistContext): string {
+function renderCell(cell: OnsiteCell, css: string[], depth: number, survey: OnsiteSurveyContext | undefined, checklist: OnsiteChecklistContext | undefined, cssVersion: "current" | "legacy"): string {
   const selector = `.movcues-widget [data-movcues-node-id="${cell.id}"]`;
   const sizing = cell.sizing.mode === "flexible" ? `flex:${round(cell.sizing.weight)} 1 0` : cell.sizing.mode === "hug" ? "flex:0 0 auto" : `flex:0 1 ${cell.sizing.value}px`;
   const style = cell.style ?? {};
   css.push(`${selector}{${sizing};flex-direction:${cell.direction};align-items:${cell.align};justify-content:${cell.justify};gap:${cell.gap}px;padding:${cell.padding.top}px ${cell.padding.right}px ${cell.padding.bottom}px ${cell.padding.left}px;${style.background ? `background:${style.background};` : ""}${style.borderWidth ? `border:${style.borderWidth}px solid ${style.borderColor ?? "#dbe2ea"};` : ""}${style.borderRadius ? `border-radius:${style.borderRadius}px;` : ""}}`);
-  if (cell.checklistWidth !== undefined) css.push(`.movcues-widget--checklist:has([data-movcues-node-id="${cell.id}"].is-active){width:${cell.checklistWidth}px}`);
-  const children = cell.children?.map(child => renderCell(child, css, depth + 1, survey, checklist)).join("") ?? (cell.block ? renderBlock(cell.block, css, survey, checklist) : "");
+  if (cell.checklistWidth !== undefined) css.push(`.movcues-widget--checklist:has([data-movcues-node-id="${cell.id}"].is-active){width:${cssVersion === "current" && cell.checklistWidth === 360 ? "var(--movcues-theme-width,360px)" : `${cell.checklistWidth}px`}}`);
+  const children = cell.children?.map(child => renderCell(child, css, depth + 1, survey, checklist, cssVersion)).join("") ?? (cell.block ? renderBlock(cell.block, css, survey, checklist, cssVersion) : "");
   return `<div class="movcues-cell" data-movcues-node-id="${cell.id}"${cell.checklistRole ? cell.checklistRole === "items" ? ' data-movcues-checklist-role="items"' : ` data-movcues-checklist-view="${cell.checklistRole}"` : ""} data-movcues-sizing="${cell.sizing.mode}"${cell.responsiveStack ? ' data-movcues-responsive-stack="true"' : ""}>${children}</div>`;
 }
 
-function renderBlock(block: OnsiteBlock, css: string[], survey?: OnsiteSurveyContext, checklist?: OnsiteChecklistContext): string {
+function inheritedButtonRadius(radius: number, variant: string, cssVersion: "current" | "legacy"): string {
+  const legacy = `var(--movcues-button-radius,${radius}px)`;
+  if (cssVersion === "legacy") return legacy;
+  return `var(--movcues-${variant === "primary" ? "primary" : "secondary"}-radius,${legacy})`;
+}
+
+function renderBlock(block: OnsiteBlock, css: string[], survey: OnsiteSurveyContext | undefined, checklist: OnsiteChecklistContext | undefined, cssVersion: "current" | "legacy"): string {
   const selector = `.movcues-widget [data-movcues-block-id="${block.id}"]`;
   const align = block.align ?? "left";
   if ((block.type === "checklist_task" || block.type === "checklist_text" || block.type === "checklist_control" || block.type === "checklist_progress")) {
@@ -315,11 +323,11 @@ function renderBlock(block: OnsiteBlock, css: string[], survey?: OnsiteSurveyCon
     if (item.type === "checklist_control") return `<button type="button" class="movcues-block movcues-checklist-control" data-movcues-block-id="${item.id}" data-movcues-checklist-role="${item.role}" aria-label="${item.role === "collapse" ? "Collapse checklist" : item.role === "dismiss" ? "Dismiss checklist" : "Acknowledge completion"}">${escapeChecklist(item.role === "collapse" ? "−" : item.role === "dismiss" ? "×" : checklist.completionMessage.acknowledgeLabel)}</button>`;
     return `<div ${attrs}><div data-movcues-checklist-role="progress"></div><div class="movcues-checklist-progress-track"><span class="movcues-checklist-progress-fill"></span></div></div>`;
   }
-  if (block.type === "question") { css.push(`${selector}{font:${block.fontSize}px/1.5 var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);text-align:${align};${block.color ? `color:${block.color};` : ""}}`); return surveyQuestionMarkup(survey!.questions.find(question => question.id === block.questionId)!, block.id); }
+  if (block.type === "question") { css.push(`${selector}{font:${cssVersion === "current" && block.fontSize === 14 ? "var(--movcues-survey-body-size,14px)" : `${block.fontSize}px`}/1.5 var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);text-align:${align};${block.color ? `color:${block.color};` : ""}}`); return surveyQuestionMarkup(survey!.questions.find(question => question.id === block.questionId)!, block.id); }
   if (block.type === "survey_controls") return surveyControlsMarkup(block.id, survey?.submitLabel ?? "Submit");
   if (block.type === "heading") { css.push(`${selector}{font:${block.inheritTypography ? `var(--movcues-font-heading-weight,${block.weight}) var(--movcues-font-heading-size,${block.fontSize}px)/var(--movcues-font-heading-line-height,${block.lineHeight ?? 1.25})` : `${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.25}`} var(--movcues-font-heading,ui-sans-serif,system-ui,sans-serif);text-align:${align};${block.color ? `color:${block.color};` : ""}}`); return `<h${block.level} class="movcues-block movcues-heading" data-movcues-block-id="${block.id}" data-movcues-content="heading">${sanitizeRichText(block.html)}</h${block.level}>`; }
   if (block.type === "text") { css.push(`${selector}{font:${block.inheritTypography ? `var(--movcues-font-body-weight,${block.weight}) var(--movcues-font-body-size,${block.fontSize}px)/var(--movcues-font-body-line-height,${block.lineHeight ?? 1.5})` : `${block.weight} ${block.fontSize}px/${block.lineHeight ?? 1.5}`} var(--movcues-font-body,ui-sans-serif,system-ui,sans-serif);text-align:${align};white-space:pre-wrap;${block.color ? `color:${block.color};` : ""}}`); return `<div class="movcues-block movcues-text" data-movcues-block-id="${block.id}" data-movcues-content="body">${sanitizeRichText(block.html)}</div>`; }
-  if (block.type === "button") { css.push(`${selector}{align-self:${align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center"};padding:${block.paddingY}px ${block.paddingX}px;border-radius:${block.inheritRadius ? `var(--movcues-button-radius,${block.radius}px)` : `${block.radius}px`};${block.width === "full" ? "width:100%;" : ""}${block.background ? `background:${block.background};` : ""}${block.color ? `color:${block.color};` : ""}}`); return `<button type="button" class="movcues-block movcues-button movcues-button--${block.variant}${block.width === "full" ? " movcues-block--full" : ""}" data-movcues-block-id="${block.id}" data-movcues-action-id="${block.action.id}">${escapeText(block.label)}</button>`; }
+  if (block.type === "button") { css.push(`${selector}{align-self:${align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center"};padding:${block.paddingY}px ${block.paddingX}px;border-radius:${block.inheritRadius ? inheritedButtonRadius(block.radius, block.variant, cssVersion) : `${block.radius}px`};${block.width === "full" ? "width:100%;" : ""}${block.background ? `background:${block.background};` : ""}${block.color ? `color:${block.color};` : ""}}`); return `<button type="button" class="movcues-block movcues-button movcues-button--${block.variant}${block.width === "full" ? " movcues-block--full" : ""}" data-movcues-block-id="${block.id}" data-movcues-action-id="${block.action.id}">${escapeText(block.label)}</button>`; }
   if (block.type === "image") { css.push(`${selector}{align-self:${align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center"};width:${block.width}%;${block.height ? `height:${block.height}px;` : "height:auto;"}object-fit:${block.fit};border-radius:${block.radius}px}`); return `<img class="movcues-block movcues-image" data-movcues-block-id="${block.id}" src="${escapeAttribute(block.src)}" alt="${escapeAttribute(block.alt)}">`; }
   if (block.type === "divider") { css.push(`${selector}{align-self:stretch;${block.orientation === "horizontal" ? `width:100%;height:${block.thickness}px` : `width:${block.thickness}px;min-height:24px`};border:0;background:${block.color}}`); return `<hr class="movcues-block movcues-divider" data-movcues-block-id="${block.id}">`; }
   if (block.type === "spacer") { css.push(`${selector}{flex:0 0 ${block.size}px;width:${block.size}px;height:${block.size}px}`); return `<div class="movcues-block movcues-spacer" data-movcues-block-id="${block.id}" aria-hidden="true"></div>`; }

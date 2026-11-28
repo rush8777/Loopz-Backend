@@ -11,6 +11,15 @@ describe('authoritative Survey cell compilation', () => {
     const f = fresh(), compiled = compileOnsiteDocument(f.document, 'survey', f);
     expect(createHash('sha256').update(JSON.stringify(compiled)).digest('hex')).toBe(f.expectedHash);
   });
+  it('accepts the previous SDK compiler output without rewriting an existing Survey', () => {
+    const f = fresh();
+    const previous = compileOnsiteDocument(f.document, 'survey', f, undefined, 'legacy');
+    const builder: WidgetBuilderState = { version: 1, html: '', css: '', projectData: {} };
+    applyOnsiteDocument(builder, f.document, 'survey', f);
+    builder.css = previous.css;
+    expect(createHash('sha256').update(JSON.stringify(previous)).digest('hex')).toBe('5a7f3edab67c0132d12603ac52c4cbcc69e020939c1e38e98b5437c1e3417d11');
+    expect(validateCompiledOnsiteBuilder(builder, previous.content, 'survey', false, f)).toEqual([]);
+  });
   it('accepts required text accessibility attributes in the compiled Survey contract', () => {
     const f = fresh(); f.questions.forEach(question => { question.required = true; });
     const builder: WidgetBuilderState = { version: 1, html: '', css: '', projectData: {} };

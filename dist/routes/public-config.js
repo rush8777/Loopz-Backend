@@ -36,10 +36,12 @@ export function registerPublicConfigRoutes(app, db) {
             .where(and(eq(sdkVerificationChallenges.siteId, site.id), isNull(sdkVerificationChallenges.acknowledgedAt), gt(sdkVerificationChallenges.expiresAt, now)))
             .orderBy(desc(sdkVerificationChallenges.createdAt))
             .limit(1);
+        const { themeCapture: explicitCapture } = request.query;
+        const requested = typeof explicitCapture === "string" && /^themec_[A-Za-z0-9_-]{32}$/.test(explicitCapture) ? explicitCapture : null;
         const [themeCapture] = await db
             .select({ id: themeCaptureRequests.id, expiresAt: themeCaptureRequests.expiresAt })
             .from(themeCaptureRequests)
-            .where(and(eq(themeCaptureRequests.siteId, site.id), isNull(themeCaptureRequests.completedAt), gt(themeCaptureRequests.expiresAt, now)))
+            .where(and(eq(themeCaptureRequests.siteId, site.id), isNull(themeCaptureRequests.completedAt), gt(themeCaptureRequests.expiresAt, now), requested ? eq(themeCaptureRequests.id, requested) : eq(themeCaptureRequests.explicitOnly, false)))
             .orderBy(desc(themeCaptureRequests.createdAt))
             .limit(1);
         return reply.send({

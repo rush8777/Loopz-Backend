@@ -9,6 +9,14 @@ import {publishReviewed} from './reviewedPublish.js';
 const fresh=()=>structuredClone(fixture) as unknown as {definition:ChecklistExperienceDefinition;document:OnsiteDocument;expectedHash:string};
 
 describe('authoritative Checklist cell compilation',()=>{
+ it('recognizes previously compiled Checklist documents without changing their CSS',()=>{
+   const f=fresh(), builder:WidgetBuilderState={version:1,html:'',css:'',projectData:{}};
+   const previous=compileOnsiteDocument(f.document,'checklist',undefined,f.definition,'legacy');
+   applyOnsiteDocument(builder,f.document,'checklist',undefined,f.definition);
+   builder.css=previous.css;
+   expect(createHash('sha256').update(JSON.stringify(previous)).digest('hex')).toBe('8bb49235f22a1137ecd69c512306d6fb9d6b9050d60c496300851aa1109f2328');
+   expect(validateCompiledOnsiteBuilder(builder,previous.content,'checklist',false,undefined,f.definition)).toEqual([]);
+ });
  it('matches the SDK version 4 fixture and the existing Checklist HTML security contract',()=>{const f=fresh(),builder:WidgetBuilderState={version:1,html:'',css:'',projectData:{}};const c=applyOnsiteDocument(builder,f.document,'checklist',undefined,f.definition);expect(createHash('sha256').update(JSON.stringify(c)).digest('hex')).toBe(f.expectedHash);expect(definitionSchemaFor('checklist').safeParse({...f.definition,targeting:{pageRules:[],audience:{type:'all'},priority:0},builder}).success).toBe(true);});
  it.each(['html','css','item','view','role','embedded','duplicate','order'] as const)('rejects inconsistent %s',field=>{const f=fresh(),builder:WidgetBuilderState={version:1,html:'',css:'',projectData:{}};const {content}=applyOnsiteDocument(builder,f.document,'checklist',undefined,f.definition);if(field==='html')builder.html=builder.html.replace('Task one','Other task');if(field==='css')builder.css+='.movcues-widget{color:red}';if(field==='item')f.definition.items[0].id='orphan';if(field==='view')f.document.root.children![1].checklistRole='completion';if(field==='role'){const b=listBlocks(f.document.root).find(b=>b.type==='checklist_text')!;if(b.type==='checklist_text')b.role='remaining-count';}if(field==='embedded')Object.assign(listBlocks(f.document.root).find(b=>b.type==='checklist_task')!,{task:{title:'duplicate model'}});if(field==='duplicate')f.definition.items[1].id=f.definition.items[0].id;if(field==='order')f.definition.items.reverse();expect(validateCompiledOnsiteBuilder(builder,content,'checklist',false,undefined,f.definition).length).toBeGreaterThan(0);});
 });

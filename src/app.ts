@@ -91,7 +91,7 @@ export async function buildApp(db: Db, options: { verifyGoogleCredential?: Verif
   registerDashboardRoutes(app, db);
   registerAnalyticsRoutes(app, db);
   registerSdkVerificationRoutes(app, db);
-  registerThemeRoutes(app, db);
+  registerThemeRoutes(app, db, aiProvider);
   registerAiRoutes(app, db, aiProvider);
   registerAgentSkills(app, db, aiProvider);
   let stopKnowledgeWorker: (() => Promise<void>) | undefined;

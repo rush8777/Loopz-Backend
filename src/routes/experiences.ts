@@ -33,7 +33,7 @@ import { onsiteId } from "../lib/experiences/onsiteDocument.js";
 import { EXPERIENCE_TEMPLATES, SAVED_LAYOUT_ID, resolveTemplate, templatesFor, type ExperienceTemplateSummary, type VisualPresetId } from "../lib/experiences/templateRegistry.js";
 import { applyExperienceLayout, captureExperienceLayout, type ExperienceLayout } from "../lib/experiences/layoutTemplate.js";
 import { presetTokens } from "../lib/themes/presets.js";
-import { componentTheme, THEME_COMPONENTS, type ThemeComponent, type VisualThemeState } from "../lib/themes/types.js";
+import { authoringThemeSnapshot, componentTheme, THEME_COMPONENTS, type ThemeComponent, type VisualThemeState } from "../lib/themes/types.js";
 import { siteThemeTokensSchema } from "../lib/themes/validation.js";
 
 const SUPPORTED_WIDGET_TYPES: ExperienceWidgetType[] = ["anchored_card", "toast", "cursor_follow", "modal", "slideout", "hotspot", "banner", "survey", "geo_agent"];
@@ -566,13 +566,13 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
       : [];
     const [storedTheme] = await db.select({ activeTokens: siteThemes.activeTokens }).from(siteThemes).where(eq(siteThemes.siteId, site.id)).limit(1);
     const component = visualType ?? (parsed.data.kind === "checklist" ? "checklist" : "guide");
-    const activeTheme = storedTheme?.activeTokens ? componentTheme(storedTheme.activeTokens as SiteThemeTokens, component) : undefined;
+    const activeTheme = storedTheme?.activeTokens ? authoringThemeSnapshot(storedTheme.activeTokens as SiteThemeTokens, component) : undefined;
     const theme = parsed.data.theme;
     let savedStyle: { id: string; tokens: SiteThemeTokens } | undefined;
     if (theme?.source === "saved") {
       const [style] = await db.select().from(siteStylePresets).where(and(eq(siteStylePresets.id, theme.presetId), eq(siteStylePresets.siteId, site.id))).limit(1);
       if (!style) return reply.code(404).send({ error: "style_preset_not_found" });
-      savedStyle = { id: style.id, tokens: componentTheme(style.tokens as SiteThemeTokens, component) };
+      savedStyle = { id: style.id, tokens: authoringThemeSnapshot(style.tokens as SiteThemeTokens, component) };
     }
     if (parsed.data.builderMode === "onsite" && !onsiteCompatible(parsed.data.kind, visualType)) return reply.code(400).send({ error: "onsite_builder_unsupported" });
     const isLegacyChecklistPreset = parsed.data.kind === "checklist" && ["default","minimal","soft","compact"].includes(parsed.data.template);

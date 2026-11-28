@@ -144,6 +144,8 @@ export const siteStylePresets = sqliteTable("site_style_presets", {
   siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   tokens: text("tokens", { mode: "json" }).notNull(),
+  sourceCaptureId: text("source_capture_id").references(() => themeCaptureRequests.id, { onDelete: "set null" }),
+  sourceDesign: text("source_design", { mode: "json" }).$type<import("../lib/themes/designJobs.js").ImportProposal>(),
   createdBy: text("created_by").notNull().references(() => users.id, { onDelete: "cascade" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
@@ -155,6 +157,9 @@ export const themeCaptureRequests = sqliteTable("theme_capture_requests", {
   createdBy: text("created_by").notNull().references(() => users.id, { onDelete: "cascade" }),
   expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
   completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+  explicitOnly: integer("explicit_only", { mode: "boolean" }).notNull().default(false),
+  designEvidence: text("design_evidence", { mode: "json" }).$type<import("../lib/themes/validation.js").CapturedDesign>(),
+  designJob: text("design_job", { mode: "json" }).$type<import("../lib/themes/designJobs.js").DesignJob>(),
   errorCode: text("error_code"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch('now') * 1000)`),
 }, table => [index("theme_capture_requests_site_created_idx").on(table.siteId, table.createdAt)]);
