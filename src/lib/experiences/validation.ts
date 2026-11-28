@@ -179,8 +179,12 @@ export const surveyQuestionSchema = z.discriminatedUnion("type", [
   z.object({ ...surveyQuestionBase, type: z.literal("rating"), min: z.number().int().min(0).max(100), max: z.number().int().min(1).max(100) }).strict().refine(value => value.max > value.min && value.max - value.min <= 20, { message: "rating range must be ascending and contain at most 21 values" }),
   z.object({ ...surveyQuestionBase, type: z.literal("nps") }).strict(),
 ]);
+const surveyBranchingSchema = z.object({
+  rules: z.array(z.object({ questionId: surveyIdSchema, operator: z.enum(["equals", "not_equals", "includes", "gte", "lte", "answered"]), value: z.union([z.string().max(10000), z.number().int()]).optional(), nextStepId: surveyIdSchema }).strict()).max(10),
+  defaultNextStepId: surveyIdSchema.optional(),
+}).strict();
 const surveyStepSchema = z.object({
-  branching: z.object({ rules: z.array(z.object({ questionId: surveyIdSchema, operator: z.enum(["equals", "not_equals", "includes", "gte", "lte", "answered"]), value: z.union([z.string().max(10000), z.number().int()]).optional(), nextStepId: surveyIdSchema }).strict()).max(10), defaultNextStepId: surveyIdSchema.optional() }).strict().optional(),
+  branching: surveyBranchingSchema.optional(),
   id: surveyIdSchema,
   content: z.object({ heading: z.string().trim().max(500), body: z.string().trim().max(2000) }).strict(),
   questions: z.array(surveyQuestionSchema).max(20),
@@ -224,7 +228,7 @@ export const surveyConfigSchema = z.object({
   });
 });
 
-const guideStepSchema = z.object({
+const guideStepFields = {
   id: z.string().min(1).max(64),
   label: z.string().trim().min(1).max(80).optional(),
   pattern: z.enum(["anchored_card", "modal"]).optional(),
@@ -241,7 +245,8 @@ const guideStepSchema = z.object({
   presentation: z.object({ delayMs: z.number().int().min(0).max(30_000).optional(), missingTarget: z.object({ action: z.enum(["wait", "skip", "dismiss"]), timeoutMs: z.number().int().min(100).max(60_000) }).strict().optional() }).strict().optional(),
   target: targetSchema.optional(),
   behavior: behaviorSchema.pick({ placement: true, alignment: true, offset: true, pointer: true, dismissible: true, layer: true, backdrop: true, backdropOpacity: true, closeOnBackdrop: true }),
-}).superRefine((step, ctx) => {
+};
+const guideStepSchema = z.object(guideStepFields).superRefine((step, ctx) => {
   if (step.pattern === "modal" && (step.advance?.type === "element_click" || step.advance?.type === "element_hover")) ctx.addIssue({ code: "custom", path: ["advance"], message: "modal guide steps cannot advance from a DOM target" });
   if (step.pattern === "modal" && step.presentation?.missingTarget) ctx.addIssue({ code: "custom", path: ["presentation", "missingTarget"], message: "missing-target behavior applies only to Anchored Card steps" });
   if (step.builder && rawOnsiteDocument(step.builder) !== undefined) validateCompiledOnsiteBuilder(step.builder, step.content, step.pattern ?? "anchored_card", true).filter(message => !message.includes("does not match")).forEach(message => ctx.addIssue({ code: "custom", path: ["builder"], message }));
@@ -341,7 +346,26 @@ export const createExperienceSchema = z.object({
 export const updateDraftSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   definition: z.unknown().optional(),
-  settings: z.object({ targeting: z.union([targetingSchema, checklistTargetingSchema]) }).strict().optional(),
+  settings: z.object({
+    targeting: z.union([targetingSchema, checklistTargetingSchema]),
+    flow: z.discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("guide"),
+        steps: z.array(z.object({
+          id: guideStepFields.id,
+          label: guideStepFields.label,
+          advance: guideStepFields.advance,
+          presentation: guideStepFields.presentation,
+          behavior: guideStepFields.behavior,
+          seed: guideStepSchema.optional(),
+        }).strict()).min(1).max(20),
+      }).strict(),
+      z.object({
+        kind: z.literal("survey"),
+        steps: z.array(z.object({ id: surveyIdSchema, branching: surveyBranchingSchema.optional() }).strict()).min(1).max(20),
+      }).strict(),
+    ]).optional(),
+  }).strict().optional(),
   revision: z.number().int().positive().optional(),
 }).strict().superRefine((value, ctx) => {
   if (value.name === undefined && value.definition === undefined && value.settings === undefined) ctx.addIssue({ code: "custom", message: "at least one field is required" });

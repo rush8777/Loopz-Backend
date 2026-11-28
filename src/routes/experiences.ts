@@ -27,7 +27,8 @@ import { sendEntitlementError } from "../lib/entitlements/http.js";
 import { requiredExperienceFeatures } from "../lib/entitlements/experienceFeatures.js";
 import type { SiteThemeTokens } from "../lib/themes/types.js";
 import { siteThemeCss } from "../lib/themes/css.js";
-import { applyOnsiteDocument, createOnsiteChecklistDocument, createOnsiteDocument, createOnsiteSurveyDocument, inheritThemeDefaults, listBlocks } from "../lib/experiences/onsiteDocument.js";
+import { applyOnsiteDocument, createOnsiteChecklistDocument, createOnsiteDocument, createOnsiteSurveyDocument, duplicateDocument, inheritThemeDefaults, listBlocks, onsiteDocumentFromBuilder } from "../lib/experiences/onsiteDocument.js";
+import { isSourceAuthored } from "../lib/experiences/sourceMarkup.js";
 import { onsiteId } from "../lib/experiences/onsiteDocument.js";
 import { EXPERIENCE_TEMPLATES, SAVED_LAYOUT_ID, resolveTemplate, templatesFor, type ExperienceTemplateSummary, type VisualPresetId } from "../lib/experiences/templateRegistry.js";
 import { applyExperienceLayout, captureExperienceLayout, type ExperienceLayout } from "../lib/experiences/layoutTemplate.js";
@@ -104,6 +105,46 @@ function onsiteBuilder(content: ExperienceContent, widgetType: string): WidgetBu
   const button = blocks.find(block => block.type === "button");
   if (button?.type === "button" && content.primaryAction) { const action = content.primaryAction; button.label = action.label; button.action = { id: button.action.id, ...(action.type === "open_url" && action.url ? { type: "open_url" as const, url: action.url } : action.type === "track_event" && action.eventName ? { type: "track_event" as const, eventName: action.eventName } : { type: action.type === "next_step" ? "next_step" as const : "dismiss" as const }) }; }
   const builder: WidgetBuilderState = { version: 1, projectData: {}, html: "", css: "" }; applyOnsiteDocument(builder, inheritThemeDefaults(document), widgetType as WidgetType); return builder;
+}
+
+function applyFlowSettings(
+  definition: ExperienceDefinition,
+  flow: NonNullable<NonNullable<z.infer<typeof updateDraftSchema>["settings"]>["flow"]>,
+): ExperienceDefinition {
+  if (flow.kind === "guide" && "steps" in definition) {
+    if (isPendingGuideCapture(definition) || isPendingGuideCapture(flow))
+      throw new DraftWriteError(409, "guided_capture_pending");
+    const saved = new Map(definition.steps.map(step => [step.id, step]));
+    const steps = flow.steps.map(step => {
+      const previous = saved.get(step.id);
+      if (previous) {
+        // The Live Editor owns the authored content, target and theme.
+        return { ...previous, label: step.label, advance: step.advance, presentation: step.presentation, behavior: step.behavior };
+      }
+      const seed = step.seed;
+      if (!seed || seed.id !== step.id) throw new DraftWriteError(400, "invalid_flow_step");
+      const pattern = seed.pattern ?? "anchored_card";
+      const builder = seed.builder ?? onsiteBuilder(seed.content, pattern);
+      const document = seed.builder && onsiteDocumentFromBuilder(builder);
+      if (document && !isSourceAuthored(builder)) {
+        const copy = { ...builder };
+        const { content } = applyOnsiteDocument(copy, duplicateDocument(document), pattern);
+        return { ...seed, pattern, content, builder: copy };
+      }
+      return { ...seed, pattern, builder };
+    });
+    return { ...definition, steps };
+  }
+  if (flow.kind === "survey" && "survey" in definition && definition.survey) {
+    const saved = new Map(definition.survey.steps.map(step => [step.id, step]));
+    const steps = flow.steps.map(({ id, branching }) => {
+      const previous = saved.get(id);
+      if (!previous) throw new DraftWriteError(400, "invalid_flow_step");
+      return { ...previous, branching };
+    });
+    return { ...definition, survey: { ...definition.survey, steps } };
+  }
+  throw new DraftWriteError(400, "invalid_flow_kind");
 }
 
 function initialDefinition(kind: ExperienceKind, widgetType: WidgetType | null, pageRules: PageRule[], siteTheme?: SiteThemeTokens, builderMode: BuilderMode = "grapesjs", guidePattern: GuideStepPattern = "anchored_card"): ExperienceDefinition {
@@ -610,9 +651,18 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     if (parsed.data.definition !== undefined || parsed.data.settings !== undefined) {
       if (parsed.data.definition !== undefined && row.builderMode !== "grapesjs" && row.builderMode !== "geo_agent") return reply.code(409).send({ error: "builder_mode_mismatch" });
       if (draft.revision !== parsed.data.revision) return reply.code(409).send({ error: "draft_conflict", currentRevision: draft.revision });
-      const candidate = parsed.data.settings
+      let candidate = parsed.data.settings
         ? { ...(draft.definition as ExperienceDefinition), targeting: parsed.data.settings.targeting }
         : parsed.data.definition;
+      if (parsed.data.settings?.flow) {
+        if (row.builderMode !== "onsite") return reply.code(409).send({ error: "builder_mode_mismatch" });
+        try {
+          candidate = applyFlowSettings(candidate as ExperienceDefinition, parsed.data.settings.flow);
+        } catch (error) {
+          if (error instanceof DraftWriteError) return reply.code(error.status).send({ error: error.message });
+          throw error;
+        }
+      }
       const definition = definitionSchemaFor(row.kind as ExperienceKind, row.widgetType).safeParse(candidate);
       if (!definition.success) return reply.code(400).send({ error: "invalid_definition", details: { ...definition.error.flatten(), issues: definition.error.issues } });
       if (row.kind === "widget" && row.widgetType && row.widgetType !== "geo_agent" && !widgetSizeIsValid(row.widgetType as WidgetType, definition.data)) return reply.code(400).send({ error: "invalid_widget_size" });
