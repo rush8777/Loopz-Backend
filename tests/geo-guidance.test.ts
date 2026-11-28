@@ -168,6 +168,7 @@ describe("interactive Geo guidance", () => {
     const otherChat = await startChat(fixture.route);
     expect((await ask(otherChat, "Help me with billing")).message).toBe(ambiguous.message);
     expect((await ask(otherChat, "I need help with invoices")).message).not.toContain("Which of these");
+    expect((await ask(otherChat, "Billing help")).message).not.toContain("Which of these");
     expect((await ask(otherChat, "Why was my account billed?")).actions).toEqual([]);
 
     const source = await ctx.app.inject({ method: "POST", url: `/orgs/${orgId}/sites/${siteId}/knowledge/sources`, headers, payload: {

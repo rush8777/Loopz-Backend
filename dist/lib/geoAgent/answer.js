@@ -132,7 +132,7 @@ export async function answerFromKnowledge(options) {
         signal.throwIfAborted();
         if (choices.length > 1) {
             const prompt = skillClarificationPrefix + choices.sort().join(" / ") + ".";
-            if (prompt !== prior?.message)
+            if (!history.some(turn => turn.message === prompt))
                 add(prompt);
         }
     }
