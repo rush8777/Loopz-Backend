@@ -111,7 +111,7 @@ export async function retrieveSkills(db: Db, scope: KnowledgeScope, ids: string[
   const shortlist = rankSkills(question, matches.map(row => ({ ...row, name: row.metadata.name })), env.GEO_SKILL_MAX_CANDIDATES).ranked;
   const outcomes = await checkEligibility(db, scope, shortlist, access);
   const eligible = shortlist.filter(skill => outcomes.has(skill.id) && !outcomes.get(skill.id));
-  const { ranked, decision } = rankSkills(question, eligible, guidanceLimit, env.GEO_SKILL_RELEVANCE_THRESHOLD);
+  const { ranked, decision, clarification: clarificationSkills } = rankSkills(question, eligible, guidanceLimit, env.GEO_SKILL_RELEVANCE_THRESHOLD);
   const recommendation = skillRecommendation.parse(decision);
   const selected = recommendation.decision === "recommend_skill"
     ? ranked.find(skill => skill.id === recommendation.skillId && skill.versionId === recommendation.skillVersionId) : undefined;
@@ -131,5 +131,5 @@ export async function retrieveSkills(db: Db, scope: KnowledgeScope, ids: string[
       });
     }
   }
-  return { selected, recommendation, candidates, eligibleCount: eligible.length, retrievalMs: Math.round(performance.now() - started), embeddingTokens, degraded };
+  return { selected, recommendation, clarificationSkills, candidates, eligibleCount: eligible.length, retrievalMs: Math.round(performance.now() - started), embeddingTokens, degraded };
 }

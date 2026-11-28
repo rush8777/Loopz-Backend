@@ -6,6 +6,22 @@ import { runAiTurn } from "../src/lib/ai/orchestrator.js";
 import type { AiProvider } from "../src/lib/ai/providers/types.js";
 
 describe("AI providers and response validation", () => {
+  it.each(["gpt-5-mini", "gpt-5-mini-2025-08-07"])("uses supported minimal effort for %s's default setting", async model => {
+    const fetcher = vi.fn(async (_url, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body));
+      expect(request).toMatchObject({ model, reasoning_effort: "minimal" });
+      if (request.stream) return new Response('data: {"choices":[{"delta":{"content":"Answer"}}]}\n\ndata: [DONE]\n\n');
+      return Response.json({ choices: [{ message: { content: '{ "lines": [] }' } }] });
+    });
+    const provider = new OpenAiProvider(model, "fixture-key", "none", fetcher as typeof fetch);
+    const input = { system: "Use sources.", prompt: "Hello." };
+    const delta = vi.fn();
+    expect(await provider.streamText(input, delta)).toMatchObject({ text: "Answer" });
+    expect(delta).toHaveBeenCalledWith("Answer");
+    expect(await provider.generate(input)).toMatchObject({ text: '{ "lines": [] }' });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("maps OpenAI output and usage without exposing the credential", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect((init?.headers as Record<string, string>).authorization).toBe("Bearer secret-test-key");

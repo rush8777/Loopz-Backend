@@ -1,5 +1,5 @@
 import type { GuidanceAction } from "./guidanceContract.js";
-import { contextualSkillQuery } from "../skills/ranking.js";
+import { clarificationChoice, contextualSkillQuery, skillClarificationPrefix } from "../skills/ranking.js";
 import { retrieveSkills, skillStillEligible } from "../skills/retrieval.js";
 import type { SkillDiagnostics } from "../skills/contracts.js";
 import { z } from "zod";
@@ -27,7 +27,8 @@ export async function answerFromKnowledge(options: {
   const { db, scope, config, provider, embedder, question, history, signal, onDelta, publicOnly } = options;
   const prior = history.at(-1);
   const followUp = /\b(it|that|those|them|these|this|one|next|then)\b/i.test(question) && question.length <= 240;
-  const retrievalQuestion = followUp && prior ? `${question}\nPrevious question: ${prior.question.slice(0, 450)}` : question;
+  const chosenTask = clarificationChoice(question, prior?.message);
+  const retrievalQuestion = chosenTask ?? (followUp && prior ? `${question}\nPrevious question: ${prior.question.slice(0, 450)}` : question);
   const started = performance.now();
   const knowledgeQuery = { ...scope, publicOnly, question: retrievalQuestion, sourceIds: config.sourceIds, topK: 6, signal };
   const [knowledge, skills] = await Promise.all([
@@ -37,7 +38,7 @@ export async function answerFromKnowledge(options: {
       return retrieveKnowledge(db, null, knowledgeQuery);
     }),
     options.skillAccess && config.skillIds?.length
-      ? retrieveSkills(db, scope, config.skillIds, contextualSkillQuery(question, prior?.question), options.skillAccess, embedder, signal)
+      ? retrieveSkills(db, scope, config.skillIds, chosenTask ?? contextualSkillQuery(question, prior?.question), options.skillAccess, embedder, signal)
         .catch(() => { signal.throwIfAborted(); return null; })
       : null,
   ]);
@@ -76,15 +77,27 @@ export async function answerFromKnowledge(options: {
       maxOutputTokens: 640, signal,
     };
     let partial = "";
+    let uncited = "";
     const acceptLine = (line: string) => {
-      const references = [...line.matchAll(/\[\[K(\d{1,2})\]\]/g)];
-      if (/\[\[S\d+\]\]/i.test(line)) return;
-      if (!references.length || references.some(match => !knowledge.matches[Number(match[1]) - 1])) return;
-      const text = line.replace(/\[\[K\d{1,2}\]\]/g, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      if (!line.trim()) return;
+      const citationPattern = /\[\[K(\d{1,2})\]\]|\[K(\d{1,2})\](?!\()/gi;
+      const references = [...line.matchAll(citationPattern)].map(match => knowledge.matches[Number(match[1] ?? match[2]) - 1]);
+      if (/\[+S\d+\]+/i.test(line) || references.some(reference => !reference)) {
+        uncited = "";
+        return;
+      }
+      const cleaned = line.replace(citationPattern, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
         .replace(/https?:\/\/\S+/gi, "").trim();
+      if (/^NO_ANSWER[.\s]*$/i.test(cleaned)) { uncited = ""; return; }
+      if (!references.length) {
+        uncited = cleaned.length <= 2200 ? cleaned : "";
+        return;
+      }
+      // A standalone citation can support the immediately preceding line.
+      const text = cleaned || uncited;
+      uncited = "";
       if (!text || accepted.join("\n").length + text.length > 6000) return;
-      for (const match of references) {
-        const result = knowledge.matches[Number(match[1]) - 1];
+      for (const result of references) {
         citationsById.set(result.documentId, { documentId: result.documentId, title: result.title, url: result.url });
       }
       onDelta(accepted.length ? `\n${text}` : text);
@@ -112,10 +125,20 @@ export async function answerFromKnowledge(options: {
   if (diagnostics && useSkill && !stillEligible) diagnostics.recommendation = { schemaVersion: 1, decision: "answer_only" };
   const add = (text: string) => { onDelta(accepted.length ? `\n${text}` : text); accepted.push(text); };
   if (stillEligible && !accepted.length) add(selected.metadata.description.replace(/https?:\/\/\S+/gi, "").trim() || config.fallback);
-  if (diagnostics?.recommendation.decision === "clarify") add("Which task are you trying to do?");
   if (!accepted.length && options.productContext && /\b(step|walkthrough|guide|next|progress|continue)\b/i.test(question)) {
     const { step, total, state } = options.productContext;
     add(`You’re on step ${step} of ${total} in the walkthrough.${state === "waiting" ? " The walkthrough is waiting for the next step." : ""}`);
+  }
+  if (!accepted.length && skills?.clarificationSkills?.length && options.skillAccess) {
+    const access = options.skillAccess;
+    const choices = (await Promise.all(skills.clarificationSkills.map(async skill =>
+      await skillStillEligible(db, scope, skill, access).catch(() => false) ? skill.name : null
+    ))).filter(name => name !== null);
+    signal.throwIfAborted();
+    if (choices.length > 1) {
+      const prompt = skillClarificationPrefix + choices.sort().join(" / ") + ".";
+      if (prompt !== prior?.message) add(prompt);
+    }
   }
   if (!accepted.length) add(config.fallback);
   return {

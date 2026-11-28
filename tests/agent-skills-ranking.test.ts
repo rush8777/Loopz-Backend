@@ -66,3 +66,19 @@ it("evaluates labeled workflows, abstention, and bounded follow-up context", () 
   expect(rankSkills("Help me with billing", skills).decision.decision).toBe("clarify");
   expect(rankSkills("What is an invoice?", skills).decision.decision).toBe("answer_only");
 });
+
+
+it("abstains on incidental overlap and finds an approved skill with an uncommon action", () => {
+  const reset: RankedSkill = {
+    id: "password-reset", versionId: "password-reset-revision", name: "Reset your password", similarity: null,
+    metadata: { name: "Reset your password", description: "Reset a forgotten password.",
+      intentExamples: ["How do I reset my password?"], keywords: ["password"], preconditions: [] },
+  };
+  expect(rankSkills("Where is the billing page?", skills).decision.decision).toBe("answer_only");
+  expect(rankSkills("How much does billing cost?", skills).decision.decision).toBe("answer_only");
+  expect(rankSkills("My invoice footer has unreadable characters", skills).decision.decision).toBe("insufficient_evidence");
+  expect(rankSkills("How do I reset my password?", [reset]).decision).toMatchObject({
+    decision: "recommend_skill", skillId: reset.id,
+  });
+  expect(rankSkills("Help me with my password", [reset]).decision.decision).toBe("insufficient_evidence");
+});

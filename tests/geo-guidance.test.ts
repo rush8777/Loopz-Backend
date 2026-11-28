@@ -4,6 +4,7 @@ import type { InjectOptions } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agentSkills, experiences, geoAgentConversations, geoAgentGuidance, geoAgentTurns, trackedUserProperties, trackedUsers } from "../src/db/schema.js";
 import { safeEntryPath } from "../src/lib/geoAgent/guidance.js";
+import { processKnowledgeJob } from "../src/lib/knowledge/jobs.js";
 import { processSkillIndex } from "../src/lib/skills/registry.js";
 import { createTestApp, signup } from "./helpers.js";
 
@@ -21,7 +22,13 @@ describe("interactive Geo guidance", () => {
   let guides: string;
 
   beforeEach(async () => {
-    ctx = await createTestApp({ aiProvider: null, knowledgeEmbedder: null });
+    ctx = await createTestApp({
+      aiProvider: { name: "mock", model: "fixture", async generate() {
+        return { text: JSON.stringify({ lines: ["Open Billing to view your invoices. [[K1]]"] }),
+          provider: "mock", model: "fixture", usage: { promptTokens: 50, completionTokens: 15, totalTokens: 65 } };
+      } },
+      knowledgeEmbedder: null,
+    });
     const owner = await signup(ctx.app);
     orgId = owner.org.id;
     headers = { authorization: `Bearer ${owner.accessToken}` };
@@ -35,10 +42,10 @@ describe("interactive Geo guidance", () => {
   const admin = (method: InjectOptions["method"], path = "", payload?: object) =>
     ctx.app.inject({ method, url: guides + path, headers, payload });
 
-  async function publish(id: string, skill = false) {
+  async function publish(id: string, skill: boolean | typeof metadata = false) {
     const current = (await admin("GET", "/" + id)).json().draftVersion;
     const published = await admin("POST", `/${id}/publish`, {
-      draftVersionId: current.id, revision: current.revision, ...(skill ? { skill: { enabled: true, metadata } } : {}),
+      draftVersionId: current.id, revision: current.revision, ...(skill ? { skill: { enabled: true, metadata: skill === true ? metadata : skill } } : {}),
     });
     expect(published.statusCode, published.body).toBe(200);
     return published.json();
@@ -132,6 +139,50 @@ describe("interactive Geo guidance", () => {
     expect(preview.json().guidance).toEqual({ available: true, label: "Guide me", entry: { mode: "navigate", path: "/billing" } });
     expect(await ctx.db.select().from(geoAgentGuidance)).toEqual([]);
     expect(await ctx.db.select().from(geoAgentConversations)).toHaveLength(1);
+  });
+
+  it("offers specific choices once, resolves a short reply, and prefers a grounded answer", async () => {
+    const fixture = await setup({ onPage: true });
+    const other = await admin("POST", "", { kind: "guide", guidePattern: "modal", builderMode: "onsite",
+      name: "Download an invoice", buildUrl: billing, template: "blank", useBuildPageAsTarget: false });
+    expect(other.statusCode, other.body).toBe(201);
+    const otherId = other.json().id as string;
+    await publish(otherId, { ...metadata, name: "Download an invoice", description: "Download a copy of an invoice.",
+      intentExamples: ["How do I download an invoice?"] });
+    await processSkillIndex(ctx.db, null, new AbortController().signal);
+    const [otherSkill] = await ctx.db.select().from(agentSkills).where(eq(agentSkills.guideId, otherId));
+    const draft = (await admin("GET", "/" + fixture.widget.id)).json().draftVersion;
+    draft.definition.geoAgent.skillIds.push(otherSkill.id);
+    expect((await admin("PATCH", "/" + fixture.widget.id, { definition: draft.definition, revision: draft.revision })).statusCode).toBe(200);
+    await publish(fixture.widget.id);
+
+    const chat = await startChat(fixture.route);
+    const ambiguous = await ask(chat, "Help me with billing");
+    expect(ambiguous.message).toContain("Create an invoice");
+    expect(ambiguous.message).toContain("Download an invoice");
+    expect(ambiguous.actions).toEqual([]);
+    const chosen = await ask(chat, "Download");
+    expect(chosen.message).toBe("Download a copy of an invoice.");
+    expect(chosen.actions).toHaveLength(1);
+
+    const otherChat = await startChat(fixture.route);
+    expect((await ask(otherChat, "Help me with billing")).message).toBe(ambiguous.message);
+    expect((await ask(otherChat, "I need help with invoices")).message).not.toContain("Which of these");
+    expect((await ask(otherChat, "Why was my account billed?")).actions).toEqual([]);
+
+    const source = await ctx.app.inject({ method: "POST", url: `/orgs/${orgId}/sites/${siteId}/knowledge/sources`, headers, payload: {
+      type: "manual", visibility: "public", name: "Billing", config: { title: "Billing", content: "Open Billing to view your invoices." },
+    } });
+    expect(source.statusCode, source.body).toBe(201);
+    await processKnowledgeJob(ctx.db, null, new AbortController().signal);
+    const nextDraft = (await admin("GET", "/" + fixture.widget.id)).json().draftVersion;
+    nextDraft.definition.geoAgent.sourceIds = [source.json().source.id];
+    expect((await admin("PATCH", "/" + fixture.widget.id, { definition: nextDraft.definition, revision: nextDraft.revision })).statusCode).toBe(200);
+    await publish(fixture.widget.id);
+    const grounded = await ask(await startChat(fixture.route), "Help me with billing");
+    expect(grounded.message).toBe("Open Billing to view your invoices.");
+    expect(grounded.citations).toHaveLength(1);
+    expect(grounded.actions).toEqual([]);
   });
 
   it("launches exactly the accepted guide at its approved page and records an observed walkthrough outcome", async () => {

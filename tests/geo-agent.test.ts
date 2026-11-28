@@ -134,6 +134,40 @@ describe("Geo Agent lifecycle", () => {
     expect((await ctx.app.inject({ url: `${otherSiteExperiences}/${created.id}`, headers: admin })).statusCode).toBe(404);
   });
 
+  it("answers plural and concise questions from indexed docs, including citations on their own line", async () => {
+    stream.mockImplementation(async (input, delta) => {
+      const { question } = JSON.parse(input.prompt);
+      if (question.includes("receipts")) {
+        delta("Check your billing history for receipts.\n");
+        delta("[K1]");
+      } else {
+        delta("Open Billing and choose New invoice. [[K1]]");
+      }
+      return providerResult;
+    });
+    const source = await ctx.app.inject({
+      method: "POST", url: `${knowledge}/sources`, headers: admin, payload: {
+        name: "Receipts", type: "manual", visibility: "public", config: {
+          title: "Billing history", content: "Check your billing history for a receipt.",
+        },
+      },
+    });
+    expect(source.statusCode, source.body).toBe(201);
+    await processKnowledgeJob(ctx.db, null, new AbortController().signal);
+    const widget = await draft();
+    await configure(widget, definition => definition.geoAgent.sourceIds.push(source.json().source.id));
+    await publish(widget);
+    const headers = await visitor(widget.route);
+    const chat = await conversation(widget.route, headers);
+    const receipts = frames((await message(chat, headers, randomUUID(), "Where can I find my receipts?")).body).at(-1);
+    expect(receipts.result).toMatchObject({ message: "Check your billing history for receipts.", citations: [{ title: "Billing history" }] });
+    const invoices = frames((await message(chat, headers, randomUUID(), "Invoices please")).body).at(-1);
+    expect(invoices.result).toMatchObject({ message: "Open Billing and choose New invoice.", citations: [{ title: "Creating invoices" }] });
+    const unrelated = frames((await message(chat, headers, randomUUID(), "Can you explain bicycle warranties?")).body).at(-1);
+    expect(unrelated.result.message).toContain("couldn’t find an answer");
+    expect(stream).toHaveBeenCalledTimes(2);
+  });
+
   it("validates and publishes through Experiences, sanitizes manifest and previews in isolation", async () => {
     const widget = await draft();
     expect((await manifest()).json().geoAgent).toBeUndefined();

@@ -53,6 +53,17 @@ function normalize(text: string) {
   return result;
 }
 
+export const skillClarificationPrefix = "Which of these would you like help with? ";
+
+export function clarificationChoice(question: string, previousAnswer?: string) {
+  if (!previousAnswer?.startsWith(skillClarificationPrefix)) return undefined;
+  const reply = question.toLowerCase().trim().replace(/[.!?]+$/, "");
+  if (!reply) return undefined;
+  const choices = previousAnswer.slice(skillClarificationPrefix.length).replace(/\.$/, "").split(" / ");
+  const matches = choices.filter(choice => choice.toLowerCase() === reply || choice.toLowerCase().split(/\s+/, 1)[0] === reply);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 export function contextualSkillQuery(question: string, previous?: string) {
   return previous && /^(?:yes[, ]+)?(?:can you |could you |please )?(?:show me(?: how)?|walk me through (?:it|that)|how do i do (?:it|that)|what(?:'s| is) next)[?.! ]*$/i.test(question.trim())
     ? previous.slice(0, 1000) : question;
@@ -63,11 +74,18 @@ export type RankedSkill = {
   similarity: number | null;
 };
 
-export function rankSkills(question: string, candidates: RankedSkill[], max = 5, threshold = 0.57) {
+type SkillRanking = {
+  ranked: (RankedSkill & { score: number; exactTask: boolean })[];
+  decision: SkillRecommendation;
+  clarification?: RankedSkill[];
+};
+
+export function rankSkills(question: string, candidates: RankedSkill[], max = 5, threshold = 0.57): SkillRanking {
   const query = normalize(question);
-  const actions = [...query].filter(term => actionNames.has(term));
-  const objects = [...query].filter(term => !actionNames.has(term) && !auxiliary.has(term));
-  const informational = /^\s*(?:what (?:is|are|does)|define|why (?:is|are|do|does))\b/i.test(question);
+  const queryTerms = [...query];
+  const actions = queryTerms.filter(term => actionNames.has(term));
+  const objects = queryTerms.filter(term => !actionNames.has(term) && !auxiliary.has(term));
+  const informational = /^\s*(?:what (?:is|are|does|can)|what's|define|why\b|how (?:much|many|long|often)|who (?:is|can|has)|where (?:is|are)|when (?:is|are|does))\b/i.test(question);
   const unsafe = /\b(bulk|mass|every|all)\b/i.test(question) && actions.some(action => action === "delete" || action === "cancel");
   if (informational || unsafe) return { ranked: [], decision: { schemaVersion: 1, decision: informational ? "answer_only" : "insufficient_evidence" } as SkillRecommendation };
 
@@ -85,14 +103,25 @@ export function rankSkills(question: string, candidates: RankedSkill[], max = 5,
     // Keep exact role, task and qualifier matches ahead of related descriptions.
     const title = objects.filter(term => name.has(term)).length / objects.length;
     const score = 0.55 * lexical + 0.25 * title + 0.15 * Math.max(0, similarity) + (actions.length ? 0.15 : 0);
-    return [{ ...candidate, score }];
+    const exactTask = score >= threshold && query.size >= 2 && [name, ...candidate.metadata.intentExamples.map(normalize)]
+      .some(intent => intent.size === query.size && queryTerms.every(term => intent.has(term)));
+    return [{ ...candidate, score, exactTask }];
   }).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
   const ranked = scored.slice(0, max);
-  const [best, next] = ranked;
-  let decision: SkillRecommendation = { schemaVersion: 1, decision: "insufficient_evidence" };
-  if (best && (actions.length !== 1 || next && best.score - next.score < 0.09)) decision = { schemaVersion: 1, decision: "clarify" };
-  else if (best && best.score >= threshold && actions.length === 1) decision = {
-    schemaVersion: 1, decision: "recommend_skill", skillId: best.id, skillVersionId: best.versionId, reason: "The requested workflow matches the approved skill metadata.",
-  };
-  return { ranked, decision };
+  const relevant = ranked.filter(candidate => candidate.score >= threshold);
+  const [best, next] = relevant;
+  const exact = relevant.filter(candidate => candidate.exactTask);
+  const winner = exact.length === 1 ? exact[0]
+    : actions.length === 1 && best && (!next || best.score - next.score >= 0.09) ? best : undefined;
+  if (winner) {
+    const decision: SkillRecommendation = {
+      schemaVersion: 1, decision: "recommend_skill", skillId: winner.id, skillVersionId: winner.versionId,
+      reason: "The requested workflow matches the approved skill metadata.",
+    };
+    return { ranked, decision };
+  }
+  const choices = exact.length > 1 ? exact : relevant.filter(candidate => best && best.score - candidate.score < 0.09);
+  const clarification = [...new Map(choices.map(candidate => [candidate.name, candidate])).values()].slice(0, 3);
+  const decision: SkillRecommendation = { schemaVersion: 1, decision: clarification.length > 1 ? "clarify" : "insufficient_evidence" };
+  return { ranked, decision, ...(decision.decision === "clarify" ? { clarification } : {}) };
 }

@@ -26,13 +26,17 @@ export class OpenAiProvider {
         this.fetcher = fetcher;
         this.sleeper = sleeper;
     }
+    get requestReasoningEffort() {
+        const isGpt5Mini = /^gpt-5-mini(?:-\d{4}-\d{2}-\d{2})?$/.test(this.model);
+        return isGpt5Mini && this.reasoningEffort === "none" ? "minimal" : this.reasoningEffort;
+    }
     async streamText(input, onDelta) {
         const response = await this.fetcher("https://api.openai.com/v1/chat/completions", {
             method: "POST",
             headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
             body: JSON.stringify({
                 model: this.model, stream: true, stream_options: { include_usage: true },
-                reasoning_effort: this.reasoningEffort, max_completion_tokens: input.maxOutputTokens ?? 640,
+                reasoning_effort: this.requestReasoningEffort, max_completion_tokens: input.maxOutputTokens ?? 640,
                 messages: [{ role: "system", content: input.system }, { role: "user", content: input.prompt }],
             }),
             signal: input.signal,
@@ -53,7 +57,7 @@ export class OpenAiProvider {
                 model: this.model,
                 messages: [{ role: "system", content: input.system }, { role: "user", content: input.prompt }],
                 response_format: { type: "json_object" },
-                reasoning_effort: this.reasoningEffort,
+                reasoning_effort: this.requestReasoningEffort,
                 max_completion_tokens: input.maxOutputTokens ?? 1800,
             }),
             signal: input.signal,

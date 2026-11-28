@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { knowledgeChunks as chunks, knowledgeDocuments as documents, knowledgeSources as sources } from "../../db/schema.js";
 import { validateVectors } from "./embeddings.js";
-const commonWords = new Set(["how", "what", "when", "where", "would", "could", "should", "about", "the", "and", "that", "this", "are", "can", "does", "have", "with", "from", "into", "for", "you", "your"]);
+const commonWords = new Set(["how", "what", "when", "where", "would", "could", "should", "about", "the", "and", "that", "this", "are", "can", "does", "have", "with", "from", "into", "for", "you", "your", "find", "please", "need", "want", "help", "trying", "just", "show", "mine", "some", "tell"]);
 export async function retrieveKnowledge(db, embedder, query) {
     if (query.sourceIds?.length === 0)
         return { matches: [], embeddingTokens: 0 };
@@ -10,8 +10,11 @@ export async function retrieveKnowledge(db, embedder, query) {
         documentId: documents.id, title: documents.title, url: documents.url, chunkId: chunks.id,
         sourceId: sources.id, heading: chunks.heading, content: chunks.content, key: documents.key,
     };
-    const words = [...new Set(query.question.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])]
-        .filter(word => !commonWords.has(word)).slice(0, 16);
+    const words = [...new Set((query.question.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])
+            .filter(word => !commonWords.has(word))
+            .map(word => word.length > 4 && !/(?:ss|us|is)$/.test(word)
+            ? word.replace(/(?:ches|shes|xes|zes|sses|s)$/, ending => ending.slice(0, ending.length === 1 ? -1 : -2))
+            : word))].slice(0, 16);
     const terms = words.map(word => sql `(CASE WHEN instr(lower(${documents.title} || ' ' || coalesce(${chunks.heading}, '')), ${word}) > 0 THEN 2.0 WHEN instr(lower(${chunks.content}), ${word}) > 0 THEN 1.0 ELSE 0.0 END)`);
     const lexical = sql `(${terms.length ? sql.join(terms, sql ` + `) : sql `0.0`})`;
     const limit = Math.min(query.topK * 4, 48);
