@@ -1,5 +1,5 @@
 import { and, eq, gte, inArray, isNotNull, lte, sql } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { DbExecutor } from "../../db/client.js";
 import { sessionEvents, trackedUsers, trackedUserProperties, funnels, experiences, experienceVersions, surveyResponses, trackedUserAliases } from "../../db/schema.js";
 import { hydrateIdentities, type IdentitySummary } from "../identity/hydrate.js";
 import { isGroup } from "./types.js";
@@ -75,7 +75,7 @@ function windowSince(window?: SegmentTimeWindow): Date | undefined {
  * identity `session_events` resolves to (covers anonymous visitors
  * who have never identified).
  */
-async function getKnownIdentities(db: Db, siteId: string): Promise<Set<IdentityKey>> {
+async function getKnownIdentities(db: DbExecutor, siteId: string): Promise<Set<IdentityKey>> {
   const [trackedRows, eventRows] = await Promise.all([
     db.select({ id: trackedUsers.id }).from(trackedUsers).where(eq(trackedUsers.siteId, siteId)),
     db
@@ -93,7 +93,7 @@ type UniverseFn = () => Promise<Set<IdentityKey>>;
 // ---------------------------------------------------------------------------
 // Condition A: custom event occurrence
 
-async function resolveEventCondition(db: Db, siteId: string, c: EventCondition, universe: UniverseFn): Promise<Set<IdentityKey>> {
+async function resolveEventCondition(db: DbExecutor, siteId: string, c: EventCondition, universe: UniverseFn): Promise<Set<IdentityKey>> {
   const since = windowSince(c.timeWindow);
   const conditions = [eq(sessionEvents.siteId, siteId), eq(sessionEvents.type, "custom"), eq(sessionEvents.eventName, c.eventName)];
   if (since) conditions.push(gte(sessionEvents.timestamp, since));
@@ -149,7 +149,7 @@ function compareProperty(rawValue: string, valueType: string, operator: UserProp
 }
 
 /** Property conditions only ever match *identified* tracked users - task brief section 3A only defines this for user properties, which anonymous visitors never have (see UserPropertyCondition's doc comment in types.ts). */
-async function resolvePropertyCondition(db: Db, siteId: string, c: UserPropertyCondition): Promise<Set<IdentityKey>> {
+async function resolvePropertyCondition(db: DbExecutor, siteId: string, c: UserPropertyCondition): Promise<Set<IdentityKey>> {
   const rows = await db
     .select({
       trackedUserId: trackedUserProperties.trackedUserId,
@@ -181,7 +181,7 @@ async function resolvePropertyCondition(db: Db, siteId: string, c: UserPropertyC
 /** Resolves a Page's rules (task brief section 3C: reuse the page-definition system, not a second page-tracking model) to the concrete pagePaths currently matching it - same pattern routes/pages.ts already uses for its own metrics. Exported for lib/funnels/evaluator.ts's page steps, so both features resolve a Page reference identically. */
 export { resolveMatchedPagePaths } from "../pages/resolveMatchedPagePaths.js";
 
-async function resolvePageCondition(db: Db, siteId: string, c: PageCondition, universe: UniverseFn): Promise<Set<IdentityKey>> {
+async function resolvePageCondition(db: DbExecutor, siteId: string, c: PageCondition, universe: UniverseFn): Promise<Set<IdentityKey>> {
   const matchedPaths = await resolveMatchedPagePaths(db, siteId, c.pageId);
   if (matchedPaths === null || matchedPaths.length === 0) {
     return c.operator === "visited" ? new Set() : await universe();
@@ -218,7 +218,7 @@ function resolveFunnelCohortRange(range: FunnelCohortCondition["dateRange"]): { 
 /** Resolves a Funnel cohort through the shared ordered progression matcher.
  * Invalid or cross-site funnel references deliberately match nobody; a
  * segment can therefore never leak membership from another site. */
-async function resolveFunnelCohortCondition(db: Db, siteId: string, c: FunnelCohortCondition): Promise<Set<IdentityKey>> {
+async function resolveFunnelCohortCondition(db: DbExecutor, siteId: string, c: FunnelCohortCondition): Promise<Set<IdentityKey>> {
   const [funnel] = await db.select().from(funnels).where(eq(funnels.id, c.funnelId)).limit(1);
   if (!funnel || funnel.siteId !== siteId) return new Set();
   const steps = funnel.steps as import("../funnels/types.js").FunnelStep[];
@@ -246,7 +246,7 @@ function surveyAnswerMatches(value: unknown, c: SurveyResponseCondition): boolea
   return c.matcher.category === "promoter" ? value >= 9 && value <= 10 : c.matcher.category === "passive" ? value >= 7 && value <= 8 : value >= 0 && value <= 6;
 }
 
-async function resolveSurveyResponseCondition(db: Db, siteId: string, c: SurveyResponseCondition): Promise<Set<IdentityKey>> {
+async function resolveSurveyResponseCondition(db: DbExecutor, siteId: string, c: SurveyResponseCondition): Promise<Set<IdentityKey>> {
   const [experience] = await db.select().from(experiences).where(eq(experiences.id, c.experienceId)).limit(1);
   if (!experience || experience.siteId !== siteId || experience.widgetType !== "survey") return new Set();
   const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, experience.id));
@@ -260,7 +260,7 @@ async function resolveSurveyResponseCondition(db: Db, siteId: string, c: SurveyR
   return new Set(rows.filter(row => surveyAnswerMatches((row.answers as Record<string, unknown>)[c.question.id], c)).map(row => row.trackedUserId ?? trackedByAnonymous.get(row.anonymousId) ?? row.anonymousId));
 }
 
-export async function surveyResponseConditionIsValid(db: Db, siteId: string, c: SurveyResponseCondition): Promise<boolean> {
+export async function surveyResponseConditionIsValid(db: DbExecutor, siteId: string, c: SurveyResponseCondition): Promise<boolean> {
   const [experience] = await db.select().from(experiences).where(eq(experiences.id, c.experienceId)).limit(1);
   if (!experience || experience.siteId !== siteId || experience.widgetType !== "survey") return false;
   const versions = await db.select().from(experienceVersions).where(eq(experienceVersions.experienceId, experience.id));
@@ -276,7 +276,7 @@ function surveyMatcherIsValid(question: SurveyQuestion, c: SurveyResponseConditi
 // ---------------------------------------------------------------------------
 // Group combination
 
-async function resolveCondition(db: Db, siteId: string, c: SegmentCondition, universe: UniverseFn): Promise<Set<IdentityKey>> {
+async function resolveCondition(db: DbExecutor, siteId: string, c: SegmentCondition, universe: UniverseFn): Promise<Set<IdentityKey>> {
   switch (c.type) {
     case "event":
       return resolveEventCondition(db, siteId, c, universe);
@@ -307,11 +307,11 @@ function union(sets: Set<IdentityKey>[]): Set<IdentityKey> {
   return result;
 }
 
-async function resolveNode(db: Db, siteId: string, node: SegmentNode, universe: UniverseFn): Promise<Set<IdentityKey>> {
+async function resolveNode(db: DbExecutor, siteId: string, node: SegmentNode, universe: UniverseFn): Promise<Set<IdentityKey>> {
   return isGroup(node) ? resolveGroup(db, siteId, node, universe) : resolveCondition(db, siteId, node, universe);
 }
 
-async function resolveGroup(db: Db, siteId: string, group: SegmentGroup, universe: UniverseFn): Promise<Set<IdentityKey>> {
+async function resolveGroup(db: DbExecutor, siteId: string, group: SegmentGroup, universe: UniverseFn): Promise<Set<IdentityKey>> {
   const sets = await Promise.all(group.conditions.map((node) => resolveNode(db, siteId, node, universe)));
   return group.logic === "and" ? intersect(sets) : union(sets);
 }
@@ -321,7 +321,7 @@ async function resolveGroup(db: Db, siteId: string, group: SegmentGroup, univers
  * identity keys. The single entry point every consumer (segments
  * routes, and eventually Funnels/Experiences) should call.
  */
-export async function evaluateSegment(db: Db, siteId: string, definition: SegmentDefinition): Promise<Set<IdentityKey>> {
+export async function evaluateSegment(db: DbExecutor, siteId: string, definition: SegmentDefinition): Promise<Set<IdentityKey>> {
   let cached: Set<IdentityKey> | null = null;
   const universe: UniverseFn = async () => {
     if (!cached) cached = await getKnownIdentities(db, siteId);
@@ -331,7 +331,7 @@ export async function evaluateSegment(db: Db, siteId: string, definition: Segmen
 }
 
 /** Server-side count only (task brief section 8) - never fetches the full member set to the browser just to count it. */
-export async function getSegmentAudienceCount(db: Db, siteId: string, definition: SegmentDefinition): Promise<number> {
+export async function getSegmentAudienceCount(db: DbExecutor, siteId: string, definition: SegmentDefinition): Promise<number> {
   const ids = await evaluateSegment(db, siteId, definition);
   return ids.size;
 }
@@ -340,7 +340,7 @@ export type SegmentMember = IdentitySummary;
 
 /** Paginated, hydrated membership (task brief section 14) - resolves each identity key via the shared hydrateIdentities helper, never loading the full unbounded set into memory for display. */
 export async function getSegmentMembers(
-  db: Db,
+  db: DbExecutor,
   siteId: string,
   definition: SegmentDefinition,
   opts: { limit: number; offset: number }

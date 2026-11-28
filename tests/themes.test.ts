@@ -54,13 +54,17 @@ describe("site themes", () => {
     const site = await newSite("studio");
     const other = await newSite("other");
     const root = `${org}/sites/${site.id}`;
-    const extended = { ...tokens, spacing: 12, components: { modal: { spacing: 28, buttonRadius: 22 } } };
+    const extended = { ...tokens, spacing: 12, components: { modal: { spacing: 28, buttonRadius: 22 }, geo_agent: { spacing: 15, buttonRadius: 11 } } };
     const saved = await ctx.app.inject({ method: "POST", url: `${root}/style-presets`, headers, payload: { name: "Ocean", tokens: extended } });
     expect(saved.statusCode, saved.body).toBe(201);
     const { preset } = saved.json();
     expect((await ctx.app.inject({ method: "PUT", url: `${org}/sites/${other.id}/theme/default`, headers, payload: { source: "saved", presetId: preset.id } })).statusCode).toBe(404);
     const preview = await ctx.app.inject({ method: "POST", url: `${root}/theme-previews`, headers, payload: extended });
-    expect(preview.json().previews).toHaveLength(10);
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json().previews).toHaveLength(11);
+    expect(preview.json().previews.find((item: { id: string }) => item.id === "geo_agent")).toMatchObject({
+      widgetType: "geo_agent", definition: { configuration: { schemaVersion: 1, theme: { spacing: 15, radii: { md: 11 } } } },
+    });
     expect(preview.json().previews.find((item: { id: string }) => item.id === "modal").definition.design.theme).toMatchObject({ spacing: 28, siteTheme: { radii: { md: 22 } } });
     expect((await ctx.app.inject({ method: "PUT", url: `${root}/theme/default`, headers, payload: { source: "saved", presetId: preset.id } })).statusCode).toBe(200);
     const created = await ctx.app.inject({ method: "POST", url: `${root}/experiences`, headers, payload: {

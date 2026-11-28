@@ -1,5 +1,5 @@
 import { and, eq, gte, inArray, lte } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { DbExecutor } from "../../db/client.js";
 import { sessionEvents } from "../../db/schema.js";
 import { canonicalIdentityExpr } from "../analytics/identity.js";
 import type { IdentityKey } from "../identity/hydrate.js";
@@ -14,7 +14,7 @@ export interface DateRangeRequired {
 const identityExpr = canonicalIdentityExpr;
 const MAX_ROWS_PER_STEP = 50_000;
 
-async function fetchStepTimestamps(db: Db, siteId: string, step: FunnelStep, since: Date, until: Date): Promise<Map<IdentityKey, number[]>> {
+async function fetchStepTimestamps(db: DbExecutor, siteId: string, step: FunnelStep, since: Date, until: Date): Promise<Map<IdentityKey, number[]>> {
   const result = new Map<IdentityKey, number[]>();
   const baseConditions = [eq(sessionEvents.siteId, siteId), gte(sessionEvents.timestamp, since), lte(sessionEvents.timestamp, until)];
 
@@ -45,7 +45,7 @@ export interface FunnelProgressionRow {
  * cohorts call this exact implementation so their membership semantics cannot
  * drift. */
 export async function computeFunnelProgression(
-  db: Db,
+  db: DbExecutor,
   siteId: string,
   steps: FunnelStep[],
   range: DateRangeRequired,

@@ -1,3 +1,4 @@
+import type { GuidanceAction } from "./guidanceContract.js";
 import { contextualSkillQuery } from "../skills/ranking.js";
 import { retrieveSkills, skillStillEligible } from "../skills/retrieval.js";
 import type { SkillDiagnostics } from "../skills/contracts.js";
@@ -10,7 +11,7 @@ import type { GeoAgentConfig } from "./config.js";
 
 export type Citation = { documentId: string; title: string; url: string | null };
 export type GeoAgentAnswer = {
-  schemaVersion: 1; conversationId: string; messageId: string; message: string; citations: Citation[]; actions: [];
+  schemaVersion: 1; conversationId: string; messageId: string; message: string; citations: Citation[]; actions: GuidanceAction[];
 };
 type History = { question: string; message: string };
 
@@ -20,6 +21,7 @@ export async function answerFromKnowledge(options: {
   db: Db; scope: KnowledgeScope; config: GeoAgentConfig; provider: AiProvider | null; embedder: KnowledgeEmbedder | null;
   question: string; history: History[]; signal: AbortSignal; onDelta: (text: string) => void;
   publicOnly: boolean;
+  productContext?: { schemaVersion: 1; workflow: string; step: number; total: number; state: "waiting" | "in_progress" };
   skillAccess?: { origin?: string; verifiedIdentity?: string; inspect?: boolean; permitted?: boolean };
 }) {
   const { db, scope, config, provider, embedder, question, history, signal, onDelta, publicOnly } = options;
@@ -67,6 +69,7 @@ export async function answerFromKnowledge(options: {
         sitePreferences: config.instructions,
         excerpts: evidence,
         ...(useSkill ? { workflowSummary: { name: selected.name, description: selected.metadata.description } } : {}),
+        ...(options.productContext ? { activeWalkthrough: options.productContext } : {}),
         history: history.slice(-4).map(turn => ({ question: turn.question.slice(0, 500), message: turn.message.slice(0, 700) })),
         question,
       }),
@@ -110,6 +113,10 @@ export async function answerFromKnowledge(options: {
   const add = (text: string) => { onDelta(accepted.length ? `\n${text}` : text); accepted.push(text); };
   if (stillEligible && !accepted.length) add(selected.metadata.description.replace(/https?:\/\/\S+/gi, "").trim() || config.fallback);
   if (diagnostics?.recommendation.decision === "clarify") add("Which task are you trying to do?");
+  if (!accepted.length && options.productContext && /\b(step|walkthrough|guide|next|progress|continue)\b/i.test(question)) {
+    const { step, total, state } = options.productContext;
+    add(`You’re on step ${step} of ${total} in the walkthrough.${state === "waiting" ? " The walkthrough is waiting for the next step." : ""}`);
+  }
   if (!accepted.length) add(config.fallback);
   return {
     message: accepted.join("\n"), citations: [...citationsById.values()],

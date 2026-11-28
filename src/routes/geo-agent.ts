@@ -1,3 +1,5 @@
+import { acceptGuidance, guidanceAction, guidanceClaim, guidanceEvent, liveGuidanceStates, recommendationDurationMs } from "../lib/geoAgent/guidanceContract.js";
+import { createGuidance, entryDecision, guidanceDelivery, guidanceStatus, guideForRuntime, latestGuidance, resolveGuidanceGuide, sessionLive, sessionScope } from "../lib/geoAgent/guidance.js";
 import { matchesRules } from "../lib/pages/pageMatcher.js";
 import { matchesExperienceAudience } from "../lib/experiences/audience.js";
 import { resolveDeliveryUserId } from "../lib/identity/deliveryIdentity.js";
@@ -5,12 +7,12 @@ import { geoAgentDefinitionSchema } from "../lib/experiences/validation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { and, count, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { env } from "../config.js";
-import type { Db } from "../db/client.js";
+import type { Db, DbExecutor } from "../db/client.js";
 import { runEntitlementTransaction } from "../db/transaction.js";
-import { experienceEvents, experiences, geoAgentConversations as conversations, geoAgentTurns as turns, geoAgentUsage as usage, sites } from "../db/schema.js";
+import { experienceEvents, experiences, geoAgentConversations as conversations, geoAgentTurns as turns, geoAgentGuidance as guidanceSessions, geoAgentUsage as usage, sites } from "../db/schema.js";
 import { type AiProvider } from "../lib/ai/providers/types.js";
 import { type KnowledgeEmbedder } from "../lib/knowledge/embeddings.js";
 import { issueVisitorToken, loadPublishedAgent, type PublishedGeoAgent, type VisitorClaims, verifyCustomerIdentity, visitorClaims, visitorIsEligible } from "../lib/geoAgent/access.js";
@@ -28,7 +30,7 @@ const pageSchema = z.url().max(2000).refine(value => ["http:", "https:"].include
 const questionSchema = z.string().trim().min(1).max(1000);
 const requestIdSchema = z.uuid();
 const day = (time: Date) => time.toISOString().slice(0, 10);
-type PublicParams = { siteId: string; experienceId: string; conversationId?: string; requestId?: string };
+type PublicParams = { siteId: string; experienceId: string; conversationId?: string; requestId?: string; guidanceId?: string };
 type AdminParams = { orgId: string; siteId: string; experienceId: string };
 type Runtime = { agent: PublishedGeoAgent; claims: VisitorClaims };
 const ndjson = "application/x-ndjson; charset=utf-8";
@@ -51,7 +53,7 @@ function conversationScope(runtime: Runtime, id: string, now = new Date()) {
     eq(conversations.versionId, agent.version.id), eq(conversations.owner, claims.sub), gte(conversations.expiresAt, now));
 }
 
-async function loadConversation(db: Db, runtime: Runtime, id: string) {
+async function loadConversation(db: DbExecutor, runtime: Runtime, id: string) {
   const [conversation] = await db.select().from(conversations).where(conversationScope(runtime, id)).limit(1);
   if (!conversation) throw new GeoError(404, "conversation_not_found");
   return conversation;
@@ -70,20 +72,32 @@ export function registerGeoAgentRoutes(
     const active = new Map<string, AbortController>();
     routes.addHook("onClose", async () => { for (const controller of active.values()) controller.abort(); });
 
-    async function published(request: FastifyRequest, url: string) {
+    async function published(request: FastifyRequest, url: string, continuation = false, connection: DbExecutor = db) {
       const { siteId, experienceId } = request.params as PublicParams;
-      const agent = await loadPublishedAgent(db, siteId, experienceId, url, request.headers.origin);
+      const agent = await loadPublishedAgent(connection, siteId, experienceId, url, request.headers.origin, continuation);
       if (!agent) throw new GeoError(404, "geo_agent_unavailable");
       return agent;
     }
-    async function authorize(request: FastifyRequest): Promise<Runtime> {
+    async function authorize(request: FastifyRequest, continuation = false, connection: DbExecutor = db): Promise<Runtime> {
       const { url } = z.object({ url: pageSchema }).parse(request.query);
-      const agent = await published(request, url);
+      const agent = await published(request, url, continuation, connection);
       const claims = visitorClaims(request.headers.authorization, agent);
       if (!claims) throw new GeoError(401, "geo_agent_session_required");
-      if (!await visitorIsEligible(db, agent, claims.identity)) throw new GeoError(403, "geo_agent_ineligible");
+      if (!await visitorIsEligible(connection, agent, claims.identity)) throw new GeoError(403, "geo_agent_ineligible");
       return { agent, claims };
     }
+    async function activeGuidance(request: FastifyRequest, instanceId: string, connection: DbExecutor) {
+      const runtime = await authorize(request, true, connection);
+      const { conversationId, guidanceId } = request.params as PublicParams;
+      const conversation = await loadConversation(connection, runtime, conversationId!);
+      if (conversation.guidanceRevokedAt) throw new GeoError(410, "guidance_expired");
+      const [session] = await connection.select().from(guidanceSessions).where(and(
+        sessionScope(runtime, conversationId!), eq(guidanceSessions.id, guidanceId!), eq(guidanceSessions.instanceId, instanceId),
+      )).limit(1);
+      if (!session) throw new GeoError(404, "guidance_not_found");
+      return { runtime, session };
+    }
+
     async function event(runtime: Runtime, eventType: string, eventId: string = randomUUID()) {
       const { agent, claims } = runtime;
       const id = createHash("sha256").update(JSON.stringify([agent.site.id, agent.experience.id, claims.sub, eventType, eventId])).digest("hex");
@@ -120,7 +134,8 @@ export function registerGeoAgentRoutes(
       const conversation = await loadConversation(db, runtime, conversationId!);
       const messages = await db.select({ messageId: turns.id, question: turns.question, answer: turns.answer, feedback: turns.feedback })
         .from(turns).where(and(eq(turns.conversationId, conversation.id), eq(turns.status, "completed"))).orderBy(turns.createdAt).limit(MAX_TURNS);
-      return { conversationId: conversation.id, messages };
+      const guidance = runtime.agent.definition.geoAgent.guidance?.enabled ? await latestGuidance(db, runtime, conversation.id) : null;
+      return { conversationId: conversation.id, messages, ...(guidance ? { guidance: guidanceStatus(guidance) } : {}) };
     });
 
     routes.delete("/conversations/:conversationId", async (request, reply) => {
@@ -131,6 +146,112 @@ export function registerGeoAgentRoutes(
       for (const [key, controller] of active) if (key.startsWith(`${deleted.id}/`)) controller.abort();
       await event(runtime, "geo_agent_conversation_deleted", deleted.id).catch(() => {});
       return reply.code(204).send();
+    });
+
+    routes.post("/conversations/:conversationId/guidance", { config: { rateLimit: { max: 15, timeWindow: "1 minute" } } }, async request => {
+      const { actionId, instanceId, identityToken } = acceptGuidance.parse(request.body);
+      const { conversationId } = request.params as PublicParams;
+      const { url } = z.object({ url: pageSchema }).parse(request.query);
+      return runEntitlementTransaction(db, async tx => {
+        const runtime = await authorize(request, false, tx);
+        const conversation = await loadConversation(tx, runtime, conversationId!);
+        if (conversation.guidanceRevokedAt) throw new GeoError(410, "guidance_expired");
+        if (runtime.claims.identity) {
+          const key = runtime.agent.definition.geoAgent.identityPublicKey;
+          if (!key || !identityToken || verifyCustomerIdentity(identityToken, key, runtime.agent.site.publicId) !== runtime.claims.identity) {
+            throw new GeoError(401, "invalid_visitor_identity");
+          }
+        }
+        const [turn] = await tx.select().from(turns).where(and(eq(turns.conversationId, conversation.id), eq(turns.status, "completed"),
+          sql`json_extract(${turns.answer}, '$.actions[0].actionId') = ${actionId}`)).limit(1);
+        const action = guidanceAction.safeParse((turn?.answer as GeoAgentAnswer | null)?.actions?.[0]);
+        if (!action.success || action.data.expiresAt <= Date.now()) throw new GeoError(410, "guidance_expired");
+        const recommendation = turn?.skillDiagnostics?.recommendation;
+        if (recommendation?.decision !== "recommend_skill") throw new GeoError(409, "guidance_unavailable");
+        const guide = await guideForRuntime(tx, runtime, { skillId: recommendation.skillId, skillRevision: recommendation.skillVersionId });
+        if (!guide) throw new GeoError(409, "guidance_unavailable");
+        const entry = entryDecision(guide.definition, new URL(url), guide.skill.entryPath, guide.guide.buildUrl);
+        if (!entry) throw new GeoError(409, "guidance_entry_unavailable");
+        const session = await createGuidance(tx, runtime, conversation.id, turn.id, instanceId, guide);
+        if (!session) throw new GeoError(409, "guidance_already_active");
+        return { guidanceId: session.id, expiresAt: session.expiresAt.getTime(), entry };
+      });
+    });
+
+    routes.post("/conversations/:conversationId/guidance/revoke", { config: { rateLimit: { max: 15, timeWindow: "1 minute" } } }, async (request, reply) => {
+      const { conversationId } = request.params as PublicParams;
+      await runEntitlementTransaction(db, async tx => {
+        const runtime = await authorize(request, true, tx);
+        const conversation = await loadConversation(tx, runtime, conversationId!);
+        const now = new Date();
+        await tx.update(conversations).set({ guidanceRevokedAt: now }).where(eq(conversations.id, conversation.id));
+        await tx.update(guidanceSessions).set({ state: "cancelled", updatedAt: now }).where(and(sessionScope(runtime, conversation.id),
+          inArray(guidanceSessions.state, liveGuidanceStates)));
+      });
+      return reply.code(204).send();
+    });
+
+    routes.post("/conversations/:conversationId/guidance/:guidanceId/claim", { config: { rateLimit: { max: 45, timeWindow: "1 minute" } } }, async request => {
+      const command = guidanceClaim.parse(request.body);
+      const { url } = z.object({ url: pageSchema }).parse(request.query);
+      return runEntitlementTransaction(db, async tx => {
+        const { runtime, session } = await activeGuidance(request, command.instanceId, tx);
+        if (!sessionLive(session)) throw new GeoError(410, "guidance_expired");
+        if (command.operation === "restore" && runtime.claims.identity) {
+          const key = runtime.agent.definition.geoAgent.identityPublicKey;
+          if (!key || !command.identityToken || verifyCustomerIdentity(command.identityToken, key, runtime.agent.site.publicId) !== runtime.claims.identity) {
+            throw new GeoError(401, "invalid_visitor_identity");
+          }
+        }
+        const guide = await guideForRuntime(tx, runtime, session);
+        if (!guide || guide.version.id !== session.guideVersionId || guide.guide.id !== session.guideId) {
+          // Commit the terminal state and return a bounded error instead of rolling it back.
+          await tx.update(guidanceSessions).set({ state: "failed", failure: "unavailable", updatedAt: new Date() })
+            .where(eq(guidanceSessions.id, session.id));
+          return { state: "unavailable" as const };
+        }
+        if (command.operation === "check") return { state: session.state };
+        if (!session.claimedAt) {
+          const entry = entryDecision(guide.definition, new URL(url), guide.skill.entryPath, guide.guide.buildUrl);
+          if (entry?.mode !== "here") throw new GeoError(409, "guidance_entry_unavailable");
+          await tx.update(guidanceSessions).set({ claimedAt: new Date() }).where(eq(guidanceSessions.id, session.id));
+        }
+        return { state: session.state, ...guidanceDelivery(session, guide) };
+      });
+    });
+
+    routes.post("/conversations/:conversationId/guidance/:guidanceId/events", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async request => {
+      const input = guidanceEvent.parse(request.body);
+      return runEntitlementTransaction(db, async tx => {
+        const { runtime, session } = await activeGuidance(request, input.instanceId, tx);
+        if (input.sequence <= session.sequence || !sessionLive(session)) return guidanceStatus(session);
+        if (input.type === "cancelled") {
+          const [saved] = await tx.update(guidanceSessions).set({ state: "cancelled", sequence: input.sequence, updatedAt: new Date() })
+            .where(eq(guidanceSessions.id, session.id)).returning();
+          return guidanceStatus(saved);
+        }
+        if (!session.claimedAt) throw new GeoError(409, "guidance_not_started");
+        const guide = await guideForRuntime(tx, runtime, session);
+        if (!guide || guide.version.id !== session.guideVersionId || guide.guide.id !== session.guideId) {
+          const [saved] = await tx.update(guidanceSessions).set({ state: "failed", failure: "unavailable", updatedAt: new Date() })
+            .where(eq(guidanceSessions.id, session.id)).returning();
+          return guidanceStatus(saved);
+        }
+        const index = guide.definition.steps.findIndex(step => step.id === input.stepId);
+        if (index < 0 || (input.type === "completed" && (!session.startedAt || index !== guide.definition.steps.length - 1))) {
+          throw new GeoError(400, "invalid_guidance_step");
+        }
+        const now = new Date();
+        const state = input.type === "visible" || input.type === "advanced" ? "started" : input.type;
+        const [updated] = await tx.update(guidanceSessions).set({
+          state, sequence: input.sequence, stepId: input.stepId, updatedAt: now,
+          startedAt: session.startedAt ?? (input.type === "visible" ? now : null),
+          advances: session.advances + Number(input.type === "advanced" && input.stepId !== session.stepId),
+          recoveries: session.recoveries + Number(input.type === "visible" && session.state === "waiting" && !!session.startedAt),
+          failure: input.failure ?? null,
+        }).where(eq(guidanceSessions.id, session.id)).returning();
+        return guidanceStatus(updated);
+      });
     });
 
     routes.post("/conversations/:conversationId/messages", { config: { rateLimit: { max: 24, timeWindow: "1 minute" } } }, async (request, reply) => {
@@ -202,9 +323,16 @@ export function registerGeoAgentRoutes(
             eq(turns.conversationId, turn.conversationId), eq(turns.status, "completed"),
           )).orderBy(desc(turns.createdAt)).limit(4);
           const history = recent.reverse().map(row => ({ question: row.question, message: (row.answer as GeoAgentAnswer).message }));
+          const workflow = agent.definition.geoAgent.guidance?.enabled ? await latestGuidance(db, runtime, turn.conversationId, true) : null;
+          const currentGuide = workflow?.claimedAt ? await guideForRuntime(db, runtime, workflow) : null;
+          const productContext = currentGuide && workflow && currentGuide.version.id === workflow.guideVersionId ? {
+            schemaVersion: 1 as const, workflow: currentGuide.skill.metadata.name,
+            step: Math.max(0, currentGuide.definition.steps.findIndex(step => step.id === workflow.stepId)) + 1,
+            total: currentGuide.definition.steps.length, state: workflow.state === "waiting" ? "waiting" as const : "in_progress" as const,
+          } : undefined;
           const result = await answerFromKnowledge({
             db, scope: { orgId: agent.site.orgId, siteId: agent.site.id }, config: agent.definition.geoAgent, provider, embedder,
-            publicOnly: true, question, history, signal, skillAccess: { origin: agent.origin, verifiedIdentity: runtime.claims.identity }, onDelta(text) {
+            publicOnly: true, question, history, ...(productContext ? { productContext } : {}), signal, skillAccess: { origin: agent.origin, verifiedIdentity: runtime.claims.identity }, onDelta(text) {
               signal.throwIfAborted();
               firstDeltaMs ??= Math.round(performance.now() - started);
               streamItem(stream, { type: "delta", text });
@@ -212,7 +340,28 @@ export function registerGeoAgentRoutes(
           });
           signal.throwIfAborted();
           const answer: GeoAgentAnswer = { schemaVersion: 1, conversationId: turn.conversationId, messageId: turn.id, message: result.message, citations: result.citations, actions: [] };
+          let entryNotice = "";
           const persisted = await runEntitlementTransaction(db, async tx => {
+            answer.actions = [];
+            answer.message = result.message;
+            entryNotice = "";
+            const recommendation = result.diagnostics?.recommendation;
+            if (agent.definition.geoAgent.guidance?.enabled && !workflow && recommendation?.decision === "recommend_skill") {
+              const { url } = z.object({ url: pageSchema }).parse(request.query);
+              const fresh = await loadPublishedAgent(tx, agent.site.publicId, agent.experience.id, url, request.headers.origin);
+              const [conversation] = await tx.select({ revoked: conversations.guidanceRevokedAt }).from(conversations).where(eq(conversations.id, turn.conversationId)).limit(1);
+              if (conversation && !conversation.revoked && fresh?.version.id === agent.version.id && await visitorIsEligible(tx, fresh, runtime.claims.identity)) {
+                const guide = await guideForRuntime(tx, { ...runtime, agent: fresh }, { skillId: recommendation.skillId, skillRevision: recommendation.skillVersionId });
+                if (guide) {
+                  if (entryDecision(guide.definition, new URL(url), guide.skill.entryPath, guide.guide.buildUrl)) {
+                    answer.actions = [guidanceAction.parse({ type: "start_guide", actionId: randomUUID(), label: "Guide me", expiresAt: Date.now() + recommendationDurationMs })];
+                  } else {
+                    entryNotice = "\nThis walkthrough cannot start from this page.";
+                    answer.message = result.message + entryNotice;
+                  }
+                }
+              }
+            }
             const [updated] = await tx.update(turns).set({
               status: "completed", answer, usedTokens: result.tokens, retrievedCount: result.retrievedCount, skillDiagnostics: result.diagnostics,
               provider: result.provider, model: result.model, latencyMs: Math.round(performance.now() - started),
@@ -225,6 +374,7 @@ export function registerGeoAgentRoutes(
           });
           if (!persisted) throw new GeoError(409, "response_cancelled");
           await event(runtime, "geo_agent_response_completed", turn.id).catch(() => {});
+          if (entryNotice) streamItem(stream, { type: "delta", text: entryNotice });
           streamItem(stream, { type: "citations", citations: result.citations });
           streamItem(stream, { type: "complete", result: answer });
         } catch {
@@ -330,14 +480,25 @@ export function registerGeoAgentRoutes(
       publicOnly: true, history: evaluation?.priorQuestion ? [{ question: evaluation.priorQuestion, message: "" }] : [],
       skillAccess: { origin, verifiedIdentity, inspect: true, permitted }, signal: AbortSignal.timeout(TIMEOUT), onDelta() {},
     });
-    return { message: result.message, citations: result.citations, decision: result.diagnostics?.recommendation,
+    const recommendation = result.diagnostics?.recommendation;
+    let guidance: { available: false; reason: string } | { available: true; label: "Guide me"; entry: NonNullable<ReturnType<typeof entryDecision>> };
+    if (!config.guidance?.enabled) guidance = { available: false, reason: "guidance_disabled" };
+    else if (!permitted || recommendation?.decision !== "recommend_skill" || !origin) guidance = { available: false, reason: "no_eligible_recommendation" };
+    else {
+      const guide = await resolveGuidanceGuide(db, params, { skillId: recommendation.skillId, skillRevision: recommendation.skillVersionId },
+        config.skillIds, origin, verifiedIdentity);
+      const page = new URL(evaluation?.url ?? origin);
+      const entry = guide && page.origin === origin && entryDecision(guide.definition, page, guide.skill.entryPath, guide.guide.buildUrl);
+      guidance = entry ? { available: true, label: "Guide me", entry } : { available: false, reason: "guidance_entry_unavailable" };
+    }
+    return { message: result.message, citations: result.citations, decision: recommendation, guidance,
       candidates: result.candidates, documentation: result.documentation, retrievalMs: result.retrievalMs, permitted };
   });
   app.get(`${adminPath}/metrics`, { preHandler: admin, errorHandler: respondError }, async request => {
     const params = request.params as AdminParams;
     await adminAgent(params);
     const scope = and(eq(conversations.siteId, params.siteId), eq(conversations.experienceId, params.experienceId));
-    const [[people], [messages]] = await Promise.all([
+    const [[people], [messages], [guidance]] = await Promise.all([
       db.select({ conversations: count(), visitors: sql<number>`count(distinct ${conversations.owner})` }).from(conversations).where(scope),
       db.select({
         messages: count(), responses: sql<number>`count(case when ${turns.status} = 'completed' then 1 end)`,
@@ -346,6 +507,7 @@ export function registerGeoAgentRoutes(
         unhelpful: sql<number>`count(case when ${turns.feedback} = 'unhelpful' then 1 end)`,
         answeredWithKnowledge: sql<number>`count(case when ${turns.status} = 'completed' and ${turns.retrievedCount} > 0 then 1 end)`,
         tokens: sql<number>`coalesce(sum(${turns.usedTokens}), 0)`,
+        guidanceRecommendations: sql<number>`count(case when json_extract(${turns.answer}, '$.actions[0].type') = 'start_guide' then 1 end)`,
         skillRecommendations: sql<number>`count(case when json_extract(${turns.skillDiagnostics}, '$.recommendation.decision') = 'recommend_skill' then 1 end)`,
         skillClarifications: sql<number>`count(case when json_extract(${turns.skillDiagnostics}, '$.recommendation.decision') = 'clarify' then 1 end)`,
         skillNoMatches: sql<number>`count(case when json_extract(${turns.skillDiagnostics}, '$.recommendation.decision') = 'insufficient_evidence' then 1 end)`,
@@ -353,8 +515,18 @@ export function registerGeoAgentRoutes(
         averageLatencyMs: sql<number | null>`round(avg(${turns.latencyMs}))`,
         averageFirstDeltaMs: sql<number | null>`round(avg(${turns.firstDeltaMs}))`,
       }).from(turns).innerJoin(conversations, eq(turns.conversationId, conversations.id)).where(scope),
+      db.select({
+        accepted: count(),
+        started: sql<number>`count(${guidanceSessions.startedAt})`,
+        completed: sql<number>`count(case when ${guidanceSessions.state} = 'completed' then 1 end)`,
+        cancelled: sql<number>`count(case when ${guidanceSessions.state} = 'cancelled' then 1 end)`,
+        failed: sql<number>`count(case when ${guidanceSessions.state} = 'failed' then 1 end)`,
+        missingTargets: sql<number>`count(case when ${guidanceSessions.failure} = 'missing_target' then 1 end)`,
+        recoveries: sql<number>`coalesce(sum(${guidanceSessions.recoveries}), 0)`,
+        stepAdvances: sql<number>`coalesce(sum(${guidanceSessions.advances}), 0)`,
+      }).from(guidanceSessions).where(and(eq(guidanceSessions.siteId, params.siteId), eq(guidanceSessions.widgetId, params.experienceId))),
     ]);
-    return { ...people, ...messages };
+    return { ...people, ...messages, guidance };
   });
 
   let cleanup: ReturnType<typeof setInterval> | undefined;

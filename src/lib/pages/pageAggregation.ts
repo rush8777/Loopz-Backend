@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNotNull, gte, lte, sql } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, DbExecutor } from "../../db/client.js";
 import { sessionEvents } from "../../db/schema.js";
 import { canonicalIdentityExpr } from "../analytics/identity.js";
 
@@ -25,7 +25,7 @@ export const EMPTY_PAGE_METRICS: PageMetrics = { views: 0, uniqueVisitors: 0, un
  * with a raw view count - the universe of URLs Page rules get matched
  * against. Cheap: one grouped query, no per-Page work yet.
  */
-export async function loadPagePathStats(db: Db, siteId: string, range: { since?: Date; until?: Date } = {}): Promise<PagePathStats[]> {
+export async function loadPagePathStats(db: DbExecutor, siteId: string, range: { since?: Date; until?: Date } = {}): Promise<PagePathStats[]> {
   const conditions = [eq(sessionEvents.siteId, siteId), eq(sessionEvents.type, "page_view"), isNotNull(sessionEvents.pagePath)];
   if (range.since) conditions.push(gte(sessionEvents.timestamp, range.since));
   if (range.until) conditions.push(lte(sessionEvents.timestamp, range.until));

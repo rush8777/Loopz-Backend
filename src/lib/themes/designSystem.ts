@@ -5,6 +5,7 @@ import { THEME_COMPONENTS, THEME_CONTROLS, type SiteThemeTokens, type ThemeCompo
 import { componentStyleSchema, controlStyleSchema, designSystemSchema, foundationPatchSchema, type CapturedDesign } from "./validation.js";
 
 const proportions: Record<ThemeComponent, { heading: [number, number]; body: [number, number]; padding: number }> = {
+  geo_agent: { heading: [15, 18], body: [13, 15], padding: 12 },
   modal: { heading: [22, 28], body: [14, 16], padding: 26 },
   anchored_card: { heading: [16, 20], body: [13, 14], padding: 16 },
   guide: { heading: [16, 18], body: [13, 14], padding: 14 },

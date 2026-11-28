@@ -1,7 +1,7 @@
+import { deliveryConfig, geoAgentConfig } from "../lib/geoAgent/config.js";
 import { skillRegistration } from "../lib/skills/contracts.js";
 import { registerSkill } from "../lib/skills/registry.js";
 import { entryPathForGuide } from "../lib/skills/metadata.js";
-import { geoAgentConfig } from "../lib/geoAgent/config.js";
 import { captureBuildPageRules } from "../lib/experiences/guideCapture.js";
 import { GUIDE_CAPTURE_PLACEHOLDER, isPendingGuideCapture } from "../lib/experiences/guideCaptureContract.js";
 import { env } from "../config.js";
@@ -365,7 +365,16 @@ function matchesLayout(layout: ExperienceLayout, kind: ExperienceKind, widgetTyp
   return layout.kind === kind && (layout.kind !== "widget" || layout.widgetType === widgetType);
 }
 
-function themePreview(component: ThemeComponent, tokens: SiteThemeTokens) {
+function themePreview(component: ThemeComponent, theme: SiteThemeTokens) {
+  if (component === "geo_agent") {
+    const config = geoAgentConfig.parse({ schemaVersion: 1, themeSnapshot: theme, appearance: {
+      name: "Geo Agent", theme: "light", brandColor: /^#[0-9a-f]{6}$/i.test(theme.colors.primary) ? theme.colors.primary : "#2563eb",
+      welcome: "Hi! How can I help?", launcher: "label",
+    } });
+    return { id: component, versionId: "theme-preview", kind: "widget" as const, widgetType: "geo_agent" as const, priority: 0,
+      definition: { configuration: deliveryConfig(config) } };
+  }
+  const tokens = componentTheme(theme, component);
   const kind = component === "guide" || component === "checklist" ? component : "widget";
   const widgetType = component === "guide" || component === "checklist" ? null : component;
   const template = templatesFor(kind, widgetType)[0];
@@ -535,7 +544,7 @@ export function registerExperienceRoutes(app: FastifyInstance, db: Db) {
     const parsed = siteThemeTokensSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_theme_tokens" });
     return reply.send({
-      previews: THEME_COMPONENTS.map(component => themePreview(component, componentTheme(parsed.data, component))),
+      previews: THEME_COMPONENTS.map(component => themePreview(component, parsed.data)),
       templates: EXPERIENCE_TEMPLATES,
     });
   });

@@ -52,6 +52,7 @@ export async function answerFromKnowledge(options) {
                 sitePreferences: config.instructions,
                 excerpts: evidence,
                 ...(useSkill ? { workflowSummary: { name: selected.name, description: selected.metadata.description } } : {}),
+                ...(options.productContext ? { activeWalkthrough: options.productContext } : {}),
                 history: history.slice(-4).map(turn => ({ question: turn.question.slice(0, 500), message: turn.message.slice(0, 700) })),
                 question,
             }),
@@ -108,6 +109,10 @@ export async function answerFromKnowledge(options) {
         add(selected.metadata.description.replace(/https?:\/\/\S+/gi, "").trim() || config.fallback);
     if (diagnostics?.recommendation.decision === "clarify")
         add("Which task are you trying to do?");
+    if (!accepted.length && options.productContext && /\b(step|walkthrough|guide|next|progress|continue)\b/i.test(question)) {
+        const { step, total, state } = options.productContext;
+        add(`You’re on step ${step} of ${total} in the walkthrough.${state === "waiting" ? " The walkthrough is waiting for the next step." : ""}`);
+    }
     if (!accepted.length)
         add(config.fallback);
     return {

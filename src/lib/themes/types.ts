@@ -30,7 +30,7 @@ export interface SiteThemeTokens {
   components?: Partial<Record<ThemeComponent, ThemeComponentStyle>>;
 }
 
-export const THEME_COMPONENTS = ["modal", "anchored_card", "survey", "checklist", "banner", "slideout", "toast", "hotspot", "cursor_follow", "guide"] as const;
+export const THEME_COMPONENTS = ["modal", "anchored_card", "survey", "checklist", "banner", "slideout", "toast", "hotspot", "cursor_follow", "guide", "geo_agent"] as const;
 export type ThemeComponent = typeof THEME_COMPONENTS[number];
 export const THEME_CONTROLS = ["primaryButton", "secondaryButton", "input", "selection", "progress", "closeButton", "checklistItem", "navigation"] as const;
 

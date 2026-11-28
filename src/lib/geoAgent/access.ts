@@ -3,7 +3,7 @@ import jwt from "jsonwebtoken";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { env } from "../../config.js";
-import type { Db } from "../../db/client.js";
+import type { DbExecutor } from "../../db/client.js";
 import { sites, experiences, experienceVersions } from "../../db/schema.js";
 import { getOrganizationSubscription, subscriptionIsActive } from "../entitlements/subscription.js";
 import { matchesExperienceAudience } from "../experiences/audience.js";
@@ -29,7 +29,7 @@ function siteOrigin(domain: string | null) {
   try { return new URL(/^https?:\/\//i.test(domain) ? domain : `https://${domain}`).origin; } catch { return null; }
 }
 
-export async function loadPublishedAgent(db: Db, publicId: string, widgetId: string, url: string, originHeader?: string) {
+export async function loadPublishedAgent(db: DbExecutor, publicId: string, widgetId: string, url: string, originHeader?: string, continuation = false) {
   const [row] = await db.select({ site: sites, experience: experiences, version: experienceVersions })
     .from(sites).innerJoin(experiences, eq(experiences.siteId, sites.id))
     .innerJoin(experienceVersions, and(eq(experienceVersions.id, experiences.publishedVersionId), eq(experienceVersions.experienceId, experiences.id)))
@@ -46,7 +46,7 @@ export async function loadPublishedAgent(db: Db, publicId: string, widgetId: str
   if (targeting.schedule?.startsAt && now < Date.parse(targeting.schedule.startsAt)) return null;
   if (targeting.schedule?.endsAt && now >= Date.parse(targeting.schedule.endsAt)) return null;
   if (targeting.allowedOrigins?.length && !targeting.allowedOrigins.includes(origin)) return null;
-  if (targeting.pageRules.length && !matchesRules(page.pathname + page.search + page.hash, targeting.pageRules)) return null;
+  if (!continuation && targeting.pageRules.length && !matchesRules(page.pathname + page.search + page.hash, targeting.pageRules)) return null;
   return { ...row, origin, definition: parsed.data };
 }
 
@@ -84,7 +84,7 @@ export function visitorClaims(authorization: string | undefined, agent: Publishe
   } catch { return null; }
 }
 
-export async function visitorIsEligible(db: Db, agent: PublishedGeoAgent, identity?: string) {
+export async function visitorIsEligible(db: DbExecutor, agent: PublishedGeoAgent, identity?: string) {
   const audience = agent.definition.targeting.audience;
   if (audience.type === "all") return true;
   if (!identity) return false;

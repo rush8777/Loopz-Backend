@@ -1,4 +1,4 @@
-export const THEME_COMPONENTS = ["modal", "anchored_card", "survey", "checklist", "banner", "slideout", "toast", "hotspot", "cursor_follow", "guide"];
+export const THEME_COMPONENTS = ["modal", "anchored_card", "survey", "checklist", "banner", "slideout", "toast", "hotspot", "cursor_follow", "guide", "geo_agent"];
 export const THEME_CONTROLS = ["primaryButton", "secondaryButton", "input", "selection", "progress", "closeButton", "checklistItem", "navigation"];
 export function componentTheme(tokens, component) {
     const { components, ...base } = structuredClone(tokens);

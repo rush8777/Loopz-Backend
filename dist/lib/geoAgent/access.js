@@ -30,7 +30,7 @@ function siteOrigin(domain) {
         return null;
     }
 }
-export async function loadPublishedAgent(db, publicId, widgetId, url, originHeader) {
+export async function loadPublishedAgent(db, publicId, widgetId, url, originHeader, continuation = false) {
     const [row] = await db.select({ site: sites, experience: experiences, version: experienceVersions })
         .from(sites).innerJoin(experiences, eq(experiences.siteId, sites.id))
         .innerJoin(experienceVersions, and(eq(experienceVersions.id, experiences.publishedVersionId), eq(experienceVersions.experienceId, experiences.id)))
@@ -52,7 +52,7 @@ export async function loadPublishedAgent(db, publicId, widgetId, url, originHead
         return null;
     if (targeting.allowedOrigins?.length && !targeting.allowedOrigins.includes(origin))
         return null;
-    if (targeting.pageRules.length && !matchesRules(page.pathname + page.search + page.hash, targeting.pageRules))
+    if (!continuation && targeting.pageRules.length && !matchesRules(page.pathname + page.search + page.hash, targeting.pageRules))
         return null;
     return { ...row, origin, definition: parsed.data };
 }

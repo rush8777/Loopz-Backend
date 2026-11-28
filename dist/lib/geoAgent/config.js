@@ -1,3 +1,5 @@
+import { componentTheme } from "../themes/types.js";
+import { siteThemeTokensSchema } from "../themes/validation.js";
 import { skillSelection } from "../skills/contracts.js";
 import { createPublicKey } from "node:crypto";
 import { z } from "zod";
@@ -23,6 +25,13 @@ export const geoAgentConfig = z.object({
     enabled: z.boolean().default(true),
     showLauncher: z.boolean().default(true),
     persistence: z.enum(["page", "tab"]).default("tab"),
+    themeSnapshot: siteThemeTokensSchema.optional(),
+    themeName: z.string().trim().min(1).max(80).optional(),
+    guidance: z.object({
+        enabled: z.boolean().default(false),
+        collapseOnStart: z.boolean().default(true),
+        reopenOnEnd: z.boolean().default(true),
+    }).strict().optional(),
     skillIds: skillSelection.optional(),
     sourceIds: z.array(z.string().min(1).max(64)).max(30).default([]).transform(ids => [...new Set(ids)]),
     instructions: z.string().trim().max(1500).default(""),
@@ -39,6 +48,6 @@ export const geoAgentConfig = z.object({
     }, "Enter an Ed25519 public key").optional(),
 }).strict();
 export function deliveryConfig(config) {
-    return { schemaVersion: config.schemaVersion, appearance: config.appearance, persistence: config.persistence };
+    return { schemaVersion: config.schemaVersion, appearance: config.appearance, persistence: config.persistence, ...(config.themeSnapshot ? { theme: componentTheme(config.themeSnapshot, "geo_agent") } : {}), ...(config.guidance?.enabled ? { guidance: config.guidance } : {}) };
 }
 //# sourceMappingURL=config.js.map

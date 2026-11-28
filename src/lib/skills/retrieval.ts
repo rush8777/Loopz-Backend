@@ -25,7 +25,7 @@ function availableBase(db: Db, scope: KnowledgeScope, ids: string[]) {
         eq(experiences.publishedVersionId, agentSkills.guideVersionId)))));
 }
 
-async function excludeGuide(
+export async function excludeGuide(
   metadata: RankedSkill["metadata"], definition: unknown, access: SkillAccess,
   audience: (target: typeof guideDefinitionSchema._output.targeting.audience) => Promise<boolean>,
 ) {

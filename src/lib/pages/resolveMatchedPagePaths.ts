@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { DbExecutor } from "../../db/client.js";
 import { pageDefinitions } from "../../db/schema.js";
 import { matchesRules } from "./pageMatcher.js";
 import { loadPagePathStats } from "./pageAggregation.js";
@@ -10,7 +10,7 @@ import type { PageRule } from "./types.js";
  * This intentionally lives outside the Segment evaluator: Pages are shared
  * primitives used by both Segment conditions and ordered Funnel steps.
  */
-export async function resolveMatchedPagePaths(db: Db, siteId: string, pageId: string): Promise<string[] | null> {
+export async function resolveMatchedPagePaths(db: DbExecutor, siteId: string, pageId: string): Promise<string[] | null> {
   const [page] = await db.select().from(pageDefinitions).where(eq(pageDefinitions.id, pageId)).limit(1);
   if (!page || page.siteId !== siteId) return null;
   const pathStats = await loadPagePathStats(db, siteId);

@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { DbExecutor } from "../../db/client.js";
 import { sessionEvents, trackedUsers } from "../../db/schema.js";
 
 /**
@@ -25,7 +25,7 @@ export interface IdentitySummary {
  * the existing User Profile page, do not create a segment/funnel-
  * specific one") rather than each re-deriving this hydration.
  */
-export async function hydrateIdentities(db: Db, siteId: string, ids: IdentityKey[]): Promise<IdentitySummary[]> {
+export async function hydrateIdentities(db: DbExecutor, siteId: string, ids: IdentityKey[]): Promise<IdentitySummary[]> {
   if (ids.length === 0) return [];
 
   const trackedRows = await db.select().from(trackedUsers).where(and(eq(trackedUsers.siteId, siteId), inArray(trackedUsers.id, ids)));

@@ -15,7 +15,7 @@ function availableBase(db, scope, ids) {
         .innerJoin(experienceVersions, and(eq(experienceVersions.id, experiences.publishedVersionId), eq(experienceVersions.experienceId, experiences.id), eq(experienceVersions.state, "published")))
         .where(and(eq(experiences.siteId, scope.siteId), eq(experiences.kind, "guide"), eq(experiences.status, "published"), eq(experiences.publishedVersionId, agentSkills.guideVersionId)))));
 }
-async function excludeGuide(metadata, definition, access, audience) {
+export async function excludeGuide(metadata, definition, access, audience) {
     if (access.permitted === false)
         return "widget_targeting";
     if (metadata.preconditions.length)

@@ -1243,6 +1243,7 @@ export const geoAgentConversations = sqliteTable("geo_agent_conversations", {
     owner: text("owner").notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    guidanceRevokedAt: integer("guidance_revoked_at", { mode: "timestamp_ms" }),
     expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
 }, table => [
     index("geo_agent_conversations_owner_idx").on(table.siteId, table.experienceId, table.owner, table.updatedAt),
@@ -1301,5 +1302,35 @@ export const agentSkills = sqliteTable("agent_skills", {
     uniqueIndex("agent_skills_guide_idx").on(table.guideId),
     index("agent_skills_site_idx").on(table.orgId, table.siteId, table.enabled),
     index("agent_skills_pending_idx").on(table.indexState, table.leaseUntil),
+]);
+export const geoAgentGuidance = sqliteTable("geo_agent_guidance", {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id").notNull().references(() => geoAgentConversations.id, { onDelete: "cascade" }),
+    turnId: text("turn_id").notNull().references(() => geoAgentTurns.id, { onDelete: "cascade" }),
+    siteId: text("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+    widgetId: text("widget_id").notNull().references(() => experiences.id, { onDelete: "cascade" }),
+    owner: text("owner").notNull(),
+    skillId: text("skill_id").notNull(),
+    skillRevision: text("skill_revision").notNull(),
+    guideId: text("guide_id").notNull(),
+    guideVersionId: text("guide_version_id").notNull(),
+    instanceId: text("instance_id").notNull(),
+    state: text("state", { enum: ["accepted", "started", "waiting", "completed", "cancelled", "failed", "expired"] }).notNull(),
+    stepId: text("step_id"),
+    sequence: integer("sequence").notNull().default(0),
+    advances: integer("advances").notNull().default(0),
+    recoveries: integer("recoveries").notNull().default(0),
+    failure: text("failure", { enum: ["missing_target", "unavailable", "runtime"] }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    claimedAt: integer("claimed_at", { mode: "timestamp_ms" }),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, table => [
+    uniqueIndex("geo_guidance_turn_uidx").on(table.turnId),
+    uniqueIndex("geo_guidance_owner_active_uidx").on(table.siteId, table.owner)
+        .where(sql `${table.state} IN ('accepted','started','waiting')`),
+    index("geo_guidance_conversation_idx").on(table.conversationId, table.updatedAt),
+    index("geo_guidance_widget_idx").on(table.siteId, table.widgetId),
 ]);
 //# sourceMappingURL=schema.js.map

@@ -1,11 +1,11 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { DbExecutor } from "../../db/client.js";
 import { segments } from "../../db/schema.js";
 import { evaluateSegment } from "../segments/evaluator.js";
 import type { SegmentDefinition } from "../segments/types.js";
 import type { ExperienceTargeting } from "./types.js";
 
-export async function matchesExperienceAudience(db: Db, siteId: string, identityKey: string, audience: ExperienceTargeting["audience"]): Promise<boolean> {
+export async function matchesExperienceAudience(db: DbExecutor, siteId: string, identityKey: string, audience: ExperienceTargeting["audience"]): Promise<boolean> {
   if (audience.type === "all") return true;
   const conditions = audience.type === "segment" ? [{ segmentId: audience.segmentId, operator: "matches" as const }] : audience.conditions;
   const results = await Promise.all(conditions.map(async condition => {
